@@ -4,20 +4,26 @@
  * Trapezohe Companion CLI
  *
  * Usage:
- *   trapezohe-companion start [-d]   Start the companion daemon
- *   trapezohe-companion stop         Stop the daemon
- *   trapezohe-companion status       Show daemon status
- *   trapezohe-companion init         Create default config
- *   trapezohe-companion config       Print config file path
- *   trapezohe-companion token        Show current access token
+ *   trapezohe-companion start [-d]          Start the companion daemon
+ *   trapezohe-companion stop [--force]      Stop the daemon
+ *   trapezohe-companion status              Show daemon status
+ *   trapezohe-companion init                Create default config
+ *   trapezohe-companion config              Print config file path
+ *   trapezohe-companion token               Show current access token
+ *   trapezohe-companion register [ext-id]  Register Chrome Native Messaging host
+ *   trapezohe-companion unregister         Remove Native Messaging host registration
  */
 
-import { fork } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fork, execFile } from 'node:child_process'
+import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import {
   loadConfig,
+  saveConfig,
   initConfig,
   resolveToken,
   getConfigPath,
@@ -27,12 +33,21 @@ import {
 } from '../src/config.mjs'
 import { createCompanionServer } from '../src/server.mjs'
 import { McpManager } from '../src/mcp-manager.mjs'
+import {
+  normalizePermissionPolicy,
+  PERMISSION_MODE_WORKSPACE,
+  PERMISSION_MODE_FULL,
+} from '../src/permission-policy.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
+const execFileAsync = promisify(execFile)
 
 const command = process.argv[2]
 const flags = process.argv.slice(3)
+
+const DAEMON_START_TIMEOUT_MS = 4000
+const STOP_GRACE_MS = 5000
+const STOP_POLL_MS = 200
 
 async function main() {
   switch (command) {
@@ -48,55 +63,221 @@ async function main() {
       return handleConfig()
     case 'token':
       return handleToken()
+    case 'policy':
+      return handlePolicy()
+    case 'register':
+      return handleRegister()
+    case 'unregister':
+      return handleUnregister()
     default:
       printHelp()
       process.exit(command === '--help' || command === '-h' ? 0 : 1)
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function processExists(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    if (err.code === 'ESRCH') return false
+    if (err.code === 'EPERM') return true
+    throw err
+  }
+}
+
+async function readProcessCommand(pid) {
+  if (process.platform === 'win32') return ''
+  try {
+    const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='])
+    return String(stdout || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function looksLikeCompanionProcess(commandLine) {
+  if (!commandLine) return false
+  const normalized = commandLine.toLowerCase()
+  return (
+    normalized.includes('trapezohe-companion') ||
+    (normalized.includes('bin/cli.mjs') && normalized.includes(' start'))
+  )
+}
+
+async function fetchHealth(config, token) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${config.port}/healthz`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(1500),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return data && data.ok ? data : null
+  } catch {
+    return null
+  }
+}
+
+async function inspectDaemonState(config, token) {
+  const pid = await readPid()
+  if (!pid) return { state: 'stopped' }
+
+  if (!(await processExists(pid))) {
+    await removePid()
+    return { state: 'stopped', cleaned: `stale pid ${pid}` }
+  }
+
+  const health = await fetchHealth(config, token)
+  const healthPid = Number(health?.pid)
+  if (Number.isFinite(healthPid) && healthPid > 0) {
+    if (healthPid !== pid) {
+      await writePid(healthPid)
+      return { state: 'running', pid: healthPid, health, correctedFrom: pid }
+    }
+    return { state: 'running', pid, health }
+  }
+
+  const commandLine = await readProcessCommand(pid)
+  if (looksLikeCompanionProcess(commandLine)) {
+    return { state: 'running', pid }
+  }
+
+  return { state: 'unknown', pid }
+}
+
+async function waitForDaemonHealthy(config, token, expectedPid) {
+  const deadline = Date.now() + DAEMON_START_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const health = await fetchHealth(config, token)
+    if (health && (!expectedPid || health.pid === expectedPid)) {
+      return health
+    }
+    if (expectedPid && !(await processExists(expectedPid))) {
+      return null
+    }
+    await sleep(150)
+  }
+  return null
+}
+
+async function waitForExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!(await processExists(pid))) return true
+    await sleep(STOP_POLL_MS)
+  }
+  return !(await processExists(pid))
+}
+
 async function handleStart() {
   const daemon = flags.includes('-d') || flags.includes('--daemon')
+  const config = await loadConfig()
+  const token = resolveToken(config)
+
+  // Persist token before daemonizing so parent/child can share the same auth.
+  if (!config.token && token) {
+    await saveConfig({ ...config, token })
+    config.token = token
+  }
+
+  const state = await inspectDaemonState(config, token)
+  if (state.state === 'running') {
+    const note = state.correctedFrom ? ` (repaired stale PID ${state.correctedFrom})` : ''
+    console.log(`[trapezohe-companion] Already running (PID: ${state.pid})${note}`)
+    return
+  }
+
+  if (state.state === 'unknown') {
+    console.log(`[trapezohe-companion] Ignoring unverified stale PID file (${state.pid}).`)
+    await removePid()
+  }
 
   if (daemon) {
-    // Fork self as background process
     const child = fork(__filename, ['start'], {
       detached: true,
       stdio: 'ignore',
     })
     child.unref()
-    console.log(`[trapezohe-companion] Daemon started (PID: ${child.pid})`)
-    process.exit(0)
+
+    const health = await waitForDaemonHealthy(config, token, child.pid)
+    if (health) {
+      console.log(`[trapezohe-companion] Daemon started (PID: ${health.pid})`)
+      process.exit(0)
+      return
+    }
+
+    const latest = await inspectDaemonState(config, token)
+    if (latest.state === 'running') {
+      console.log(`[trapezohe-companion] Daemon started (PID: ${latest.pid})`)
+      process.exit(0)
+      return
+    }
+
+    console.error('[trapezohe-companion] Daemon failed to become healthy. Run "trapezohe-companion start" to inspect logs.')
+    process.exit(1)
     return
   }
 
-  const config = await loadConfig()
-  const token = resolveToken(config)
-
-  // Save token back if it was auto-generated
-  if (!config.token && token) {
-    const { saveConfig } = await import('../src/config.mjs')
-    await saveConfig({ ...config, token })
-  }
-
   const mcpManager = new McpManager(config.mcpServers)
-  const server = createCompanionServer({ token, mcpManager })
+  let currentPermissionPolicy = normalizePermissionPolicy(config.permissionPolicy)
+  const server = createCompanionServer({
+    token,
+    mcpManager,
+    getPermissionPolicy: () => currentPermissionPolicy,
+    setPermissionPolicy: async (nextPolicy) => {
+      currentPermissionPolicy = normalizePermissionPolicy(nextPolicy)
+      config.permissionPolicy = currentPermissionPolicy
+      await saveConfig(config)
+    },
+  })
 
-  // Write PID file
-  await writePid()
-
-  // Graceful shutdown
+  let shuttingDown = false
   const shutdown = async () => {
+    if (shuttingDown) return
+    shuttingDown = true
     console.log('\n[trapezohe-companion] Shutting down...')
-    await mcpManager.stopAll()
+    try {
+      await mcpManager.stopAll()
+    } catch (err) {
+      console.error(`[trapezohe-companion] Error stopping MCP servers: ${err.message}`)
+    }
     server.close()
-    await removePid()
+    try {
+      await removePid()
+    } catch (err) {
+      console.error(`[trapezohe-companion] Error removing PID file: ${err.message}`)
+    }
     process.exit(0)
   }
 
-  process.on('SIGINT', shutdown)
-  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', () => {
+    shutdown().catch((err) => {
+      console.error('[trapezohe-companion] Shutdown error:', err.message)
+      process.exit(1)
+    })
+  })
+  process.on('SIGTERM', () => {
+    shutdown().catch((err) => {
+      console.error('[trapezohe-companion] Shutdown error:', err.message)
+      process.exit(1)
+    })
+  })
+
+  server.once('error', async (err) => {
+    console.error(`[trapezohe-companion] Failed to start: ${err.message}`)
+    await mcpManager.stopAll()
+    await removePid()
+    process.exit(1)
+  })
 
   server.listen(config.port, '127.0.0.1', async () => {
+    await writePid()
+
     console.log('')
     console.log('  ╔══════════════════════════════════════════════╗')
     console.log('  ║        Trapezohe Companion v0.1.0            ║')
@@ -105,9 +286,16 @@ async function handleStart() {
     console.log(`  Listening:  http://127.0.0.1:${config.port}`)
     console.log(`  Token:      ${token}`)
     console.log(`  Config:     ${getConfigPath()}`)
+    console.log(`  Mode:       ${currentPermissionPolicy.mode}`)
+    if (currentPermissionPolicy.mode === PERMISSION_MODE_WORKSPACE) {
+      if (currentPermissionPolicy.workspaceRoots.length > 0) {
+        console.log(`  Workspace:  ${currentPermissionPolicy.workspaceRoots.join(', ')}`)
+      } else {
+        console.log('  Workspace:  (not configured)')
+      }
+    }
     console.log('')
 
-    // Start MCP servers
     const serverCount = mcpManager.getServerCount()
     if (serverCount > 0) {
       console.log(`  Starting ${serverCount} MCP server(s)...`)
@@ -117,7 +305,6 @@ async function handleStart() {
       console.log(`  MCP:        ${connected}/${serverCount} connected, ${tools.length} tool(s)`)
       console.log('')
 
-      // Print tool list
       if (tools.length > 0) {
         console.log('  Available MCP tools:')
         for (const tool of tools) {
@@ -139,56 +326,90 @@ async function handleStart() {
 }
 
 async function handleStop() {
-  const pid = await readPid()
-  if (!pid) {
+  const force = flags.includes('-f') || flags.includes('--force')
+  const config = await loadConfig()
+  const token = resolveToken(config)
+  const state = await inspectDaemonState(config, token)
+
+  if (state.state === 'stopped') {
     console.log('[trapezohe-companion] No running daemon found.')
     return
   }
 
-  try {
-    process.kill(pid, 'SIGTERM')
-    console.log(`[trapezohe-companion] Sent SIGTERM to PID ${pid}`)
-    await removePid()
-  } catch (err) {
-    if (err.code === 'ESRCH') {
-      console.log(`[trapezohe-companion] Process ${pid} not found (already stopped).`)
-      await removePid()
-    } else {
-      console.error(`[trapezohe-companion] Failed to stop: ${err.message}`)
-    }
-  }
-}
-
-async function handleStatus() {
-  const pid = await readPid()
-  if (!pid) {
-    console.log('[trapezohe-companion] Status: stopped')
+  if (state.state === 'unknown') {
+    console.log(`[trapezohe-companion] Refusing to stop unverified PID ${state.pid}.`)
+    console.log('  Remove ~/.trapezohe/companion.pid manually if this is stale.')
     return
   }
 
+  const pid = state.pid
   try {
-    process.kill(pid, 0) // Signal 0 = check if process exists
-    console.log(`[trapezohe-companion] Status: running (PID: ${pid})`)
-
-    // Try to fetch health info
-    const config = await loadConfig()
-    const token = resolveToken(config)
-    try {
-      const res = await fetch(`http://127.0.0.1:${config.port}/healthz`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(3000),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        console.log(`  Port:       ${config.port}`)
-        console.log(`  MCP:        ${data.mcpServers} server(s), ${data.mcpTools} tool(s)`)
-      }
-    } catch {
-      console.log(`  Port:       ${config.port} (health check failed)`)
+    process.kill(pid, 'SIGTERM')
+    console.log(`[trapezohe-companion] Sent SIGTERM to PID ${pid}`)
+  } catch (err) {
+    if (err.code === 'ESRCH') {
+      await removePid()
+      console.log(`[trapezohe-companion] Process ${pid} not found (already stopped).`)
+      return
     }
-  } catch {
-    console.log(`[trapezohe-companion] Status: stopped (stale PID file: ${pid})`)
+    console.error(`[trapezohe-companion] Failed to stop: ${err.message}`)
+    return
+  }
+
+  let exited = await waitForExit(pid, STOP_GRACE_MS)
+  if (!exited && force) {
+    console.log(`[trapezohe-companion] PID ${pid} did not exit after ${STOP_GRACE_MS}ms, sending SIGKILL...`)
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch (err) {
+      if (err.code !== 'ESRCH') {
+        console.error(`[trapezohe-companion] Failed to SIGKILL PID ${pid}: ${err.message}`)
+      }
+    }
+    exited = await waitForExit(pid, 2000)
+  }
+
+  if (exited) {
     await removePid()
+    console.log('[trapezohe-companion] Daemon stopped.')
+    return
+  }
+
+  console.log('[trapezohe-companion] Daemon is still shutting down.')
+  console.log('  Re-run "trapezohe-companion stop --force" if needed.')
+}
+
+async function handleStatus() {
+  const config = await loadConfig()
+  const token = resolveToken(config)
+  const policy = normalizePermissionPolicy(config.permissionPolicy)
+  const state = await inspectDaemonState(config, token)
+
+  if (state.state === 'stopped') {
+    const suffix = state.cleaned ? ` (${state.cleaned})` : ''
+    console.log(`[trapezohe-companion] Status: stopped${suffix}`)
+    return
+  }
+
+  if (state.state === 'unknown') {
+    console.log(`[trapezohe-companion] Status: unknown (PID file points to ${state.pid})`)
+    console.log('  PID exists but does not look like a running companion service.')
+    return
+  }
+
+  const health = state.health || await fetchHealth(config, token)
+  const correction = state.correctedFrom ? ` (repaired stale PID ${state.correctedFrom})` : ''
+  console.log(`[trapezohe-companion] Status: running (PID: ${state.pid})${correction}`)
+  console.log(`  Port:       ${config.port}`)
+  console.log(`  Mode:       ${policy.mode}`)
+  if (policy.mode === PERMISSION_MODE_WORKSPACE) {
+    console.log(`  Workspace:  ${policy.workspaceRoots.join(', ') || '(not configured)'}`)
+  }
+
+  if (health) {
+    console.log(`  MCP:        ${health.mcpServers} server(s), ${health.mcpTools} tool(s)`)
+  } else {
+    console.log('  MCP:        health check failed (token mismatch or service degraded)')
   }
 }
 
@@ -219,6 +440,176 @@ async function handleToken() {
   }
 }
 
+async function handlePolicy() {
+  const config = await loadConfig()
+  const current = normalizePermissionPolicy(config.permissionPolicy)
+
+  if (flags.length === 0) {
+    console.log(JSON.stringify(current, null, 2))
+    return
+  }
+
+  const requestedMode = String(flags[0] || '').trim().toLowerCase()
+  if (requestedMode !== PERMISSION_MODE_FULL && requestedMode !== PERMISSION_MODE_WORKSPACE) {
+    console.error('[trapezohe-companion] Invalid mode. Use: full | workspace')
+    process.exit(1)
+    return
+  }
+
+  const requestedRoots = requestedMode === PERMISSION_MODE_WORKSPACE ? flags.slice(1) : []
+  const nextPolicy = normalizePermissionPolicy({
+    mode: requestedMode,
+    workspaceRoots: requestedRoots,
+  })
+
+  if (nextPolicy.mode === PERMISSION_MODE_WORKSPACE && nextPolicy.workspaceRoots.length === 0) {
+    console.error('[trapezohe-companion] Workspace mode requires at least one workspace root.')
+    console.error('  Example: trapezohe-companion policy workspace ~/trapezohe-workspace')
+    process.exit(1)
+    return
+  }
+
+  config.permissionPolicy = nextPolicy
+  await saveConfig(config)
+
+  console.log(`[trapezohe-companion] Permission mode updated: ${nextPolicy.mode}`)
+  if (nextPolicy.mode === PERMISSION_MODE_WORKSPACE) {
+    console.log(`  Workspace roots: ${nextPolicy.workspaceRoots.join(', ')}`)
+  }
+}
+
+// ── Native Messaging Host Registration ──
+
+const NATIVE_HOST_NAME = 'com.trapezohe.companion'
+
+function getNativeHostManifestDir() {
+  const platform = process.platform
+  const home = os.homedir()
+
+  if (platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts')
+  }
+  if (platform === 'linux') {
+    return path.join(home, '.config', 'google-chrome', 'NativeMessagingHosts')
+  }
+  if (platform === 'win32') {
+    return path.join(home, '.trapezohe')
+  }
+  throw new Error(`Unsupported platform: ${platform}`)
+}
+
+function getNativeHostManifestPath() {
+  return path.join(getNativeHostManifestDir(), `${NATIVE_HOST_NAME}.json`)
+}
+
+async function handleRegister() {
+  // Resolve native-host.mjs absolute path (sibling of this script)
+  const __dirname = path.dirname(__filename)
+  const nativeHostScript = path.join(__dirname, 'native-host.mjs')
+
+  // Verify the script exists
+  try {
+    await fs.access(nativeHostScript)
+  } catch {
+    console.error(`[trapezohe-companion] Native host script not found: ${nativeHostScript}`)
+    process.exit(1)
+    return
+  }
+
+  // Ensure execute permission on Unix
+  if (process.platform !== 'win32') {
+    await fs.chmod(nativeHostScript, 0o755)
+  }
+
+  // Collect extension IDs from CLI args + config
+  const config = await loadConfig()
+  const extraIds = Array.isArray(config.extensionIds) ? config.extensionIds : []
+  const cliIds = flags.filter((f) => !f.startsWith('-'))
+  const allIds = Array.from(new Set([...extraIds, ...cliIds]))
+
+  if (allIds.length === 0) {
+    console.error('[trapezohe-companion] At least one extension ID is required.')
+    console.error('')
+    console.error('  Usage: trapezohe-companion register <extension-id>')
+    console.error('')
+    console.error('  Find your extension ID at chrome://extensions/')
+    console.error('  Or set extensionIds in ~/.trapezohe/companion.json')
+    process.exit(1)
+    return
+  }
+
+  const allowedOrigins = allIds.map((id) => `chrome-extension://${id}/`)
+
+  // Build manifest
+  const manifest = {
+    name: NATIVE_HOST_NAME,
+    description: 'Trapezohe Companion — local runtime bridge for the Trapezohe browser extension',
+    path: nativeHostScript,
+    type: 'stdio',
+    allowed_origins: allowedOrigins,
+  }
+
+  // Write manifest to OS-specific location
+  const manifestDir = getNativeHostManifestDir()
+  const manifestPath = getNativeHostManifestPath()
+  await fs.mkdir(manifestDir, { recursive: true })
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+
+  console.log('[trapezohe-companion] Native messaging host registered.')
+  console.log(`  Manifest: ${manifestPath}`)
+  console.log(`  Host:     ${nativeHostScript}`)
+  console.log(`  Origins:  ${allowedOrigins.join(', ')}`)
+
+  // Windows: also register in Windows Registry
+  if (process.platform === 'win32') {
+    const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
+    try {
+      await execFileAsync('reg', ['add', regKey, '/ve', '/t', 'REG_SZ', '/d', manifestPath, '/f'])
+      console.log(`  Registry: ${regKey}`)
+    } catch (err) {
+      console.error(`  Warning: Failed to register Windows registry key: ${err.message}`)
+      console.error(`  You may need to manually add: ${regKey} → ${manifestPath}`)
+    }
+  }
+
+  // Persist extension IDs to config for future use
+  if (cliIds.length > 0 && JSON.stringify(allIds) !== JSON.stringify(extraIds)) {
+    config.extensionIds = allIds
+    await saveConfig(config)
+    console.log('  Extension IDs saved to config.')
+  }
+
+  console.log('')
+  console.log('  Restart Chrome for changes to take effect.')
+}
+
+async function handleUnregister() {
+  const manifestPath = getNativeHostManifestPath()
+
+  try {
+    await fs.unlink(manifestPath)
+    console.log('[trapezohe-companion] Native messaging host unregistered.')
+    console.log(`  Removed: ${manifestPath}`)
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.log('[trapezohe-companion] No native messaging host registration found.')
+      return
+    }
+    throw err
+  }
+
+  // Windows: remove registry key
+  if (process.platform === 'win32') {
+    const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
+    try {
+      await execFileAsync('reg', ['delete', regKey, '/f'])
+      console.log(`  Registry key removed: ${regKey}`)
+    } catch {
+      // Ignore if key doesn't exist
+    }
+  }
+}
+
 function printHelp() {
   console.log(`
 Trapezohe Companion — Local MCP server host & command runtime
@@ -227,18 +618,26 @@ Usage:
   trapezohe-companion <command> [flags]
 
 Commands:
-  start [-d]    Start the companion service (-d for daemon mode)
-  stop          Stop the daemon
-  status        Show current status
-  init          Create default config at ~/.trapezohe/companion.json
-  config        Print config file path
-  token         Print access token
+  start [-d]            Start the companion service (-d for daemon mode)
+  stop [--force]        Stop the daemon (--force sends SIGKILL if needed)
+  status                Show current status
+  init                  Create default config at ~/.trapezohe/companion.json
+  config                Print config file path
+  token                 Print access token
+  policy                Show or update permission policy
+  register <ext-id>    Register Chrome Native Messaging host for auto-pairing
+  unregister           Remove Native Messaging host registration
 
 Examples:
   trapezohe-companion init          # Create config
   trapezohe-companion start         # Start in foreground
   trapezohe-companion start -d      # Start as background daemon
   trapezohe-companion status        # Check if running
+  trapezohe-companion stop --force  # Force-stop if graceful stop hangs
+  trapezohe-companion policy        # Print current policy JSON
+  trapezohe-companion policy full
+  trapezohe-companion policy workspace ~/trapezohe-workspace
+  trapezohe-companion register abc123  # Register native host for extension ID
 
 Config: ~/.trapezohe/companion.json
 Docs:   https://github.com/trapezohe/companion

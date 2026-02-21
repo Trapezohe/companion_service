@@ -52,12 +52,36 @@ function Init-Config {
     Write-Host "  OK Config created" -ForegroundColor Green
 }
 
-# ── Optional: Auto-start ──
+# ── Register Native Messaging Host ──
+
+function Register-NativeHost {
+    Write-Host ""
+    Write-Host "  Chrome Native Messaging (auto-pairing)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  To enable automatic pairing with the Trapezohe extension,"
+    Write-Host "  enter your extension ID (find it at chrome://extensions/)."
+    Write-Host ""
+    $extId = Read-Host "  Extension ID (or press Enter to skip)"
+
+    if ([string]::IsNullOrWhiteSpace($extId)) {
+        Write-Host "  WARNING: Skipped. Register later with:" -ForegroundColor Yellow
+        Write-Host "    trapezohe-companion register <extension-id>"
+        return
+    }
+
+    & trapezohe-companion register $extId 2>&1 | ForEach-Object { Write-Host "    $_" }
+    Write-Host "  OK Native messaging host registered" -ForegroundColor Green
+}
+
+# ── Auto-start (default: enabled) ──
 
 function Setup-Autostart {
     Write-Host ""
-    $reply = Read-Host "  Set up auto-start on login? (y/N)"
-    if ($reply -ne "y" -and $reply -ne "Y") { return }
+    $reply = Read-Host "  Enable auto-start on login? (Y/n)"
+    if ($reply -eq "n" -or $reply -eq "N") {
+        Write-Host "  WARNING: Skipped. You can set it up later manually." -ForegroundColor Yellow
+        return
+    }
 
     $cliPath = (Get-Command trapezohe-companion -ErrorAction SilentlyContinue).Source
     if (-not $cliPath) {
@@ -79,6 +103,7 @@ function Setup-Autostart {
 Check-Node
 Install-Companion
 Init-Config
+Register-NativeHost
 Setup-Autostart
 
 Write-Host ""

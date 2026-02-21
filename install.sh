@@ -57,15 +57,37 @@ init_config() {
   echo -e "  ${GREEN}✓${NC} Config created"
 }
 
-# ── Optional: Auto-start setup ──
+# ── Register Native Messaging Host ──
+
+register_native_host() {
+  echo ""
+  echo -e "  ${BOLD}Chrome Native Messaging (auto-pairing)${NC}"
+  echo ""
+  echo "  To enable automatic pairing with the Trapezohe extension,"
+  echo "  enter your extension ID (find it at chrome://extensions/)."
+  echo ""
+  read -p "  Extension ID (or press Enter to skip): " EXT_ID
+
+  if [ -z "$EXT_ID" ]; then
+    echo -e "  ${YELLOW}⚠${NC} Skipped. You can register later with:"
+    echo "    trapezohe-companion register <extension-id>"
+    return
+  fi
+
+  trapezohe-companion register "$EXT_ID" 2>&1 | sed 's/^/    /'
+  echo -e "  ${GREEN}✓${NC} Native messaging host registered"
+}
+
+# ── Auto-start setup (default: enabled) ──
 
 setup_autostart() {
   echo ""
-  echo -e "  ${BOLD}Auto-start on login?${NC}"
-  read -p "  Set up auto-start? (y/N) " -n 1 -r
+  echo -e "  ${BOLD}Auto-start on login${NC}"
+  read -p "  Enable auto-start? (Y/n) " -n 1 -r
   echo ""
 
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+  if [[ $REPLY =~ ^[Nn]$ ]]; then
+    echo -e "  ${YELLOW}⚠${NC} Skipped. You can set it up later manually."
     return
   fi
 
@@ -156,6 +178,7 @@ EOF
 check_node
 install_companion
 init_config
+register_native_host
 setup_autostart
 
 echo ""

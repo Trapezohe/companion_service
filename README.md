@@ -51,6 +51,10 @@ Config file: `~/.trapezohe/companion.json`
 {
   "port": 41591,
   "token": "your-access-token",
+  "permissionPolicy": {
+    "mode": "workspace",
+    "workspaceRoots": ["/Users/me/trapezohe-workspace"]
+  },
   "mcpServers": {
     "filesystem": {
       "command": "npx",
@@ -66,6 +70,11 @@ Config file: `~/.trapezohe/companion.json`
   }
 }
 ```
+
+### Permission Modes
+
+- `workspace` (recommended): command runtime is restricted to configured `workspaceRoots`; requests outside the boundary are blocked.
+- `full`: no workspace boundary checks (OpenClaw-like full system control with current user permissions).
 
 The `mcpServers` format is compatible with [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) — you can reuse your existing MCP server configurations.
 
@@ -84,10 +93,14 @@ The `mcpServers` format is compatible with [Claude Desktop](https://modelcontext
 trapezohe-companion start       # Start in foreground
 trapezohe-companion start -d    # Start as background daemon
 trapezohe-companion stop        # Stop the daemon
+trapezohe-companion stop --force # Force stop (SIGKILL fallback)
 trapezohe-companion status      # Show status and MCP server info
 trapezohe-companion init        # Create default config
 trapezohe-companion config      # Print config file path
 trapezohe-companion token       # Print access token
+trapezohe-companion policy      # Show current permission policy
+trapezohe-companion policy full
+trapezohe-companion policy workspace ~/trapezohe-workspace
 ```
 
 ## API Endpoints
@@ -98,7 +111,7 @@ All endpoints require `Authorization: Bearer <token>` header and only accept con
 
 ```
 GET /healthz
-→ { "ok": true, "version": "0.1.0", "mcpServers": 2, "mcpTools": 5 }
+→ { "ok": true, "pid": 12345, "version": "0.1.0", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
 ```
 
 ### Command Execution
@@ -128,6 +141,17 @@ GET /api/mcp/servers
 
 POST /api/mcp/servers/{name}/restart
 → { "ok": true, "name": "filesystem" }
+```
+
+### Permission Policy
+
+```
+GET /api/security/policy
+→ { "policy": { "mode": "workspace", "workspaceRoots": ["/Users/me/trapezohe-workspace"] } }
+
+POST /api/security/policy
+Body: { "mode": "full" }
+→ { "ok": true, "policy": { "mode": "full", "workspaceRoots": [] } }
 ```
 
 ## Popular MCP Servers
