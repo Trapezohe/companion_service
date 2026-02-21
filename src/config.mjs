@@ -8,7 +8,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'companion.json')
 const PID_FILE = path.join(CONFIG_DIR, 'companion.pid')
 
 const DEFAULT_CONFIG = {
-  port: 8791,
+  port: 41591,
   token: '',
   mcpServers: {},
 }

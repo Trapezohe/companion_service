@@ -39,7 +39,7 @@ trapezohe-companion start
 1. Start the companion: `trapezohe-companion start`
 2. Copy the access token shown in the terminal
 3. In the Trapezohe extension: **Settings → Local Command Runtime**
-4. Enter URL: `http://127.0.0.1:8791`
+4. Enter URL: `http://127.0.0.1:41591`
 5. Paste the token
 6. Enable and save
 
@@ -49,7 +49,7 @@ Config file: `~/.trapezohe/companion.json`
 
 ```json
 {
-  "port": 8791,
+  "port": 41591,
   "token": "your-access-token",
   "mcpServers": {
     "filesystem": {
