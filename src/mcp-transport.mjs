@@ -14,7 +14,8 @@ export class StdioTransport {
   #buffer = ''
   #closed = false
   #notificationHandler = null
-  #stderrChunks = ''
+  #stderrChunks = []
+  #stderrSize = 0
 
   constructor(proc) {
     this.#proc = proc
@@ -24,10 +25,14 @@ export class StdioTransport {
 
     proc.stderr.setEncoding('utf8')
     proc.stderr.on('data', (chunk) => {
-      this.#stderrChunks += chunk
-      // Keep last 10KB of stderr
-      if (this.#stderrChunks.length > 10_000) {
-        this.#stderrChunks = this.#stderrChunks.slice(-10_000)
+      this.#stderrChunks.push(chunk)
+      this.#stderrSize += chunk.length
+      // Compact when accumulated size exceeds 20KB (keep last 10KB)
+      if (this.#stderrSize > 20_000) {
+        const full = this.#stderrChunks.join('')
+        const trimmed = full.slice(-10_000)
+        this.#stderrChunks = [trimmed]
+        this.#stderrSize = trimmed.length
       }
     })
 
@@ -36,7 +41,7 @@ export class StdioTransport {
   }
 
   get stderr() {
-    return this.#stderrChunks
+    return this.#stderrChunks.join('')
   }
 
   get closed() {
@@ -83,22 +88,29 @@ export class StdioTransport {
     this.#closed = true
 
     // Reject all pending requests
-    for (const [id, entry] of this.#pending) {
+    for (const [, entry] of this.#pending) {
       clearTimeout(entry.timer)
       entry.reject(new Error('Transport closed'))
     }
     this.#pending.clear()
 
-    // Kill the process
-    try {
-      this.#proc.stdin.end()
-    } catch { /* ignore */ }
+    // Destroy all streams to prevent file descriptor leaks
+    try { this.#proc.stdout.destroy() } catch { /* ignore */ }
+    try { this.#proc.stderr.destroy() } catch { /* ignore */ }
+    try { this.#proc.stdin.end() } catch { /* ignore */ }
 
+    // Kill the process; verify it actually exited before sending SIGKILL
     try {
       this.#proc.kill('SIGTERM')
-      setTimeout(() => {
-        try { this.#proc.kill('SIGKILL') } catch { /* ignore */ }
+      const killTimer = setTimeout(() => {
+        try {
+          if (!this.#proc.killed) this.#proc.kill('SIGKILL')
+        } catch { /* ignore */ }
       }, 3000)
+      // Clear the kill timer if the process exits on its own
+      this.#proc.once('exit', () => clearTimeout(killTimer))
+      // Prevent the timer from keeping the process alive
+      if (killTimer.unref) killTimer.unref()
     } catch { /* ignore */ }
   }
 

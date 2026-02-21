@@ -6,18 +6,42 @@
  */
 
 import { createServer } from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   runCommand,
   resolveCwd,
   clampTimeout,
+  enforceCommandPolicy,
+  PermissionPolicyError,
   startCommandSession,
   getSessionById,
   makeSessionSnapshot,
   pruneSessions,
   stopSession,
   cleanupAllSessions,
+  startSessionPruner,
+  stopSessionPruner,
 } from './runtime.mjs'
+import { normalizePermissionPolicy } from './permission-policy.mjs'
+
+// ── Auth rate limiter ──
+
+const AUTH_WINDOW_MS = 60_000
+const AUTH_MAX_FAILURES = 20
+const authFailures = [] // timestamps of recent failures
+
+function isAuthRateLimited() {
+  const cutoff = Date.now() - AUTH_WINDOW_MS
+  // Remove expired entries
+  while (authFailures.length > 0 && authFailures[0] < cutoff) {
+    authFailures.shift()
+  }
+  return authFailures.length >= AUTH_MAX_FAILURES
+}
+
+function recordAuthFailure() {
+  authFailures.push(Date.now())
+}
 
 // ── Helpers ──
 
@@ -66,13 +90,25 @@ async function readJsonBody(req) {
   })
 }
 
+function safeTokenCompare(a, b) {
+  if (!a || !b) return false
+  const bufA = Buffer.from(a, 'utf8')
+  const bufB = Buffer.from(b, 'utf8')
+  if (bufA.length !== bufB.length) return false
+  return timingSafeEqual(bufA, bufB)
+}
+
 function authorize(req, token) {
   if (!isLoopback(req.socket.remoteAddress)) {
     return { ok: false, error: 'Only loopback clients are allowed.' }
   }
+  if (isAuthRateLimited()) {
+    return { ok: false, error: 'Too many failed authentication attempts. Try again later.' }
+  }
   const auth = String(req.headers.authorization || '')
   const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : ''
-  if (!provided || provided !== token) {
+  if (!safeTokenCompare(provided, token)) {
+    recordAuthFailure()
     return { ok: false, error: 'Unauthorized: invalid token.' }
   }
   return { ok: true }
@@ -80,28 +116,32 @@ function authorize(req, token) {
 
 // ── Command execution handler ──
 
-async function handleExec(req, res) {
+async function handleExec(req, res, getPermissionPolicy) {
   const body = await readJsonBody(req)
   const command = typeof body.command === 'string' ? body.command.trim() : ''
   if (!command) return sendJson(res, 400, { error: 'command is required.' })
   if (command.length > 10_000) return sendJson(res, 400, { error: 'command exceeds max length (10000).' })
 
-  const cwd = await resolveCwd(body.cwd)
+  const permissionPolicy = normalizePermissionPolicy(getPermissionPolicy())
+  const cwd = await resolveCwd(body.cwd, permissionPolicy)
+  enforceCommandPolicy({ command, cwd, permissionPolicy })
   const timeoutMs = clampTimeout(body.timeoutMs)
   const result = await runCommand({ command, cwd, timeoutMs })
   sendJson(res, 200, { ...result, command, cwd })
 }
 
-async function handleSessionStart(req, res) {
+async function handleSessionStart(req, res, getPermissionPolicy) {
   const body = await readJsonBody(req)
   const command = typeof body.command === 'string' ? body.command.trim() : ''
   if (!command) return sendJson(res, 400, { error: 'command is required.' })
   if (command.length > 10_000) return sendJson(res, 400, { error: 'command exceeds max length (10000).' })
 
-  const cwd = await resolveCwd(body.cwd)
+  const permissionPolicy = normalizePermissionPolicy(getPermissionPolicy())
+  const cwd = await resolveCwd(body.cwd, permissionPolicy)
+  enforceCommandPolicy({ command, cwd, permissionPolicy })
   const timeoutMs = clampTimeout(body.timeoutMs)
   pruneSessions()
-  const id = randomBytes(12).toString('hex')
+  const id = randomBytes(16).toString('hex')
   const session = startCommandSession({ id, command, cwd, timeoutMs })
   sendJson(res, 200, makeSessionSnapshot(session))
 }
@@ -122,7 +162,14 @@ async function handleSessionStop(sessionId, req, res) {
 
 // ── Server factory ──
 
-export function createCompanionServer({ token, mcpManager }) {
+export function createCompanionServer({
+  token,
+  mcpManager,
+  getPermissionPolicy = () => normalizePermissionPolicy({ mode: 'full' }),
+  setPermissionPolicy = async () => {
+    throw new Error('Permission policy updates are not enabled.')
+  },
+}) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
     const pathname = url.pathname
@@ -139,9 +186,11 @@ export function createCompanionServer({ token, mcpManager }) {
       return sendJson(res, 200, {
         ok: true,
         ts: Date.now(),
+        pid: process.pid,
         version: '0.1.0',
         mcpServers: mcpManager.getConnectedCount(),
         mcpTools: mcpManager.getAllTools().length,
+        permissionPolicy: normalizePermissionPolicy(getPermissionPolicy()),
       })
     }
 
@@ -155,8 +204,13 @@ export function createCompanionServer({ token, mcpManager }) {
     if (isExec) {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      try { return await handleExec(req, res) }
-      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+      try { return await handleExec(req, res, getPermissionPolicy) }
+      catch (err) {
+        if (err instanceof PermissionPolicyError) {
+          return sendJson(res, 403, { error: err.message, code: 'permission_policy_violation' })
+        }
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
     }
 
     const isSessionStart = (
@@ -166,8 +220,13 @@ export function createCompanionServer({ token, mcpManager }) {
     if (isSessionStart) {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      try { return await handleSessionStart(req, res) }
-      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+      try { return await handleSessionStart(req, res, getPermissionPolicy) }
+      catch (err) {
+        if (err instanceof PermissionPolicyError) {
+          return sendJson(res, 403, { error: err.message, code: 'permission_policy_violation' })
+        }
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
     }
 
     // Session status — GET /api/(local-runtime|runtime)/session/:id
@@ -238,11 +297,36 @@ export function createCompanionServer({ token, mcpManager }) {
       }
     }
 
+    // Get permission policy
+    if (req.method === 'GET' && pathname === '/api/security/policy') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      return sendJson(res, 200, { policy: normalizePermissionPolicy(getPermissionPolicy()) })
+    }
+
+    // Update permission policy
+    if (req.method === 'POST' && pathname === '/api/security/policy') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const nextPolicy = normalizePermissionPolicy(body.policy || body, { strict: true })
+        await setPermissionPolicy(nextPolicy)
+        return sendJson(res, 200, { ok: true, policy: nextPolicy })
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message || 'Invalid request.' })
+      }
+    }
+
     sendJson(res, 404, { error: `Not found: ${pathname}` })
   })
 
+  // Start periodic session pruning
+  startSessionPruner()
+
   // Cleanup on server close
   server.on('close', () => {
+    stopSessionPruner()
     cleanupAllSessions()
   })
 

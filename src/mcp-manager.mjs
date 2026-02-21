@@ -17,6 +17,7 @@ const CLIENT_INFO = {
 
 export class McpManager {
   #servers = new Map() // name → ServerEntry
+  #startingLocks = new Set() // prevent concurrent startServer() for the same name
 
   constructor(serverConfigs) {
     this.#parseConfigs(serverConfigs)
@@ -66,37 +67,63 @@ export class McpManager {
     const entry = this.#servers.get(name)
     if (!entry) throw new Error(`Unknown MCP server: ${name}`)
 
-    // Stop if already running
-    if (entry.transport && !entry.transport.closed) {
-      await this.stopServer(name)
+    // Prevent concurrent startServer() calls for the same server
+    if (this.#startingLocks.has(name)) {
+      throw new Error(`MCP server "${name}" is already starting`)
     }
-
-    entry.status = 'starting'
-    entry.error = null
-    entry.tools = []
-
-    const { command, args = [], env = {}, cwd } = entry.config
+    this.#startingLocks.add(name)
 
     try {
+      // Stop if already running
+      if (entry.transport && !entry.transport.closed) {
+        await this.stopServer(name)
+      }
+
+      entry.status = 'starting'
+      entry.error = null
+      entry.tools = []
+
+      const { command, args = [], env = {}, cwd } = entry.config
       const childEnv = { ...process.env, ...env }
+
+      // Use a promise to detect early spawn failure
       const proc = spawn(command, args, {
         cwd: cwd || undefined,
         env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
-      // Handle spawn failure
-      proc.on('error', (err) => {
-        entry.status = 'error'
-        entry.error = `Spawn failed: ${err.message}`
-        console.error(`[MCP] "${name}" spawn error:`, err.message)
+      // Wait briefly for spawn errors (e.g. ENOENT) before proceeding
+      await new Promise((resolve, reject) => {
+        const onError = (err) => {
+          proc.removeListener('spawn', onSpawn)
+          reject(err)
+        }
+        const onSpawn = () => {
+          proc.removeListener('error', onError)
+          resolve()
+        }
+        proc.once('error', onError)
+        proc.once('spawn', onSpawn)
       })
 
+      // Register close handler after confirmed spawn
       proc.on('close', (code) => {
         if (entry.status !== 'stopped') {
           entry.status = 'disconnected'
+          entry.tools = [] // Clear tools when server disconnects
           entry.error = `Process exited with code ${code}`
           console.warn(`[MCP] "${name}" exited with code ${code}`)
+        }
+      })
+
+      // Register late error handler (after spawn succeeded)
+      proc.on('error', (err) => {
+        if (entry.status !== 'stopped') {
+          entry.status = 'error'
+          entry.tools = []
+          entry.error = `Process error: ${err.message}`
+          console.error(`[MCP] "${name}" error:`, err.message)
         }
       })
 
@@ -142,12 +169,15 @@ export class McpManager {
     } catch (err) {
       entry.status = 'error'
       entry.error = err.message
+      entry.tools = []
       // Cleanup transport if it was created
       if (entry.transport) {
         entry.transport.close()
         entry.transport = null
       }
       throw err
+    } finally {
+      this.#startingLocks.delete(name)
     }
   }
 

@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
+import {
+  normalizePermissionPolicy,
+  isPathWithinRoots,
+  PERMISSION_MODE_WORKSPACE,
+} from './permission-policy.mjs'
 
 const MAX_OUTPUT_CHARS = Number(process.env.TRAPEZOHE_MAX_OUTPUT || 200_000)
 const DEFAULT_TIMEOUT_MS = Number(process.env.TRAPEZOHE_TIMEOUT_MS || 60_000)
@@ -9,6 +15,24 @@ const SESSION_TTL_MS = Number(process.env.TRAPEZOHE_SESSION_TTL_MS || 1000 * 60 
 const MAX_SESSION_COUNT = Number(process.env.TRAPEZOHE_MAX_SESSIONS || 200)
 
 const sessions = new Map()
+let pruneIntervalRef = null
+
+const WORKSPACE_BLOCKED_COMMANDS = [
+  { pattern: /\bsudo\b/i, reason: 'sudo is disabled in workspace mode' },
+  { pattern: /\bsu\b/i, reason: 'user switching is disabled in workspace mode' },
+  { pattern: /\bshutdown\b/i, reason: 'system shutdown commands are disabled in workspace mode' },
+  { pattern: /\breboot\b/i, reason: 'system reboot commands are disabled in workspace mode' },
+  { pattern: /\bhalt\b/i, reason: 'system halt commands are disabled in workspace mode' },
+  { pattern: /\bpoweroff\b/i, reason: 'poweroff commands are disabled in workspace mode' },
+  { pattern: /\brm\s+-rf\s+\/(?![\w.-])/i, reason: 'destructive root deletes are blocked in workspace mode' },
+]
+
+export class PermissionPolicyError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'PermissionPolicyError'
+  }
+}
 
 function now() {
   return Date.now()
@@ -29,16 +53,129 @@ function shellCommandForPlatform(command) {
   return { bin: shell, args: ['-lc', command] }
 }
 
-export async function resolveCwd(inputCwd) {
-  const cwd = inputCwd && typeof inputCwd === 'string' && inputCwd.trim()
-    ? path.resolve(inputCwd.trim())
-    : process.cwd()
+export async function resolveCwd(inputCwd, permissionPolicy) {
+  const policy = normalizePermissionPolicy(permissionPolicy)
+  let cwd
+
+  if (inputCwd && typeof inputCwd === 'string' && inputCwd.trim()) {
+    cwd = path.resolve(inputCwd.trim())
+  } else if (policy.mode === PERMISSION_MODE_WORKSPACE && policy.workspaceRoots[0]) {
+    cwd = policy.workspaceRoots[0]
+  } else {
+    cwd = process.cwd()
+  }
 
   const stat = await fs.stat(cwd).catch(() => null)
   if (!stat || !stat.isDirectory()) {
     throw new Error(`Working directory does not exist: ${cwd}`)
   }
+
+  if (policy.mode === PERMISSION_MODE_WORKSPACE) {
+    if (policy.workspaceRoots.length === 0) {
+      throw new PermissionPolicyError('Workspace mode is enabled, but no workspace root is configured.')
+    }
+    // Resolve symlinks to prevent symlink-based workspace boundary escape
+    let realCwd
+    try {
+      realCwd = await fs.realpath(cwd)
+    } catch {
+      realCwd = cwd
+    }
+    if (!isPathWithinRoots(realCwd, policy.workspaceRoots)) {
+      throw new PermissionPolicyError(`Working directory is outside allowed workspace roots: ${cwd}`)
+    }
+  }
+
   return cwd
+}
+
+function shellTokenize(command) {
+  return command.match(/"[^"]*"|'[^']*'|\S+/g) || []
+}
+
+function stripQuotes(token) {
+  if (!token) return token
+  if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+    return token.slice(1, -1)
+  }
+  return token
+}
+
+function maybePathCandidates(token) {
+  const clean = stripQuotes(token)
+  if (!clean) return []
+  if (clean.includes('://')) return []
+
+  const candidates = []
+  const eqIdx = clean.indexOf('=')
+  if (eqIdx > 0 && eqIdx < clean.length - 1) {
+    candidates.push(clean.slice(eqIdx + 1))
+  }
+  candidates.push(clean)
+  return candidates
+}
+
+function looksLikePath(value) {
+  if (!value) return false
+  if (value.startsWith('-')) return false
+  if (value === '.' || value === '..') return true
+  if (value.startsWith('./') || value.startsWith('../')) return true
+  if (value.startsWith('~/')) return true
+  if (value.startsWith('/')) return true
+  if (/^[A-Za-z]:[\\/]/.test(value)) return true
+  return value.includes('/') || value.includes('\\')
+}
+
+function normalizeCandidateToAbsolute(candidate, cwd) {
+  if (!looksLikePath(candidate)) return null
+  if (candidate.startsWith('~/')) return path.resolve(os.homedir(), candidate.slice(2))
+  if (path.isAbsolute(candidate) || /^[A-Za-z]:[\\/]/.test(candidate)) {
+    return path.resolve(candidate)
+  }
+  return path.resolve(cwd, candidate)
+}
+
+// Shell metacharacters that could bypass path-based policy checks via
+// command substitution, process substitution, or globbing.
+const DANGEROUS_SHELL_PATTERNS = [
+  { pattern: /\$\(/, reason: 'command substitution $(...) is not allowed in workspace mode' },
+  { pattern: /`[^`]*`/, reason: 'backtick command substitution is not allowed in workspace mode' },
+  { pattern: /\$\{/, reason: 'parameter expansion ${...} is not allowed in workspace mode' },
+  { pattern: /<\(/, reason: 'process substitution <(...) is not allowed in workspace mode' },
+  { pattern: />\(/, reason: 'process substitution >(...) is not allowed in workspace mode' },
+]
+
+export function enforceCommandPolicy({ command, cwd, permissionPolicy }) {
+  const policy = normalizePermissionPolicy(permissionPolicy)
+  if (policy.mode !== PERMISSION_MODE_WORKSPACE) return
+
+  for (const rule of WORKSPACE_BLOCKED_COMMANDS) {
+    if (rule.pattern.test(command)) {
+      throw new PermissionPolicyError(`Command blocked by workspace policy: ${rule.reason}.`)
+    }
+  }
+
+  // Block shell metacharacters that can bypass path analysis
+  for (const rule of DANGEROUS_SHELL_PATTERNS) {
+    if (rule.pattern.test(command)) {
+      throw new PermissionPolicyError(`Command blocked by workspace policy: ${rule.reason}.`)
+    }
+  }
+
+  // Split by pipe / semicolon / && / || and analyze each sub-command
+  const subCommands = command.split(/\s*(?:\|{1,2}|&&|;)\s*/)
+  for (const sub of subCommands) {
+    const tokens = shellTokenize(sub)
+    for (const token of tokens) {
+      for (const candidate of maybePathCandidates(token)) {
+        const absPath = normalizeCandidateToAbsolute(candidate, cwd)
+        if (!absPath) continue
+        if (!isPathWithinRoots(absPath, policy.workspaceRoots)) {
+          throw new PermissionPolicyError(`Path escapes workspace boundary: ${candidate}`)
+        }
+      }
+    }
+  }
 }
 
 export function clampTimeout(input) {
@@ -211,8 +348,24 @@ export function pruneSessions() {
     if (!target) continue
     sessions.delete(target.id)
     if (target.status === 'running') {
+      if (target.timeoutRef) clearTimeout(target.timeoutRef)
       try { target.child.kill('SIGTERM') } catch { /* ignore */ }
     }
+  }
+}
+
+const PRUNE_INTERVAL_MS = 60_000
+
+export function startSessionPruner() {
+  if (pruneIntervalRef) return
+  pruneIntervalRef = setInterval(() => pruneSessions(), PRUNE_INTERVAL_MS)
+  if (pruneIntervalRef.unref) pruneIntervalRef.unref()
+}
+
+export function stopSessionPruner() {
+  if (pruneIntervalRef) {
+    clearInterval(pruneIntervalRef)
+    pruneIntervalRef = null
   }
 }
 
