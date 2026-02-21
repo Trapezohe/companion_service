@@ -1,0 +1,39 @@
+{
+  "name": "trapezohe-companion",
+  "version": "0.1.0",
+  "description": "Local companion daemon for Trapezohe AI — MCP server host & command runtime",
+  "type": "module",
+  "bin": {
+    "trapezohe-companion": "./bin/cli.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "install.sh",
+    "install.ps1",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node bin/cli.mjs start",
+    "test": "node --test src/*.test.mjs"
+  },
+  "keywords": [
+    "trapezohe",
+    "mcp",
+    "companion",
+    "ai",
+    "web3",
+    "chrome-extension"
+  ],
+  "author": "Trapezohe",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trapezohe/companion.git"
+  },
+  "homepage": "https://github.com/trapezohe/companion#readme"
+}
