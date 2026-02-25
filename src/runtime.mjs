@@ -81,7 +81,16 @@ export async function resolveCwd(inputCwd, permissionPolicy) {
     } catch {
       realCwd = cwd
     }
-    if (!isPathWithinRoots(realCwd, policy.workspaceRoots)) {
+    const workspaceRoots = await Promise.all(
+      policy.workspaceRoots.map(async (root) => {
+        try {
+          return await fs.realpath(root)
+        } catch {
+          return path.resolve(root)
+        }
+      }),
+    )
+    if (!isPathWithinRoots(realCwd, workspaceRoots)) {
       throw new PermissionPolicyError(`Working directory is outside allowed workspace roots: ${cwd}`)
     }
   }

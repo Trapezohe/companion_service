@@ -3,6 +3,46 @@
 
 $ErrorActionPreference = "Stop"
 
+$NonInteractive = $false
+$ExtId = ""
+$Mode = "workspace"
+$WorkspaceRoot = ""
+$EnableAutostart = $true
+$StartNow = $true
+
+for ($i = 0; $i -lt $args.Count; $i++) {
+    $arg = $args[$i]
+    switch ($arg) {
+        "--non-interactive" { $NonInteractive = $true; continue }
+        "-y" { $NonInteractive = $true; continue }
+        "--yes" { $NonInteractive = $true; continue }
+        "--ext-id" {
+            if ($i + 1 -lt $args.Count) {
+                $i++
+                $ExtId = $args[$i]
+            }
+            continue
+        }
+        "--mode" {
+            if ($i + 1 -lt $args.Count) {
+                $i++
+                $Mode = $args[$i]
+            }
+            continue
+        }
+        "--workspace" {
+            if ($i + 1 -lt $args.Count) {
+                $i++
+                $WorkspaceRoot = $args[$i]
+            }
+            continue
+        }
+        "--no-autostart" { $EnableAutostart = $false; continue }
+        "--no-start" { $StartNow = $false; continue }
+        default { continue }
+    }
+}
+
 Write-Host ""
 Write-Host "  ===============================" -ForegroundColor Cyan
 Write-Host "   Trapezohe Companion Installer  " -ForegroundColor Cyan
@@ -50,6 +90,26 @@ function Init-Config {
     Write-Host "  -> Initializing configuration..." -ForegroundColor Yellow
     & trapezohe-companion init 2>&1 | ForEach-Object { Write-Host "    $_" }
     Write-Host "  OK Config created" -ForegroundColor Green
+}
+
+function Run-Bootstrap {
+    Write-Host "  -> Running one-shot bootstrap..." -ForegroundColor Yellow
+    $bootstrapArgs = @("bootstrap", "--mode", $Mode)
+    if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+        $bootstrapArgs += @("--workspace", $WorkspaceRoot)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExtId)) {
+        $bootstrapArgs += @("--ext-id", $ExtId)
+    }
+    if (-not $EnableAutostart) {
+        $bootstrapArgs += "--no-autostart"
+    }
+    if (-not $StartNow) {
+        $bootstrapArgs += "--no-start"
+    }
+
+    & trapezohe-companion @bootstrapArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+    Write-Host "  OK Bootstrap complete" -ForegroundColor Green
 }
 
 # ── Register Native Messaging Host ──
@@ -102,9 +162,23 @@ function Setup-Autostart {
 
 Check-Node
 Install-Companion
+
+if ($NonInteractive) {
+    Run-Bootstrap
+    Write-Host ""
+    Write-Host "  Installation complete!" -ForegroundColor Green
+    Write-Host "  Companion has been set up in non-interactive mode."
+    Write-Host ""
+    exit 0
+}
+
 Init-Config
 Register-NativeHost
 Setup-Autostart
+
+if ($StartNow) {
+    & trapezohe-companion start -d 2>$null | Out-Null
+}
 
 Write-Host ""
 Write-Host "  Installation complete!" -ForegroundColor Green

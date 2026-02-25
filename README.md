@@ -20,10 +20,22 @@ The Trapezohe Chrome extension has limited capabilities due to browser sandbox r
 curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash
 ```
 
+Non-interactive (one command, no prompts):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash -s -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace ~/ghast-workspace
+```
+
 **Windows (PowerShell):**
 
 ```powershell
 irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex
+```
+
+Non-interactive (one command, no prompts):
+
+```powershell
+irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace "$HOME\\ghast-workspace"
 ```
 
 ### Manual Install (npm)
@@ -101,6 +113,7 @@ trapezohe-companion token       # Print access token
 trapezohe-companion policy      # Show current permission policy
 trapezohe-companion policy full
 trapezohe-companion policy workspace ~/trapezohe-workspace
+trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/ghast-workspace
 ```
 
 ## API Endpoints

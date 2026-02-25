@@ -12,6 +12,7 @@
  *   trapezohe-companion token               Show current access token
  *   trapezohe-companion register [ext-id]  Register Chrome Native Messaging host
  *   trapezohe-companion unregister         Remove Native Messaging host registration
+ *   trapezohe-companion bootstrap          One-shot setup for non-technical users
  */
 
 import { fork, execFile } from 'node:child_process'
@@ -38,6 +39,8 @@ import {
   PERMISSION_MODE_WORKSPACE,
   PERMISSION_MODE_FULL,
 } from '../src/permission-policy.mjs'
+import { loadCronStore } from '../src/cron-store.mjs'
+import { startCronScheduler, stopCronScheduler } from '../src/cron-scheduler.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const execFileAsync = promisify(execFile)
@@ -48,6 +51,31 @@ const flags = process.argv.slice(3)
 const DAEMON_START_TIMEOUT_MS = 4000
 const STOP_GRACE_MS = 5000
 const STOP_POLL_MS = 200
+
+function hasFlag(name) {
+  return flags.includes(name)
+}
+
+function getFlagValue(name) {
+  const index = flags.findIndex((item) => item === name)
+  if (index < 0 || index + 1 >= flags.length) return null
+  const value = flags[index + 1]
+  if (!value || value.startsWith('--')) return null
+  return value
+}
+
+function getMultiFlagValues(name) {
+  const values = []
+  for (let i = 0; i < flags.length; i += 1) {
+    if (flags[i] !== name) continue
+    const value = flags[i + 1]
+    if (value && !value.startsWith('--')) {
+      values.push(value)
+      i += 1
+    }
+  }
+  return values
+}
 
 async function main() {
   switch (command) {
@@ -69,6 +97,8 @@ async function main() {
       return handleRegister()
     case 'unregister':
       return handleUnregister()
+    case 'bootstrap':
+      return handleBootstrap()
     default:
       printHelp()
       process.exit(command === '--help' || command === '-h' ? 0 : 1)
@@ -241,6 +271,7 @@ async function handleStart() {
     if (shuttingDown) return
     shuttingDown = true
     console.log('\n[trapezohe-companion] Shutting down...')
+    stopCronScheduler()
     try {
       await mcpManager.stopAll()
     } catch (err) {
@@ -315,6 +346,14 @@ async function handleStart() {
     } else {
       console.log('  MCP:        No servers configured')
       console.log('')
+    }
+
+    // Start cron scheduler
+    try {
+      await loadCronStore()
+      startCronScheduler()
+    } catch (err) {
+      console.error(`  Cron:       Failed to start scheduler: ${err.message}`)
     }
 
     console.log('  Save the token in your Trapezohe extension:')
@@ -481,6 +520,8 @@ async function handlePolicy() {
 // ── Native Messaging Host Registration ──
 
 const NATIVE_HOST_NAME = 'com.trapezohe.companion'
+const AUTOSTART_SERVICE_NAME = 'trapezohe-companion'
+const AUTOSTART_WIN_TASK_NAME = 'TrapezoheCompanion'
 
 function getNativeHostManifestDir() {
   const platform = process.platform
@@ -502,7 +543,10 @@ function getNativeHostManifestPath() {
   return path.join(getNativeHostManifestDir(), `${NATIVE_HOST_NAME}.json`)
 }
 
-async function handleRegister() {
+async function registerNativeHost(
+  cliExtensionIds = [],
+  { allowConfigIds = true, failIfMissing = true, quiet = false } = {},
+) {
   // Resolve native-host.mjs absolute path (sibling of this script)
   const __dirname = path.dirname(__filename)
   const nativeHostScript = path.join(__dirname, 'native-host.mjs')
@@ -523,19 +567,20 @@ async function handleRegister() {
 
   // Collect extension IDs from CLI args + config
   const config = await loadConfig()
-  const extraIds = Array.isArray(config.extensionIds) ? config.extensionIds : []
-  const cliIds = flags.filter((f) => !f.startsWith('-'))
+  const extraIds = allowConfigIds && Array.isArray(config.extensionIds) ? config.extensionIds : []
+  const cliIds = cliExtensionIds
+    .filter((item) => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
   const allIds = Array.from(new Set([...extraIds, ...cliIds]))
 
   if (allIds.length === 0) {
-    console.error('[trapezohe-companion] At least one extension ID is required.')
-    console.error('')
-    console.error('  Usage: trapezohe-companion register <extension-id>')
-    console.error('')
-    console.error('  Find your extension ID at chrome://extensions/')
-    console.error('  Or set extensionIds in ~/.trapezohe/companion.json')
-    process.exit(1)
-    return
+    if (!failIfMissing) {
+      return null
+    }
+    throw new Error(
+      'At least one extension ID is required. Use "trapezohe-companion register <extension-id>" or set extensionIds in companion config.',
+    )
   }
 
   const allowedOrigins = allIds.map((id) => `chrome-extension://${id}/`)
@@ -555,32 +600,239 @@ async function handleRegister() {
   await fs.mkdir(manifestDir, { recursive: true })
   await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
 
-  console.log('[trapezohe-companion] Native messaging host registered.')
-  console.log(`  Manifest: ${manifestPath}`)
-  console.log(`  Host:     ${nativeHostScript}`)
-  console.log(`  Origins:  ${allowedOrigins.join(', ')}`)
+  if (!quiet) {
+    console.log('[trapezohe-companion] Native messaging host registered.')
+    console.log(`  Manifest: ${manifestPath}`)
+    console.log(`  Host:     ${nativeHostScript}`)
+    console.log(`  Origins:  ${allowedOrigins.join(', ')}`)
+  }
 
   // Windows: also register in Windows Registry
   if (process.platform === 'win32') {
     const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
     try {
       await execFileAsync('reg', ['add', regKey, '/ve', '/t', 'REG_SZ', '/d', manifestPath, '/f'])
-      console.log(`  Registry: ${regKey}`)
+      if (!quiet) {
+        console.log(`  Registry: ${regKey}`)
+      }
     } catch (err) {
-      console.error(`  Warning: Failed to register Windows registry key: ${err.message}`)
-      console.error(`  You may need to manually add: ${regKey} → ${manifestPath}`)
+      if (!quiet) {
+        console.error(`  Warning: Failed to register Windows registry key: ${err.message}`)
+        console.error(`  You may need to manually add: ${regKey} → ${manifestPath}`)
+      }
     }
   }
 
   // Persist extension IDs to config for future use
-  if (cliIds.length > 0 && JSON.stringify(allIds) !== JSON.stringify(extraIds)) {
+  if (JSON.stringify(allIds) !== JSON.stringify(extraIds)) {
     config.extensionIds = allIds
     await saveConfig(config)
-    console.log('  Extension IDs saved to config.')
+    if (!quiet) {
+      console.log('  Extension IDs saved to config.')
+    }
   }
 
-  console.log('')
-  console.log('  Restart Chrome for changes to take effect.')
+  if (!quiet) {
+    console.log('')
+    console.log('  Restart Chrome for changes to take effect.')
+  }
+
+  return {
+    manifestPath,
+    nativeHostScript,
+    allowedOrigins,
+    extensionIds: allIds,
+  }
+}
+
+async function installAutostart() {
+  if (process.platform === 'darwin') {
+    const plistDir = path.join(os.homedir(), 'Library', 'LaunchAgents')
+    const plistPath = path.join(plistDir, 'ai.trapezohe.companion.plist')
+    await fs.mkdir(plistDir, { recursive: true })
+
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.trapezohe.companion</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${process.execPath}</string>
+    <string>${__filename}</string>
+    <string>start</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${path.join(os.homedir(), '.trapezohe', 'companion.log')}</string>
+  <key>StandardErrorPath</key>
+  <string>${path.join(os.homedir(), '.trapezohe', 'companion.error.log')}</string>
+</dict>
+</plist>
+`
+
+    await fs.writeFile(plistPath, plist, 'utf8')
+    await execFileAsync('launchctl', ['unload', plistPath]).catch(() => undefined)
+    await execFileAsync('launchctl', ['load', plistPath]).catch(() => undefined)
+    return { ok: true, strategy: 'launchd', target: plistPath }
+  }
+
+  if (process.platform === 'linux') {
+    const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user')
+    const servicePath = path.join(serviceDir, `${AUTOSTART_SERVICE_NAME}.service`)
+    await fs.mkdir(serviceDir, { recursive: true })
+
+    const service = `[Unit]
+Description=Trapezohe Companion - Local MCP Server Host
+After=network.target
+
+[Service]
+ExecStart=${process.execPath} ${__filename} start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`
+    await fs.writeFile(servicePath, service, 'utf8')
+    await execFileAsync('systemctl', ['--user', 'daemon-reload']).catch(() => undefined)
+    await execFileAsync('systemctl', ['--user', 'enable', `${AUTOSTART_SERVICE_NAME}.service`]).catch(() => undefined)
+    await execFileAsync('systemctl', ['--user', 'restart', `${AUTOSTART_SERVICE_NAME}.service`]).catch(() => undefined)
+    return { ok: true, strategy: 'systemd', target: servicePath }
+  }
+
+  if (process.platform === 'win32') {
+    const taskCommand = `"${process.execPath}" "${__filename}" start`
+    await execFileAsync('schtasks', [
+      '/Create',
+      '/TN',
+      AUTOSTART_WIN_TASK_NAME,
+      '/SC',
+      'ONLOGON',
+      '/TR',
+      taskCommand,
+      '/F',
+    ])
+    await execFileAsync('schtasks', ['/Run', '/TN', AUTOSTART_WIN_TASK_NAME]).catch(() => undefined)
+    return { ok: true, strategy: 'schtasks', target: AUTOSTART_WIN_TASK_NAME }
+  }
+
+  return { ok: false, strategy: 'unsupported', target: process.platform }
+}
+
+async function startDaemonDetached() {
+  await execFileAsync(process.execPath, [__filename, 'start', '-d'])
+}
+
+async function handleRegister() {
+  try {
+    const cliIds = flags.filter((f) => !f.startsWith('-'))
+    await registerNativeHost(cliIds, { allowConfigIds: true, failIfMissing: true, quiet: false })
+  } catch (err) {
+    console.error(`[trapezohe-companion] ${err instanceof Error ? err.message : String(err)}`)
+    process.exit(1)
+  }
+}
+
+async function handleBootstrap() {
+  const jsonMode = hasFlag('--json')
+  const disableAutostart = hasFlag('--no-autostart')
+  const disableStart = hasFlag('--no-start')
+  const modeRaw = String(getFlagValue('--mode') || PERMISSION_MODE_WORKSPACE).trim().toLowerCase()
+  const mode = modeRaw === PERMISSION_MODE_FULL ? PERMISSION_MODE_FULL : PERMISSION_MODE_WORKSPACE
+  const workspaceRoots = getMultiFlagValues('--workspace')
+  const extensionIds = [
+    ...getMultiFlagValues('--ext-id'),
+    ...getMultiFlagValues('--extension-id'),
+  ]
+
+  const defaultWorkspace = path.join(os.homedir(), 'ghast-workspace')
+  const normalizedWorkspaceRoots = mode === PERMISSION_MODE_WORKSPACE
+    ? (workspaceRoots.length > 0 ? workspaceRoots : [defaultWorkspace])
+    : []
+
+  if (mode === PERMISSION_MODE_WORKSPACE) {
+    for (const root of normalizedWorkspaceRoots) {
+      await fs.mkdir(path.resolve(root), { recursive: true })
+    }
+  }
+
+  const init = await initConfig()
+  const config = await loadConfig()
+  const token = resolveToken(config)
+  const nextConfig = {
+    ...config,
+    token,
+    permissionPolicy: normalizePermissionPolicy({
+      mode,
+      workspaceRoots: normalizedWorkspaceRoots,
+    }),
+  }
+  await saveConfig(nextConfig)
+
+  let registerResult = null
+  if (extensionIds.length > 0) {
+    registerResult = await registerNativeHost(extensionIds, {
+      allowConfigIds: true,
+      failIfMissing: false,
+      quiet: true,
+    })
+  }
+
+  let autostartResult = { ok: false, strategy: 'disabled', target: '' }
+  if (!disableAutostart) {
+    autostartResult = await installAutostart()
+  }
+
+  let startResult = { ok: false, message: 'skipped' }
+  if (!disableStart) {
+    try {
+      await startDaemonDetached()
+      startResult = { ok: true, message: 'started' }
+    } catch (err) {
+      startResult = { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  const output = {
+    ok: true,
+    createdConfig: init.created,
+    configPath: getConfigPath(),
+    token,
+    mode,
+    workspaceRoots: nextConfig.permissionPolicy.workspaceRoots,
+    nativeHostRegistered: Boolean(registerResult),
+    extensionIds: registerResult?.extensionIds || [],
+    autostart: autostartResult,
+    daemon: startResult,
+  }
+
+  if (jsonMode) {
+    console.log(JSON.stringify(output))
+    return
+  }
+
+  console.log('[trapezohe-companion] Bootstrap complete.')
+  console.log(`  Config:      ${output.configPath}`)
+  console.log(`  Mode:        ${output.mode}`)
+  if (output.mode === PERMISSION_MODE_WORKSPACE) {
+    console.log(`  Workspace:   ${output.workspaceRoots.join(', ')}`)
+  }
+  if (output.nativeHostRegistered) {
+    console.log(`  Native host: registered (${output.extensionIds.join(', ')})`)
+  } else {
+    console.log('  Native host: skipped (pass --ext-id <extension-id> to register)')
+  }
+  if (autostartResult.ok) {
+    console.log(`  Auto-start:  enabled (${autostartResult.strategy})`)
+  } else {
+    console.log(`  Auto-start:  ${autostartResult.strategy}`)
+  }
+  console.log(`  Daemon:      ${startResult.ok ? 'running' : `not started (${startResult.message})`}`)
 }
 
 async function handleUnregister() {
@@ -625,6 +877,7 @@ Commands:
   config                Print config file path
   token                 Print access token
   policy                Show or update permission policy
+  bootstrap            One-shot setup + start (non-interactive friendly)
   register <ext-id>    Register Chrome Native Messaging host for auto-pairing
   unregister           Remove Native Messaging host registration
 
@@ -637,6 +890,7 @@ Examples:
   trapezohe-companion policy        # Print current policy JSON
   trapezohe-companion policy full
   trapezohe-companion policy workspace ~/trapezohe-workspace
+  trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/ghast-workspace
   trapezohe-companion register abc123  # Register native host for extension ID
 
 Config: ~/.trapezohe/companion.json

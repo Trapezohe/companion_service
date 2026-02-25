@@ -23,6 +23,14 @@ import {
   stopSessionPruner,
 } from './runtime.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
+import {
+  getJobs,
+  upsertJob,
+  removeJob,
+  getPendingRuns,
+  ackPendingRuns,
+} from './cron-store.mjs'
+import { rescheduleJob, unscheduleJob } from './cron-scheduler.mjs'
 
 // ── Auth rate limiter ──
 
@@ -315,6 +323,62 @@ export function createCompanionServer({
         return sendJson(res, 200, { ok: true, policy: nextPolicy })
       } catch (err) {
         return sendJson(res, 400, { ok: false, error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // ── Cron endpoints ──
+
+    // List all cron jobs
+    if (req.method === 'GET' && pathname === '/api/cron/jobs') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      return sendJson(res, 200, { jobs: getJobs() })
+    }
+
+    // Upsert a cron job (sync from extension)
+    if (req.method === 'POST' && pathname === '/api/cron/jobs') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        if (!body.id) return sendJson(res, 400, { error: '"id" is required.' })
+        await upsertJob(body)
+        rescheduleJob(body)
+        return sendJson(res, 200, { ok: true, id: body.id })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // Delete a cron job
+    const cronJobDeleteMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)$/)
+    if (req.method === 'DELETE' && cronJobDeleteMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const taskId = decodeURIComponent(cronJobDeleteMatch[1])
+      unscheduleJob(taskId)
+      const removed = await removeJob(taskId)
+      return sendJson(res, 200, { ok: true, removed })
+    }
+
+    // Get pending (missed) runs
+    if (req.method === 'GET' && pathname === '/api/cron/pending') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      return sendJson(res, 200, { pending: getPendingRuns() })
+    }
+
+    // Acknowledge pending runs
+    if (req.method === 'POST' && pathname === '/api/cron/pending/ack') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const taskIds = Array.isArray(body.taskIds) ? body.taskIds : []
+        await ackPendingRuns(taskIds)
+        return sendJson(res, 200, { ok: true, acked: taskIds.length })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }
     }
 

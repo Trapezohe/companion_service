@@ -11,6 +11,45 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+NON_INTERACTIVE=0
+EXT_ID=""
+MODE="workspace"
+WORKSPACE_ROOT=""
+ENABLE_AUTOSTART=1
+START_NOW=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --non-interactive|-y|--yes)
+      NON_INTERACTIVE=1
+      shift
+      ;;
+    --ext-id)
+      EXT_ID="${2:-}"
+      shift 2
+      ;;
+    --mode)
+      MODE="${2:-workspace}"
+      shift 2
+      ;;
+    --workspace)
+      WORKSPACE_ROOT="${2:-}"
+      shift 2
+      ;;
+    --no-autostart)
+      ENABLE_AUTOSTART=0
+      shift
+      ;;
+    --no-start)
+      START_NOW=0
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 echo ""
 echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}${BOLD}  ║     Trapezohe Companion — Installer          ║${NC}"
@@ -55,6 +94,27 @@ init_config() {
   echo -e "  ${YELLOW}→${NC} Initializing configuration..."
   trapezohe-companion init 2>&1 | sed 's/^/    /'
   echo -e "  ${GREEN}✓${NC} Config created"
+}
+
+run_bootstrap() {
+  echo -e "  ${YELLOW}→${NC} Running one-shot bootstrap..."
+  local cmd=(trapezohe-companion bootstrap --mode "$MODE")
+
+  if [[ -n "$WORKSPACE_ROOT" ]]; then
+    cmd+=(--workspace "$WORKSPACE_ROOT")
+  fi
+  if [[ -n "$EXT_ID" ]]; then
+    cmd+=(--ext-id "$EXT_ID")
+  fi
+  if [[ "$ENABLE_AUTOSTART" -eq 0 ]]; then
+    cmd+=(--no-autostart)
+  fi
+  if [[ "$START_NOW" -eq 0 ]]; then
+    cmd+=(--no-start)
+  fi
+
+  "${cmd[@]}" 2>&1 | sed 's/^/    /'
+  echo -e "  ${GREEN}✓${NC} Bootstrap complete"
 }
 
 # ── Register Native Messaging Host ──
@@ -177,9 +237,25 @@ EOF
 
 check_node
 install_companion
+
+if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
+  run_bootstrap
+  echo ""
+  echo -e "  ${GREEN}${BOLD}Installation complete!${NC}"
+  echo ""
+  echo "  Companion has been set up in non-interactive mode."
+  echo "  Config: ~/.trapezohe/companion.json"
+  echo ""
+  exit 0
+fi
+
 init_config
 register_native_host
 setup_autostart
+
+if [[ "$START_NOW" -eq 1 ]]; then
+  trapezohe-companion start -d >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo -e "  ${GREEN}${BOLD}Installation complete!${NC}"
