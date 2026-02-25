@@ -193,14 +193,17 @@ export function clampTimeout(input) {
   return Math.min(Math.max(value, 1000), MAX_TIMEOUT_MS)
 }
 
-export async function runCommand({ command, cwd, timeoutMs }) {
+export async function runCommand({ command, cwd, timeoutMs, env }) {
   const startedAt = now()
   const shell = shellCommandForPlatform(command)
+  const mergedEnv = env && typeof env === 'object' && Object.keys(env).length > 0
+    ? { ...process.env, ...env }
+    : process.env
 
   return new Promise((resolve) => {
     const child = spawn(shell.bin, shell.args, {
       cwd,
-      env: process.env,
+      env: mergedEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
@@ -268,12 +271,15 @@ export function makeSessionSnapshot(session) {
   }
 }
 
-export function startCommandSession({ id, command, cwd, timeoutMs }) {
+export function startCommandSession({ id, command, cwd, timeoutMs, env }) {
   const startedAt = now()
   const shell = shellCommandForPlatform(command)
+  const mergedEnv = env && typeof env === 'object' && Object.keys(env).length > 0
+    ? { ...process.env, ...env }
+    : process.env
   const child = spawn(shell.bin, shell.args, {
     cwd,
-    env: process.env,
+    env: mergedEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 

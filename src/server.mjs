@@ -31,6 +31,7 @@ import {
   ackPendingRuns,
 } from './cron-store.mjs'
 import { rescheduleJob, unscheduleJob } from './cron-scheduler.mjs'
+import { extractSkillAssets, removeSkillAssets } from './skill-assets.mjs'
 
 // ── Auth rate limiter ──
 
@@ -59,7 +60,7 @@ function sendJson(res, status, payload) {
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   })
   res.end(JSON.stringify(payload))
 }
@@ -69,14 +70,14 @@ function isLoopback(addr) {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, maxSize = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
 
     req.on('data', (chunk) => {
       size += chunk.length
-      if (size > 1024 * 1024) {
+      if (size > maxSize) {
         reject(new Error('Request body too large.'))
         req.destroy()
         return
@@ -134,7 +135,8 @@ async function handleExec(req, res, getPermissionPolicy) {
   const cwd = await resolveCwd(body.cwd, permissionPolicy)
   enforceCommandPolicy({ command, cwd, permissionPolicy })
   const timeoutMs = clampTimeout(body.timeoutMs)
-  const result = await runCommand({ command, cwd, timeoutMs })
+  const env = body.env && typeof body.env === 'object' ? body.env : undefined
+  const result = await runCommand({ command, cwd, timeoutMs, env })
   sendJson(res, 200, { ...result, command, cwd })
 }
 
@@ -148,9 +150,10 @@ async function handleSessionStart(req, res, getPermissionPolicy) {
   const cwd = await resolveCwd(body.cwd, permissionPolicy)
   enforceCommandPolicy({ command, cwd, permissionPolicy })
   const timeoutMs = clampTimeout(body.timeoutMs)
+  const env = body.env && typeof body.env === 'object' ? body.env : undefined
   pruneSessions()
   const id = randomBytes(16).toString('hex')
-  const session = startCommandSession({ id, command, cwd, timeoutMs })
+  const session = startCommandSession({ id, command, cwd, timeoutMs, env })
   sendJson(res, 200, makeSessionSnapshot(session))
 }
 
@@ -379,6 +382,42 @@ export function createCompanionServer({
         return sendJson(res, 200, { ok: true, acked: taskIds.length })
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // ── Skill asset endpoints ──
+
+    // Extract skill assets to disk
+    if (req.method === 'POST' && pathname === '/api/skills/extract') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req, 6 * 1024 * 1024)
+        const { skillName, assets, skillMd } = body
+        if (!skillName || typeof skillName !== 'string') {
+          return sendJson(res, 400, { error: '"skillName" is required.' })
+        }
+        if (!Array.isArray(assets)) {
+          return sendJson(res, 400, { error: '"assets" must be an array.' })
+        }
+        const result = await extractSkillAssets(skillName, assets, skillMd)
+        return sendJson(res, 200, { ok: true, ...result })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Failed to extract skill assets.' })
+      }
+    }
+
+    // Remove skill assets from disk — DELETE /api/skills/:name
+    const skillDeleteMatch = pathname.match(/^\/api\/skills\/([^/]+)$/)
+    if (req.method === 'DELETE' && skillDeleteMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const skillName = decodeURIComponent(skillDeleteMatch[1])
+      try {
+        const result = await removeSkillAssets(skillName)
+        return sendJson(res, 200, { ok: true, ...result })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Failed to remove skill assets.' })
       }
     }
 
