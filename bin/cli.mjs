@@ -519,28 +519,76 @@ async function handlePolicy() {
 
 // ── Native Messaging Host Registration ──
 
-const NATIVE_HOST_NAME = 'com.trapezohe.companion'
+const NATIVE_HOST_NAMES = ['com.ghast.companion', 'com.trapezohe.companion']
 const AUTOSTART_SERVICE_NAME = 'trapezohe-companion'
 const AUTOSTART_WIN_TASK_NAME = 'TrapezoheCompanion'
+const DEFAULT_EXTENSION_IDS = ['olngglipkifpkolknipcbdcifbkcfhkk']
 
-function getNativeHostManifestDir() {
+function getNativeHostManifestDirs() {
   const platform = process.platform
   const home = os.homedir()
 
   if (platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts')
+    return [
+      path.join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts'),
+      path.join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts'),
+      path.join(home, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts'),
+      path.join(home, 'Library', 'Application Support', 'Microsoft Edge', 'NativeMessagingHosts'),
+    ]
   }
   if (platform === 'linux') {
-    return path.join(home, '.config', 'google-chrome', 'NativeMessagingHosts')
+    return [
+      path.join(home, '.config', 'google-chrome', 'NativeMessagingHosts'),
+      path.join(home, '.config', 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts'),
+      path.join(home, '.config', 'chromium', 'NativeMessagingHosts'),
+      path.join(home, '.config', 'microsoft-edge', 'NativeMessagingHosts'),
+    ]
   }
   if (platform === 'win32') {
-    return path.join(home, '.trapezohe')
+    return [path.join(home, '.trapezohe')]
   }
   throw new Error(`Unsupported platform: ${platform}`)
 }
 
-function getNativeHostManifestPath() {
-  return path.join(getNativeHostManifestDir(), `${NATIVE_HOST_NAME}.json`)
+function getNativeHostManifestTargets() {
+  const dirs = getNativeHostManifestDirs()
+  const targets = []
+  for (const hostName of NATIVE_HOST_NAMES) {
+    for (const dir of dirs) {
+      targets.push({
+        hostName,
+        dir,
+        manifestPath: path.join(dir, `${hostName}.json`),
+      })
+    }
+  }
+  return targets
+}
+
+async function resolveNativeHostExecutable(nativeHostScript) {
+  if (process.platform === 'win32') {
+    return nativeHostScript
+  }
+
+  // Deploy native host files to ~/.trapezohe/ instead of the source directory.
+  // Chrome on macOS cannot execute files under ~/Desktop/ due to TCC sandbox restrictions.
+  const deployDir = path.join(os.homedir(), '.trapezohe')
+  await fs.mkdir(deployDir, { recursive: true })
+
+  // Copy native-host.mjs to the deploy directory
+  const deployedScript = path.join(deployDir, 'native-host.mjs')
+  await fs.copyFile(nativeHostScript, deployedScript)
+  await fs.chmod(deployedScript, 0o755)
+
+  // GUI-launched Chromium browsers may not inherit shell PATH (nvm/node not found).
+  // Use a stable launcher with absolute process.execPath so native messaging can always spawn Node.
+  const launcherPath = path.join(deployDir, 'native-host-launcher.sh')
+  const launcher = `#!/bin/sh
+exec "${process.execPath}" "${deployedScript}" "$@"
+`
+  await fs.writeFile(launcherPath, launcher, 'utf8')
+  await fs.chmod(launcherPath, 0o755)
+  return launcherPath
 }
 
 async function registerNativeHost(
@@ -585,40 +633,48 @@ async function registerNativeHost(
 
   const allowedOrigins = allIds.map((id) => `chrome-extension://${id}/`)
 
-  // Build manifest
-  const manifest = {
-    name: NATIVE_HOST_NAME,
-    description: 'Trapezohe Companion — local runtime bridge for the Trapezohe browser extension',
-    path: nativeHostScript,
-    type: 'stdio',
-    allowed_origins: allowedOrigins,
-  }
+  const nativeHostExecutable = await resolveNativeHostExecutable(nativeHostScript)
 
-  // Write manifest to OS-specific location
-  const manifestDir = getNativeHostManifestDir()
-  const manifestPath = getNativeHostManifestPath()
-  await fs.mkdir(manifestDir, { recursive: true })
-  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+  // Write manifest(s) for multiple host aliases and Chromium browser channels.
+  const manifestTargets = getNativeHostManifestTargets()
+  for (const target of manifestTargets) {
+    const manifest = {
+      name: target.hostName,
+      description: 'Ghast Companion — local runtime bridge for the Ghast browser extension',
+      path: nativeHostExecutable,
+      type: 'stdio',
+      allowed_origins: allowedOrigins,
+    }
+    await fs.mkdir(target.dir, { recursive: true })
+    await fs.writeFile(target.manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+  }
 
   if (!quiet) {
     console.log('[trapezohe-companion] Native messaging host registered.')
-    console.log(`  Manifest: ${manifestPath}`)
-    console.log(`  Host:     ${nativeHostScript}`)
+    console.log(`  Hosts:    ${NATIVE_HOST_NAMES.join(', ')}`)
+    console.log(`  Manifests (${manifestTargets.length}):`)
+    for (const target of manifestTargets) {
+      console.log(`    - ${target.manifestPath}`)
+    }
+    console.log(`  Host:     ${nativeHostExecutable}`)
     console.log(`  Origins:  ${allowedOrigins.join(', ')}`)
   }
 
   // Windows: also register in Windows Registry
   if (process.platform === 'win32') {
-    const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
-    try {
-      await execFileAsync('reg', ['add', regKey, '/ve', '/t', 'REG_SZ', '/d', manifestPath, '/f'])
-      if (!quiet) {
-        console.log(`  Registry: ${regKey}`)
-      }
-    } catch (err) {
-      if (!quiet) {
-        console.error(`  Warning: Failed to register Windows registry key: ${err.message}`)
-        console.error(`  You may need to manually add: ${regKey} → ${manifestPath}`)
+    for (const hostName of NATIVE_HOST_NAMES) {
+      const manifestPath = path.join(getNativeHostManifestDirs()[0], `${hostName}.json`)
+      const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${hostName}`
+      try {
+        await execFileAsync('reg', ['add', regKey, '/ve', '/t', 'REG_SZ', '/d', manifestPath, '/f'])
+        if (!quiet) {
+          console.log(`  Registry: ${regKey}`)
+        }
+      } catch (err) {
+        if (!quiet) {
+          console.error(`  Warning: Failed to register Windows registry key: ${err.message}`)
+          console.error(`  You may need to manually add: ${regKey} → ${manifestPath}`)
+        }
       }
     }
   }
@@ -638,10 +694,11 @@ async function registerNativeHost(
   }
 
   return {
-    manifestPath,
-    nativeHostScript,
+    manifestPaths: manifestTargets.map((item) => item.manifestPath),
+    nativeHostScript: nativeHostExecutable,
     allowedOrigins,
     extensionIds: allIds,
+    hostNames: [...NATIVE_HOST_NAMES],
   }
 }
 
@@ -745,10 +802,13 @@ async function handleBootstrap() {
   const modeRaw = String(getFlagValue('--mode') || PERMISSION_MODE_WORKSPACE).trim().toLowerCase()
   const mode = modeRaw === PERMISSION_MODE_FULL ? PERMISSION_MODE_FULL : PERMISSION_MODE_WORKSPACE
   const workspaceRoots = getMultiFlagValues('--workspace')
-  const extensionIds = [
+  const requestedExtensionIds = [
     ...getMultiFlagValues('--ext-id'),
     ...getMultiFlagValues('--extension-id'),
   ]
+  const extensionIds = requestedExtensionIds.length > 0
+    ? requestedExtensionIds
+    : DEFAULT_EXTENSION_IDS
 
   const defaultWorkspace = path.join(os.homedir(), 'ghast-workspace')
   const normalizedWorkspaceRoots = mode === PERMISSION_MODE_WORKSPACE
@@ -774,14 +834,11 @@ async function handleBootstrap() {
   }
   await saveConfig(nextConfig)
 
-  let registerResult = null
-  if (extensionIds.length > 0) {
-    registerResult = await registerNativeHost(extensionIds, {
-      allowConfigIds: true,
-      failIfMissing: false,
-      quiet: true,
-    })
-  }
+  const registerResult = await registerNativeHost(extensionIds, {
+    allowConfigIds: true,
+    failIfMissing: false,
+    quiet: true,
+  })
 
   let autostartResult = { ok: false, strategy: 'disabled', target: '' }
   if (!disableAutostart) {
@@ -825,7 +882,7 @@ async function handleBootstrap() {
   if (output.nativeHostRegistered) {
     console.log(`  Native host: registered (${output.extensionIds.join(', ')})`)
   } else {
-    console.log('  Native host: skipped (pass --ext-id <extension-id> to register)')
+    console.log('  Native host: skipped')
   }
   if (autostartResult.ok) {
     console.log(`  Auto-start:  enabled (${autostartResult.strategy})`)
@@ -836,28 +893,40 @@ async function handleBootstrap() {
 }
 
 async function handleUnregister() {
-  const manifestPath = getNativeHostManifestPath()
+  const targets = getNativeHostManifestTargets()
+  const removed = []
 
-  try {
-    await fs.unlink(manifestPath)
-    console.log('[trapezohe-companion] Native messaging host unregistered.')
-    console.log(`  Removed: ${manifestPath}`)
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      console.log('[trapezohe-companion] No native messaging host registration found.')
-      return
+  for (const target of targets) {
+    try {
+      await fs.unlink(target.manifestPath)
+      removed.push(target.manifestPath)
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw err
+      }
     }
-    throw err
+  }
+
+  if (removed.length === 0) {
+    console.log('[trapezohe-companion] No native messaging host registration found.')
+    return
+  }
+
+  console.log('[trapezohe-companion] Native messaging host unregistered.')
+  for (const manifestPath of removed) {
+    console.log(`  Removed: ${manifestPath}`)
   }
 
   // Windows: remove registry key
   if (process.platform === 'win32') {
-    const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`
-    try {
-      await execFileAsync('reg', ['delete', regKey, '/f'])
-      console.log(`  Registry key removed: ${regKey}`)
-    } catch {
-      // Ignore if key doesn't exist
+    for (const hostName of NATIVE_HOST_NAMES) {
+      const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${hostName}`
+      try {
+        await execFileAsync('reg', ['delete', regKey, '/f'])
+        console.log(`  Registry key removed: ${regKey}`)
+      } catch {
+        // Ignore if key doesn't exist
+      }
     }
   }
 }

@@ -77,12 +77,17 @@ function readMessage() {
 }
 
 function sendMessage(obj) {
-  const json = JSON.stringify(obj)
-  const bodyBuf = Buffer.from(json, 'utf8')
-  const headerBuf = Buffer.alloc(4)
-  headerBuf.writeUInt32LE(bodyBuf.length, 0)
-  process.stdout.write(headerBuf)
-  process.stdout.write(bodyBuf)
+  return new Promise((resolve, reject) => {
+    const json = JSON.stringify(obj)
+    const bodyBuf = Buffer.from(json, 'utf8')
+    const headerBuf = Buffer.alloc(4)
+    headerBuf.writeUInt32LE(bodyBuf.length, 0)
+    const fullBuf = Buffer.concat([headerBuf, bodyBuf])
+    process.stdout.write(fullBuf, (err) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
 }
 
 // ── Config Reader ──
@@ -210,12 +215,19 @@ async function main() {
   }
 
   const response = await handleRequest(msg)
-  sendMessage(response)
+  await sendMessage(response)
 
-  // Chrome Native Messaging in sendNativeMessage mode: one request, one response, then exit.
+  // Ensure stdout is fully flushed before exiting.
+  // process.stdout.write() on a pipe is async — exiting immediately can lose data.
+  process.stdin.destroy()
   process.exit(0)
 }
 
-main().catch(() => {
+main().catch(async (err) => {
+  try {
+    await sendMessage({ error: err?.message || 'Native host internal error' })
+  } catch {
+    // ignore — stdout may already be broken
+  }
   process.exit(1)
 })
