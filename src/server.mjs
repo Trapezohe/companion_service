@@ -14,10 +14,16 @@ import {
   enforceCommandPolicy,
   PermissionPolicyError,
   startCommandSession,
+  addSessionExitListener,
   getSessionById,
   makeSessionSnapshot,
+  listSessions,
+  getSessionLog,
   pruneSessions,
   stopSession,
+  writeToSession,
+  sendKeysToSession,
+  listSessionEvents,
   cleanupAllSessions,
   startSessionPruner,
   stopSessionPruner,
@@ -32,6 +38,23 @@ import {
 } from './cron-store.mjs'
 import { rescheduleJob, unscheduleJob } from './cron-scheduler.mjs'
 import { extractSkillAssets, removeSkillAssets } from './skill-assets.mjs'
+import {
+  createRun,
+  getRunById,
+  getRunDiagnostics,
+  listRuns,
+  loadRunStore,
+  updateRun,
+  flushRunStore,
+} from './run-store.mjs'
+import {
+  createApproval,
+  resolveApproval,
+  getApprovalById,
+  listPendingApprovals,
+  loadApprovalStore,
+  flushApprovalStore,
+} from './approval-store.mjs'
 
 // ── Auth rate limiter ──
 
@@ -136,11 +159,54 @@ async function handleExec(req, res, getPermissionPolicy) {
   enforceCommandPolicy({ command, cwd, permissionPolicy })
   const timeoutMs = clampTimeout(body.timeoutMs)
   const env = body.env && typeof body.env === 'object' ? body.env : undefined
-  const result = await runCommand({ command, cwd, timeoutMs, env })
+
+  const run = await createRun({
+    type: 'exec',
+    state: 'running',
+    startedAt: Date.now(),
+    summary: 'Executing local command',
+    meta: {
+      command: command.slice(0, 500),
+      cwd,
+      timeoutMs,
+    },
+  }).catch(() => null)
+
+  let result
+  try {
+    result = await runCommand({ command, cwd, timeoutMs, env })
+  } catch (err) {
+    // Mark run as failed on unexpected errors so it doesn't stay stuck in 'running'.
+    if (run?.runId) {
+      await updateRun(run.runId, {
+        state: 'failed',
+        finishedAt: Date.now(),
+        summary: 'Local command failed (unexpected error)',
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined)
+    }
+    throw err
+  }
+  if (run?.runId) {
+    await updateRun(run.runId, {
+      state: result.ok ? 'done' : 'failed',
+      finishedAt: Date.now(),
+      summary: result.ok ? 'Local command completed' : 'Local command failed',
+      error: result.ok ? undefined : result.stderr,
+      meta: {
+        command: command.slice(0, 500),
+        cwd,
+        timeoutMs,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+      },
+    }).catch(() => undefined)
+  }
   sendJson(res, 200, { ...result, command, cwd })
 }
 
-async function handleSessionStart(req, res, getPermissionPolicy) {
+async function handleSessionStart(req, res, getPermissionPolicy, registerSessionRun) {
   const body = await readJsonBody(req)
   const command = typeof body.command === 'string' ? body.command.trim() : ''
   if (!command) return sendJson(res, 400, { error: 'command is required.' })
@@ -153,6 +219,11 @@ async function handleSessionStart(req, res, getPermissionPolicy) {
   const env = body.env && typeof body.env === 'object' ? body.env : undefined
   pruneSessions()
   const id = randomBytes(16).toString('hex')
+
+  // Pre-register run BEFORE starting the session so that the exit listener
+  // can always find the runId, even if the process exits immediately.
+  await registerSessionRun({ id, command, cwd, timeoutMs })
+
   const session = startCommandSession({ id, command, cwd, timeoutMs, env })
   sendJson(res, 200, makeSessionSnapshot(session))
 }
@@ -171,6 +242,113 @@ async function handleSessionStop(sessionId, req, res) {
   sendJson(res, 200, makeSessionSnapshot(session))
 }
 
+async function handleSessionWrite(sessionId, req, res) {
+  const body = await readJsonBody(req)
+  const text = typeof body.text === 'string' ? body.text : String(body.text || '')
+  if (!text && !body.submit) {
+    return sendJson(res, 400, { error: 'text is required unless submit=true.' })
+  }
+  const result = writeToSession(sessionId, text, Boolean(body.submit))
+  sendJson(res, 200, result)
+}
+
+async function handleSessionSendKeys(sessionId, req, res) {
+  const body = await readJsonBody(req)
+  const keys = typeof body.keys === 'string' ? body.keys.trim() : ''
+  if (!keys) {
+    return sendJson(res, 400, { error: 'keys is required.' })
+  }
+  const result = sendKeysToSession(sessionId, keys)
+  sendJson(res, 200, result)
+}
+
+function parseSessionStatusFilter(rawStatus) {
+  if (typeof rawStatus !== 'string' || !rawStatus.trim()) return undefined
+  const status = rawStatus.trim().toLowerCase()
+  if (status !== 'running' && status !== 'exited') {
+    throw new Error('status must be one of: running, exited')
+  }
+  return status
+}
+
+function handleSessionList(url, res) {
+  const status = parseSessionStatusFilter(url.searchParams.get('status'))
+  const result = listSessions({
+    status,
+    limit: url.searchParams.get('limit'),
+    offset: url.searchParams.get('offset'),
+  })
+  sendJson(res, 200, { ok: true, ...result })
+}
+
+function handleSessionLog(sessionId, url, res) {
+  const result = getSessionLog(sessionId, {
+    stream: url.searchParams.get('stream') || 'both',
+    limit: url.searchParams.get('limit'),
+    offset: url.searchParams.get('offset'),
+  })
+  if (!result) return sendJson(res, 404, { error: 'Session not found.' })
+  sendJson(res, 200, result)
+}
+
+function handleSessionEvents(url, res) {
+  const result = listSessionEvents({
+    after: url.searchParams.get('after'),
+    limit: url.searchParams.get('limit'),
+  })
+  sendJson(res, 200, result)
+}
+
+function parseRunType(rawType) {
+  if (typeof rawType !== 'string' || !rawType.trim()) return undefined
+  const normalized = rawType.trim().toLowerCase()
+  if (normalized !== 'exec' && normalized !== 'session' && normalized !== 'cron' && normalized !== 'heartbeat') {
+    throw new Error('type must be one of: exec, session, cron, heartbeat')
+  }
+  return normalized
+}
+
+function parseRunState(rawState) {
+  if (typeof rawState !== 'string' || !rawState.trim()) return undefined
+  const normalized = rawState.trim().toLowerCase()
+  if (
+    normalized !== 'queued'
+    && normalized !== 'running'
+    && normalized !== 'waiting_approval'
+    && normalized !== 'retrying'
+    && normalized !== 'done'
+    && normalized !== 'failed'
+  ) {
+    throw new Error('state must be one of: queued, running, waiting_approval, retrying, done, failed')
+  }
+  return normalized
+}
+
+async function handleRunList(url, res) {
+  const result = await listRuns({
+    type: parseRunType(url.searchParams.get('type')),
+    state: parseRunState(url.searchParams.get('state')),
+    limit: url.searchParams.get('limit'),
+    offset: url.searchParams.get('offset'),
+  })
+  sendJson(res, 200, { ok: true, ...result })
+}
+
+async function handleRunById(runId, res) {
+  const run = await getRunById(runId)
+  if (!run) {
+    return sendJson(res, 404, { error: 'Run not found.' })
+  }
+  sendJson(res, 200, { ok: true, run })
+}
+
+async function handleRunDiagnostics(url, res) {
+  const diagnostics = await getRunDiagnostics({
+    limit: url.searchParams.get('limit'),
+  })
+  sendJson(res, 200, diagnostics)
+}
+
 // ── Server factory ──
 
 export function createCompanionServer({
@@ -181,6 +359,55 @@ export function createCompanionServer({
     throw new Error('Permission policy updates are not enabled.')
   },
 }) {
+  void loadRunStore().catch(() => undefined)
+  void loadApprovalStore().catch(() => undefined)
+  const sessionRunIndex = new Map()
+  const detachSessionExitListener = addSessionExitListener((session) => {
+    const runId = sessionRunIndex.get(session.sessionId || '')
+    if (!runId) return
+    const succeeded = !session.timedOut && session.exitCode === 0
+    void updateRun(runId, {
+      state: succeeded ? 'done' : 'failed',
+      finishedAt: session.finishedAt || Date.now(),
+      summary: succeeded ? 'Session completed' : 'Session failed',
+      error: succeeded ? undefined : `exitCode=${session.exitCode}, timedOut=${Boolean(session.timedOut)}`,
+      meta: {
+        sessionId: session.sessionId,
+        command: session.command?.slice(0, 500),
+        cwd: session.cwd,
+        exitCode: session.exitCode,
+        timedOut: session.timedOut,
+        durationMs: session.durationMs,
+      },
+    }).catch(() => undefined)
+      .finally(() => {
+        sessionRunIndex.delete(session.sessionId || '')
+      })
+  })
+
+  /** Register a run for a session. Must be awaited before the session starts
+   *  so that sessionRunIndex is populated before a fast-exiting process can
+   *  trigger the exit listener. */
+  const registerSessionRun = async (session) => {
+    try {
+      const run = await createRun({
+        type: 'session',
+        state: 'running',
+        startedAt: Date.now(),
+        summary: 'Session started',
+        meta: {
+          sessionId: session.id,
+          command: session.command?.slice(0, 500),
+          cwd: session.cwd,
+          timeoutMs: session.timeoutMs,
+        },
+      })
+      sessionRunIndex.set(session.id, run.runId)
+    } catch {
+      // createRun failure is non-fatal — session still runs, just no run record.
+    }
+  }
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
     const pathname = url.pathname
@@ -231,13 +458,34 @@ export function createCompanionServer({
     if (isSessionStart) {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      try { return await handleSessionStart(req, res, getPermissionPolicy) }
+      try { return await handleSessionStart(req, res, getPermissionPolicy, registerSessionRun) }
       catch (err) {
         if (err instanceof PermissionPolicyError) {
           return sendJson(res, 403, { error: err.message, code: 'permission_policy_violation' })
         }
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }
+    }
+
+    const isSessionList = (
+      req.method === 'GET' &&
+      (pathname === '/api/local-runtime/sessions' || pathname === '/api/runtime/sessions')
+    )
+    if (isSessionList) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return handleSessionList(url, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    const sessionLogMatch = pathname.match(
+      /^\/api\/(?:local-runtime|runtime)\/sessions\/([^/]+)\/log$/
+    )
+    if (req.method === 'GET' && sessionLogMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return handleSessionLog(decodeURIComponent(sessionLogMatch[1]), url, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
     }
 
     // Session status — GET /api/(local-runtime|runtime)/session/:id
@@ -259,6 +507,133 @@ export function createCompanionServer({
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       try { return await handleSessionStop(decodeURIComponent(sessionStopMatch[1]), req, res) }
       catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // Session stdin write — POST /api/(local-runtime|runtime)/session/:id/write
+    const sessionWriteMatch = pathname.match(
+      /^\/api\/(?:local-runtime|runtime)\/session\/([^/]+)\/write$/,
+    )
+    if (req.method === 'POST' && sessionWriteMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return await handleSessionWrite(decodeURIComponent(sessionWriteMatch[1]), req, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // Session send keys — POST /api/(local-runtime|runtime)/session/:id/send-keys
+    const sessionSendKeysMatch = pathname.match(
+      /^\/api\/(?:local-runtime|runtime)\/session\/([^/]+)\/send-keys$/,
+    )
+    if (req.method === 'POST' && sessionSendKeysMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return await handleSessionSendKeys(decodeURIComponent(sessionSendKeysMatch[1]), req, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // Session events — GET /api/(local-runtime|runtime)/session-events
+    const isSessionEvents = (
+      req.method === 'GET'
+      && (pathname === '/api/local-runtime/session-events' || pathname === '/api/runtime/session-events')
+    )
+    if (isSessionEvents) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return handleSessionEvents(url, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // Runs diagnostics — GET /api/(local-runtime|runtime)/runs/diagnostics
+    const isRunDiagnostics = (
+      req.method === 'GET'
+      && (pathname === '/api/local-runtime/runs/diagnostics' || pathname === '/api/runtime/runs/diagnostics')
+    )
+    if (isRunDiagnostics) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return await handleRunDiagnostics(url, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // Runs list — GET /api/(local-runtime|runtime)/runs
+    const isRunList = (
+      req.method === 'GET'
+      && (pathname === '/api/local-runtime/runs' || pathname === '/api/runtime/runs')
+    )
+    if (isRunList) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return await handleRunList(url, res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // Run by id — GET /api/(local-runtime|runtime)/runs/:id
+    const runByIdMatch = pathname.match(/^\/api\/(?:local-runtime|runtime)\/runs\/([^/]+)$/)
+    if (req.method === 'GET' && runByIdMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try { return await handleRunById(decodeURIComponent(runByIdMatch[1]), res) }
+      catch (err) { return sendJson(res, 400, { error: err.message || 'Invalid request.' }) }
+    }
+
+    // ── Approval endpoints (Phase B SoT) ──
+
+    // Create approval — POST /api/runtime/approvals
+    if (req.method === 'POST' && pathname === '/api/runtime/approvals') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const record = await createApproval(body)
+        return sendJson(res, 201, record)
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // List pending approvals — GET /api/runtime/approvals/pending
+    if (req.method === 'GET' && pathname === '/api/runtime/approvals/pending') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const pending = await listPendingApprovals()
+        return sendJson(res, 200, { approvals: pending })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // Resolve approval — POST /api/runtime/approvals/:id/resolve
+    const approvalResolveMatch = pathname.match(/^\/api\/runtime\/approvals\/([^/]+)\/resolve$/)
+    if (req.method === 'POST' && approvalResolveMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const requestId = decodeURIComponent(approvalResolveMatch[1])
+        const resolution = String(body.resolution || 'rejected')
+        const resolvedBy = body.resolvedBy || undefined
+        const record = await resolveApproval(requestId, resolution, resolvedBy)
+        if (!record) return sendJson(res, 404, { error: 'Approval not found.' })
+        return sendJson(res, 200, record)
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // Get approval by id — GET /api/runtime/approvals/:id
+    const approvalByIdMatch = pathname.match(/^\/api\/runtime\/approvals\/([^/]+)$/)
+    if (req.method === 'GET' && approvalByIdMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const requestId = decodeURIComponent(approvalByIdMatch[1])
+        const record = await getApprovalById(requestId)
+        if (!record) return sendJson(res, 404, { error: 'Approval not found.' })
+        return sendJson(res, 200, record)
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
     }
 
     // ── MCP endpoints ──
@@ -429,8 +804,12 @@ export function createCompanionServer({
 
   // Cleanup on server close
   server.on('close', () => {
+    detachSessionExitListener()
+    sessionRunIndex.clear()
     stopSessionPruner()
     cleanupAllSessions()
+    void flushRunStore().catch(() => undefined)
+    void flushApprovalStore().catch(() => undefined)
   })
 
   return server

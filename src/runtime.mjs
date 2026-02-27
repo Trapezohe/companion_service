@@ -7,14 +7,24 @@ import {
   isPathWithinRoots,
   PERMISSION_MODE_WORKSPACE,
 } from './permission-policy.mjs'
+import { getConfigDir } from './config.mjs'
 
 const MAX_OUTPUT_CHARS = Number(process.env.TRAPEZOHE_MAX_OUTPUT || 200_000)
 const DEFAULT_TIMEOUT_MS = Number(process.env.TRAPEZOHE_TIMEOUT_MS || 60_000)
 const MAX_TIMEOUT_MS = 300_000
 const SESSION_TTL_MS = Number(process.env.TRAPEZOHE_SESSION_TTL_MS || 1000 * 60 * 60)
 const MAX_SESSION_COUNT = Number(process.env.TRAPEZOHE_MAX_SESSIONS || 200)
+const DEFAULT_SESSION_LIST_LIMIT = 50
+const MAX_SESSION_LIST_LIMIT = 500
+const DEFAULT_LOG_SLICE_LIMIT = 4_000
+const MAX_SESSION_EVENT_COUNT = Number(process.env.TRAPEZOHE_MAX_SESSION_EVENTS || 500)
+const DEFAULT_EVENT_LIST_LIMIT = 50
+const MAX_EVENT_LIST_LIMIT = 500
 
 const sessions = new Map()
+const sessionEvents = []
+const sessionExitListeners = new Set()
+let nextSessionEventCursor = 1
 let pruneIntervalRef = null
 
 const WORKSPACE_BLOCKED_COMMANDS = [
@@ -38,9 +48,72 @@ function now() {
   return Date.now()
 }
 
+function clampInteger(input, { defaultValue, min, max }) {
+  const value = Number.parseInt(input, 10)
+  if (!Number.isFinite(value)) return defaultValue
+  return Math.min(Math.max(value, min), max)
+}
+
 function trimOutput(text) {
   if (text.length <= MAX_OUTPUT_CHARS) return text
   return text.slice(text.length - MAX_OUTPUT_CHARS)
+}
+
+function pushSessionEvent(event) {
+  sessionEvents.push(event)
+  if (sessionEvents.length > MAX_SESSION_EVENT_COUNT) {
+    sessionEvents.splice(0, sessionEvents.length - MAX_SESSION_EVENT_COUNT)
+  }
+}
+
+function emitSessionExited(session) {
+  pushSessionEvent({
+    cursor: nextSessionEventCursor++,
+    type: 'session_exited',
+    sessionId: session.id,
+    command: session.command,
+    cwd: session.cwd,
+    timedOut: Boolean(session.timedOut),
+    exitCode: typeof session.exitCode === 'number' ? session.exitCode : -1,
+    startedAt: session.startedAt,
+    finishedAt: session.finishedAt || now(),
+    durationMs: (session.finishedAt || now()) - session.startedAt,
+  })
+}
+
+function notifySessionExited(session) {
+  if (sessionExitListeners.size === 0) return
+  const snapshot = makeSessionSnapshot(session)
+  for (const listener of sessionExitListeners) {
+    try {
+      listener(snapshot)
+    } catch {
+      // Observers should not break session lifecycle.
+    }
+  }
+}
+
+function finalizeSessionExit(session, options = {}) {
+  if (!session || session.status === 'exited') return false
+  if (session.timeoutRef) clearTimeout(session.timeoutRef)
+
+  if (options.stderrAppend) {
+    session.stderr = trimOutput(`${session.stderr}\n${options.stderrAppend}`.trim())
+  }
+  session.status = 'exited'
+  session.exitCode = typeof options.exitCode === 'number' ? options.exitCode : -1
+  session.finishedAt = now()
+  emitSessionExited(session)
+  notifySessionExited(session)
+  return true
+}
+
+export function addSessionExitListener(listener) {
+  if (typeof listener !== 'function') return () => {}
+  sessionExitListeners.add(listener)
+  return () => {
+    sessionExitListeners.delete(listener)
+  }
 }
 
 function shellCommandForPlatform(command) {
@@ -62,7 +135,11 @@ export async function resolveCwd(inputCwd, permissionPolicy) {
   } else if (policy.mode === PERMISSION_MODE_WORKSPACE && policy.workspaceRoots[0]) {
     cwd = policy.workspaceRoots[0]
   } else {
-    cwd = process.cwd()
+    // In full mode, default to Companion home so relative paths like
+    // "skills/..." resolve to ~/.trapezohe/skills by default.
+    const companionHome = getConfigDir()
+    const companionHomeStat = await fs.stat(companionHome).catch(() => null)
+    cwd = companionHomeStat?.isDirectory() ? companionHome : process.cwd()
   }
 
   const stat = await fs.stat(cwd).catch(() => null)
@@ -271,6 +348,113 @@ export function makeSessionSnapshot(session) {
   }
 }
 
+function makeSessionListItem(session) {
+  const finishedAt = session.finishedAt || undefined
+  return {
+    sessionId: session.id,
+    status: session.status,
+    command: session.command,
+    cwd: session.cwd,
+    startedAt: session.startedAt,
+    finishedAt,
+    timedOut: Boolean(session.timedOut),
+    exitCode: typeof session.exitCode === 'number' ? session.exitCode : undefined,
+    durationMs: (finishedAt || now()) - session.startedAt,
+  }
+}
+
+export function listSessions(options = {}) {
+  const status = typeof options.status === 'string' && options.status.trim()
+    ? options.status.trim().toLowerCase()
+    : undefined
+  const offset = clampInteger(options.offset, {
+    defaultValue: 0,
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+  })
+  const limit = clampInteger(options.limit, {
+    defaultValue: DEFAULT_SESSION_LIST_LIMIT,
+    min: 1,
+    max: MAX_SESSION_LIST_LIMIT,
+  })
+
+  const filtered = Array.from(sessions.values())
+    .filter((session) => !status || session.status === status)
+    .sort((a, b) => {
+      const aTime = a.finishedAt || a.startedAt
+      const bTime = b.finishedAt || b.startedAt
+      return bTime - aTime
+    })
+
+  const paged = filtered.slice(offset, offset + limit).map(makeSessionListItem)
+
+  return {
+    sessions: paged,
+    total: filtered.length,
+    offset,
+    limit,
+    hasMore: offset + paged.length < filtered.length,
+  }
+}
+
+function makeLogSlice(text, offset, limit) {
+  const total = text.length
+  const start = Math.min(Math.max(offset, 0), total)
+  const end = Math.min(start + limit, total)
+  return {
+    output: text.slice(start, end),
+    total,
+    offset: start,
+    limit,
+    nextOffset: end,
+    hasMore: end < total,
+  }
+}
+
+export function getSessionLog(sessionId, options = {}) {
+  const session = getSessionById(sessionId)
+  if (!session) return null
+
+  const stream = typeof options.stream === 'string' && options.stream.trim()
+    ? options.stream.trim().toLowerCase()
+    : 'both'
+  if (stream !== 'stdout' && stream !== 'stderr' && stream !== 'both') {
+    throw new Error('stream must be one of: stdout, stderr, both')
+  }
+
+  const offset = clampInteger(options.offset, {
+    defaultValue: 0,
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+  })
+  const limit = clampInteger(options.limit, {
+    defaultValue: DEFAULT_LOG_SLICE_LIMIT,
+    min: 1,
+    max: MAX_OUTPUT_CHARS,
+  })
+
+  if (stream === 'stdout' || stream === 'stderr') {
+    return {
+      ok: true,
+      sessionId: session.id,
+      status: session.status,
+      stream,
+      ...makeLogSlice(session[stream] || '', offset, limit),
+    }
+  }
+
+  return {
+    ok: true,
+    sessionId: session.id,
+    status: session.status,
+    stream,
+    offset,
+    limit,
+    stdout: makeLogSlice(session.stdout || '', offset, limit),
+    stderr: makeLogSlice(session.stderr || '', offset, limit),
+  }
+}
+
 export function startCommandSession({ id, command, cwd, timeoutMs, env }) {
   const startedAt = now()
   const shell = shellCommandForPlatform(command)
@@ -280,7 +464,7 @@ export function startCommandSession({ id, command, cwd, timeoutMs, env }) {
   const child = spawn(shell.bin, shell.args, {
     cwd,
     env: mergedEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
 
   const session = {
@@ -317,18 +501,16 @@ export function startCommandSession({ id, command, cwd, timeoutMs, env }) {
   }, timeoutMs)
 
   child.on('error', (error) => {
-    if (session.timeoutRef) clearTimeout(session.timeoutRef)
-    session.stderr = trimOutput(`${session.stderr}\n${error.message}`.trim())
-    session.status = 'exited'
-    session.exitCode = -1
-    session.finishedAt = now()
+    finalizeSessionExit(session, {
+      exitCode: -1,
+      stderrAppend: error.message,
+    })
   })
 
   child.on('close', (code) => {
-    if (session.timeoutRef) clearTimeout(session.timeoutRef)
-    session.status = 'exited'
-    session.exitCode = typeof code === 'number' ? code : -1
-    session.finishedAt = now()
+    finalizeSessionExit(session, {
+      exitCode: typeof code === 'number' ? code : -1,
+    })
   })
 
   sessions.set(id, session)
@@ -404,6 +586,88 @@ export function stopSession(sessionId, force = false) {
   return session
 }
 
+export function writeToSession(sessionId, text, submit = false) {
+  const session = getSessionById(sessionId)
+  if (!session) {
+    throw new Error('Session not found.')
+  }
+  if (session.status !== 'running') {
+    throw new Error('Session is not running.')
+  }
+  if (!session.child?.stdin || session.child.stdin.destroyed || session.child.stdin.writableEnded) {
+    throw new Error('Session stdin is not writable.')
+  }
+
+  const normalizedText = typeof text === 'string' ? text : String(text ?? '')
+  const payload = submit ? `${normalizedText}\n` : normalizedText
+  session.child.stdin.write(payload)
+  return { ok: true, written: Buffer.byteLength(payload) }
+}
+
+export function sendKeysToSession(sessionId, keys) {
+  const session = getSessionById(sessionId)
+  if (!session) {
+    throw new Error('Session not found.')
+  }
+  if (session.status !== 'running') {
+    throw new Error('Session is not running.')
+  }
+
+  const normalized = String(keys || '').trim().toLowerCase()
+  switch (normalized) {
+    case 'ctrl-c':
+      session.child.kill('SIGINT')
+      return { ok: true, action: 'signal', key: normalized }
+    case 'ctrl-z':
+      session.child.kill('SIGTSTP')
+      return { ok: true, action: 'signal', key: normalized }
+    case 'ctrl-d':
+      if (!session.child?.stdin || session.child.stdin.destroyed || session.child.stdin.writableEnded) {
+        throw new Error('Session stdin is not writable.')
+      }
+      session.child.stdin.end()
+      return { ok: true, action: 'stdin', key: normalized }
+    case 'enter':
+      return writeToSession(sessionId, '', true)
+    case 'tab':
+      return writeToSession(sessionId, '\t', false)
+    case 'escape':
+    case 'esc':
+      return writeToSession(sessionId, '\u001b', false)
+    default:
+      throw new Error('Unsupported key. Use one of: ctrl-c, ctrl-d, ctrl-z, enter, tab, escape')
+  }
+}
+
+export function listSessionEvents(options = {}) {
+  const after = clampInteger(options.after, {
+    defaultValue: 0,
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+  })
+  const limit = clampInteger(options.limit, {
+    defaultValue: DEFAULT_EVENT_LIST_LIMIT,
+    min: 1,
+    max: MAX_EVENT_LIST_LIMIT,
+  })
+
+  const events = sessionEvents
+    .filter((event) => event.cursor > after)
+    .sort((a, b) => a.cursor - b.cursor)
+    .slice(0, limit)
+
+  const nextCursor = events.length > 0
+    ? events[events.length - 1].cursor
+    : Math.max(after, nextSessionEventCursor - 1)
+
+  return {
+    ok: true,
+    events,
+    nextCursor,
+    hasMore: sessionEvents.some((event) => event.cursor > nextCursor),
+  }
+}
+
 export function cleanupAllSessions() {
   for (const [, session] of sessions) {
     if (session.status === 'running') {
@@ -411,4 +675,6 @@ export function cleanupAllSessions() {
     }
   }
   sessions.clear()
+  sessionEvents.splice(0, sessionEvents.length)
+  nextSessionEventCursor = 1
 }

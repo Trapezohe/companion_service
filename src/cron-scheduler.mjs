@@ -7,6 +7,7 @@
  */
 
 import { getJobs, addPendingRun } from './cron-store.mjs'
+import { createRun, updateRun } from './run-store.mjs'
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const timers = new Map()
@@ -65,10 +66,36 @@ function scheduleJob(job) {
 
   const timer = setTimeout(async () => {
     console.log(`[cron-companion] Timer fired for "${job.name}" (${job.id}), marking as pending`)
+    const run = await createRun({
+      type: 'cron',
+      state: 'queued',
+      summary: `Cron timer fired, queuing for extension: ${job.name}`,
+      meta: {
+        taskId: job.id,
+        taskName: job.name,
+        scheduleKind: job.schedule?.kind || 'unknown',
+      },
+    }).catch(() => null)
+
     try {
       await addPendingRun(job.id)
+      if (run?.runId) {
+        await updateRun(run.runId, {
+          state: 'done',
+          finishedAt: Date.now(),
+          summary: `Marked pending for extension catch-up: ${job.name}`,
+        }).catch(() => undefined)
+      }
     } catch (err) {
       console.error(`[cron-companion] Failed to mark pending for ${job.id}:`, err.message)
+      if (run?.runId) {
+        await updateRun(run.runId, {
+          state: 'failed',
+          finishedAt: Date.now(),
+          summary: `Failed to mark pending: ${job.name}`,
+          error: err instanceof Error ? err.message : String(err),
+        }).catch(() => undefined)
+      }
     }
     // Re-schedule for next occurrence
     scheduleJob(job)

@@ -10,6 +10,7 @@ import {
   PermissionPolicyError,
 } from './runtime.mjs'
 import { PERMISSION_MODE_WORKSPACE, PERMISSION_MODE_FULL } from './permission-policy.mjs'
+import { getConfigDir } from './config.mjs'
 
 async function withWorkspace(run) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-runtime-policy-'))
@@ -34,6 +35,16 @@ test('resolveCwd defaults to first workspace root in workspace mode', async () =
     })
     assert.equal(cwd, workspaceRoot)
   })
+})
+
+test('resolveCwd defaults to companion home in full mode', async () => {
+  const companionHome = getConfigDir()
+  await mkdir(companionHome, { recursive: true })
+  const cwd = await resolveCwd(undefined, {
+    mode: PERMISSION_MODE_FULL,
+    workspaceRoots: [],
+  })
+  assert.equal(cwd, companionHome)
 })
 
 test('resolveCwd rejects cwd outside workspace roots', async () => {

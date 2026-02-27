@@ -41,6 +41,8 @@ import {
 } from '../src/permission-policy.mjs'
 import { loadCronStore } from '../src/cron-store.mjs'
 import { startCronScheduler, stopCronScheduler } from '../src/cron-scheduler.mjs'
+import { loadRunStore, flushRunStore } from '../src/run-store.mjs'
+import { flushApprovalStore } from '../src/approval-store.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const execFileAsync = promisify(execFile)
@@ -273,6 +275,16 @@ async function handleStart() {
     console.log('\n[trapezohe-companion] Shutting down...')
     stopCronScheduler()
     try {
+      await flushRunStore()
+    } catch (err) {
+      console.error(`[trapezohe-companion] Error flushing run store: ${err.message}`)
+    }
+    try {
+      await flushApprovalStore()
+    } catch (err) {
+      console.error(`[trapezohe-companion] Error flushing approval store: ${err.message}`)
+    }
+    try {
       await mcpManager.stopAll()
     } catch (err) {
       console.error(`[trapezohe-companion] Error stopping MCP servers: ${err.message}`)
@@ -354,6 +366,12 @@ async function handleStart() {
       startCronScheduler()
     } catch (err) {
       console.error(`  Cron:       Failed to start scheduler: ${err.message}`)
+    }
+
+    try {
+      await loadRunStore()
+    } catch (err) {
+      console.error(`  Runs:       Failed to load run store: ${err.message}`)
     }
 
     console.log('  Save the token in your Trapezohe extension:')

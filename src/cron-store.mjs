@@ -83,6 +83,9 @@ export function getPendingRuns() {
 }
 
 export async function addPendingRun(taskId) {
+  // Compaction: keep only the latest pending entry per taskId.
+  // Older entries for the same task are stale (the extension coalesces by latest missedAt anyway).
+  store.pending = store.pending.filter((p) => p.taskId !== taskId)
   store.pending.push({ taskId, missedAt: Date.now() })
   await saveStore()
 }
