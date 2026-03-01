@@ -14,7 +14,7 @@ const FILE_MODE = 0o600
 const MAX_RUNS = Math.max(1, Number(process.env.TRAPEZOHE_MAX_RUNS || 200) || 200)
 const WRITE_DEBOUNCE_MS = Number(process.env.TRAPEZOHE_RUNS_WRITE_DEBOUNCE_MS || 300)
 
-const RUN_TYPES = new Set(['exec', 'session', 'cron', 'heartbeat'])
+const RUN_TYPES = new Set(['exec', 'session', 'cron', 'heartbeat', 'acp'])
 const RUN_STATES = new Set(['queued', 'running', 'waiting_approval', 'retrying', 'done', 'failed'])
 
 function RUNS_FILE() {

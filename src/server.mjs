@@ -55,6 +55,8 @@ import {
   loadApprovalStore,
   flushApprovalStore,
 } from './approval-store.mjs'
+import { handleAcpRequest } from './acp-routes.mjs'
+import { cleanupAllAcpSessions } from './acp-session.mjs'
 
 // ── Auth rate limiter ──
 
@@ -302,8 +304,8 @@ function handleSessionEvents(url, res) {
 function parseRunType(rawType) {
   if (typeof rawType !== 'string' || !rawType.trim()) return undefined
   const normalized = rawType.trim().toLowerCase()
-  if (normalized !== 'exec' && normalized !== 'session' && normalized !== 'cron' && normalized !== 'heartbeat') {
-    throw new Error('type must be one of: exec, session, cron, heartbeat')
+  if (normalized !== 'exec' && normalized !== 'session' && normalized !== 'cron' && normalized !== 'heartbeat' && normalized !== 'acp') {
+    throw new Error('type must be one of: exec, session, cron, heartbeat, acp')
   }
   return normalized
 }
@@ -796,6 +798,15 @@ export function createCompanionServer({
       }
     }
 
+    // ── ACP endpoints ──
+    const acpHandled = await handleAcpRequest(req, res, url, pathname, {
+      token,
+      authorize: (r) => authorize(r, token),
+      sendJson,
+      readJsonBody,
+    })
+    if (acpHandled) return
+
     sendJson(res, 404, { error: `Not found: ${pathname}` })
   })
 
@@ -808,6 +819,7 @@ export function createCompanionServer({
     sessionRunIndex.clear()
     stopSessionPruner()
     cleanupAllSessions()
+    cleanupAllAcpSessions()
     void flushRunStore().catch(() => undefined)
     void flushApprovalStore().catch(() => undefined)
   })
