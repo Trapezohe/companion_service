@@ -20,7 +20,7 @@ The Trapezohe Chrome extension has limited capabilities due to browser sandbox r
 curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash
 ```
 
-Non-interactive (one command, no prompts):
+Non-interactive (one command, no prompts — replace `<your-extension-id>` with your actual extension ID from `chrome://extensions/`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash -s -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace ~/ghast-workspace
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh
 irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex
 ```
 
-Non-interactive (one command, no prompts):
+Non-interactive (replace `<your-extension-id>` with your actual extension ID):
 
 ```powershell
 irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace "$HOME\\ghast-workspace"
@@ -42,15 +42,30 @@ irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex
 
 ```bash
 npm install -g trapezohe-companion
-trapezohe-companion init
-trapezohe-companion start
+trapezohe-companion bootstrap --ext-id <your-extension-id>
+```
+
+> **Where to find your extension ID:** Open `chrome://extensions/`, find "Trapezohe AI" and copy the ID string (e.g. `abcdefghijklmnopqrstuvwxyz123456`). The extension's **Settings → Companion** page also shows a ready-to-copy install command with the ID pre-filled.
+
+The `bootstrap` command handles everything: creates config, registers the Chrome Native Messaging host for auto-pairing, and starts the daemon.
+
+If you prefer step-by-step:
+
+```bash
+npm install -g trapezohe-companion
+trapezohe-companion init                           # Create config
+trapezohe-companion register <your-extension-id>   # Register native messaging host
+trapezohe-companion start                          # Start the daemon
 ```
 
 ### Connect to Extension
 
+**Automatic (recommended):** If you used `bootstrap` or `register` with your extension ID, the extension auto-discovers the companion via Chrome Native Messaging — no manual config needed.
+
+**Manual fallback:**
 1. Start the companion: `trapezohe-companion start`
-2. Copy the access token shown in the terminal
-3. In the Trapezohe extension: **Settings → Local Command Runtime**
+2. Copy the access token: `trapezohe-companion token`
+3. In the Trapezohe extension: **Settings → Companion**
 4. Enter URL: `http://127.0.0.1:41591`
 5. Paste the token
 6. Enable and save
