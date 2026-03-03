@@ -177,15 +177,21 @@ jobs:
 
             ### macOS — Gatekeeper
 
-            **Option A** — Right-click the `.pkg` file → "Open" → click "Open" in the dialog.
+            Double-clicking the `.pkg` file will show a warning:
 
-            **Option B** — Remove quarantine via Terminal:
+            > "Apple could not verify whether trapezohe-companion-macos.pkg contains software that is harmful to your Mac or compromises your privacy."
+
+            **To install:**
+
+            1. Open **System Settings → Privacy & Security**
+            2. Scroll down to the **Security** section
+            3. You will see a message about the blocked installer — click **"Open Anyway"**
+            4. Double-click the `.pkg` file again and it will install normally
+
+            **Alternative** — Remove quarantine via Terminal (skip the dialog entirely):
             ```bash
             xattr -cr ~/Downloads/trapezohe-companion-macos.pkg
             ```
-            Then double-click to install normally.
-
-            **Option C** — If blocked after install, go to **System Settings → Privacy & Security** → scroll down → click **"Open Anyway"**.
 
             ### Windows — SmartScreen
 
