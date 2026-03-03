@@ -19,7 +19,9 @@
   },
   "scripts": {
     "start": "node bin/cli.mjs start",
-    "test": "node --test src/*.test.mjs"
+    "test": "node --test src/*.test.mjs",
+    "build:installer:macos": "bash scripts/build-macos-pkg.sh",
+    "build:installer:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1"
   },
   "keywords": [
     "trapezohe",

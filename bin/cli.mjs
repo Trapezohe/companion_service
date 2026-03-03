@@ -828,7 +828,7 @@ async function handleBootstrap() {
     ? requestedExtensionIds
     : DEFAULT_EXTENSION_IDS
 
-  const defaultWorkspace = path.join(os.homedir(), 'ghast-workspace')
+  const defaultWorkspace = path.join(os.homedir(), 'trapezohe-workspace')
   const normalizedWorkspaceRoots = mode === PERMISSION_MODE_WORKSPACE
     ? (workspaceRoots.length > 0 ? workspaceRoots : [defaultWorkspace])
     : []
@@ -977,7 +977,7 @@ Examples:
   trapezohe-companion policy        # Print current policy JSON
   trapezohe-companion policy full
   trapezohe-companion policy workspace ~/trapezohe-workspace
-  trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/ghast-workspace
+  trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/trapezohe-workspace
   trapezohe-companion register abc123  # Register native host for extension ID
 
 Config: ~/.trapezohe/companion.json

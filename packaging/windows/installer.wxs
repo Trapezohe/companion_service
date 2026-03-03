@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Trapezohe Companion Installer"
+    Manufacturer="Trapezohe"
+    Language="1033"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="{4AF4D4EF-2C1D-4FB9-99EB-387DABEE6D20}">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer Trapezohe Companion Installer is already installed." />
+    <MediaTemplate />
+
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="Trapezohe Companion Installer" />
+    </StandardDirectory>
+
+    <Component Id="InstallerFilesComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="RunInstallCmd" Source="$(var.InstallerSourceDir)\run-install.cmd" KeyPath="yes" />
+      <File Id="InstallCompanionPs1" Source="$(var.InstallerSourceDir)\install-companion.ps1" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="Companion Installer" Level="1">
+      <ComponentRef Id="InstallerFilesComponent" />
+    </Feature>
+
+    <CustomAction
+      Id="RunCompanionBootstrap"
+      FileRef="RunInstallCmd"
+      ExeCommand=""
+      Execute="deferred"
+      Return="ignore"
+      Impersonate="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT Installed</Custom>
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

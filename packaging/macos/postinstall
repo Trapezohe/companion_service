@@ -1,0 +1,42 @@
+#!/bin/bash
+set -euo pipefail
+
+VERSION="__COMPANION_VERSION__"
+LOG_FILE="/Users/Shared/trapezohe-companion-installer.log"
+CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || true)"
+
+{
+  echo "[$(date)] Companion macOS installer started (version=${VERSION})"
+  echo "[$(date)] Console user: ${CONSOLE_USER:-unknown}"
+} >> "${LOG_FILE}" 2>&1
+
+if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
+  echo "[$(date)] No valid console user found; skipping bootstrap." >> "${LOG_FILE}" 2>&1
+  exit 0
+fi
+
+TMP_SCRIPT="$(mktemp /tmp/trapezohe-companion-bootstrap.XXXXXX.sh)"
+cat > "${TMP_SCRIPT}" <<'EOS'
+#!/bin/bash
+set -euo pipefail
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js 18+ is required. Install Node.js, then retry from Companion settings."
+  exit 55
+fi
+npm install -g "trapezohe-companion@__COMPANION_VERSION__"
+trapezohe-companion bootstrap --mode workspace --workspace "$HOME/trapezohe-workspace"
+EOS
+
+sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${TMP_SCRIPT}"
+chmod +x "${TMP_SCRIPT}"
+
+if ! su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then
+  RC="$?"
+  echo "[$(date)] Companion bootstrap failed (exit=${RC}). Installation will continue; user can retry from extension Settings > Companion." >> "${LOG_FILE}" 2>&1
+  rm -f "${TMP_SCRIPT}"
+  exit 0
+fi
+
+echo "[$(date)] Companion bootstrap finished successfully." >> "${LOG_FILE}" 2>&1
+rm -f "${TMP_SCRIPT}"
+exit 0

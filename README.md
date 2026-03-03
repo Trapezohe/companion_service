@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh
 Non-interactive (one command, no prompts — replace `<your-extension-id>` with your actual extension ID from `chrome://extensions/`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash -s -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace ~/ghast-workspace
+curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash -s -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace ~/trapezohe-workspace
 ```
 
 **Windows (PowerShell):**
@@ -35,8 +35,44 @@ irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex
 Non-interactive (replace `<your-extension-id>` with your actual extension ID):
 
 ```powershell
-irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace "$HOME\\ghast-workspace"
+irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace "$HOME\\trapezohe-workspace"
 ```
+
+### Installer Packages (No Terminal Flow)
+
+You can also install from GitHub Releases:
+
+- macOS: `trapezohe-companion-macos.pkg`
+- Windows: `trapezohe-companion-windows.msi`
+- Integrity file: `SHA256SUMS.txt`
+
+Latest release page:
+
+```text
+https://github.com/trapezohe/companion/releases/latest
+```
+
+Recommended verification before running installers:
+
+macOS:
+
+```bash
+shasum -a 256 ./trapezohe-companion-macos.pkg
+```
+
+Windows (PowerShell):
+
+```powershell
+Get-FileHash .\trapezohe-companion-windows.msi -Algorithm SHA256
+```
+
+Compare the command output with `SHA256SUMS.txt`.
+
+> Note: unsigned installers can trigger OS trust warnings (Gatekeeper / SmartScreen). This is expected for unsigned builds; verify checksum first, then proceed only if you trust the release source.
+
+Installers attempt a best-effort bootstrap automatically. If Node.js is missing or bootstrap fails, package installation still succeeds so users can retry from extension **Settings → Companion**.
+- macOS installer log: `/Users/Shared/trapezohe-companion-installer.log`
+- Windows installer log: `%ProgramData%\\TrapezoheCompanion\\installer.log`
 
 ### Manual Install (npm)
 
@@ -128,7 +164,7 @@ trapezohe-companion token       # Print access token
 trapezohe-companion policy      # Show current permission policy
 trapezohe-companion policy full
 trapezohe-companion policy workspace ~/trapezohe-workspace
-trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/ghast-workspace
+trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/trapezohe-workspace
 ```
 
 ## API Endpoints
