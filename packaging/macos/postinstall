@@ -2,6 +2,7 @@
 set -euo pipefail
 
 VERSION="__COMPANION_VERSION__"
+NODE_VERSION="v22.12.0"
 LOG_FILE="/Users/Shared/trapezohe-companion-installer.log"
 CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || true)"
 
@@ -19,15 +20,75 @@ TMP_SCRIPT="$(mktemp /tmp/trapezohe-companion-bootstrap.XXXXXX.sh)"
 cat > "${TMP_SCRIPT}" <<'EOS'
 #!/bin/bash
 set -euo pipefail
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 18+ is required. Install Node.js, then retry from Companion settings."
-  exit 55
-fi
+
+TRAPEZOHE_DIR="$HOME/.trapezohe"
+LOCAL_NODE_DIR="${TRAPEZOHE_DIR}/node"
+NODE_VERSION="__NODE_VERSION__"
+MIN_NODE_MAJOR=18
+
+# ── Check for usable Node.js ──
+
+has_usable_node() {
+  if ! command -v node >/dev/null 2>&1; then
+    return 1
+  fi
+  local ver
+  ver="$(node -v 2>/dev/null || echo "")"
+  local major="${ver#v}"
+  major="${major%%.*}"
+  if [[ "${major}" -ge "${MIN_NODE_MAJOR}" ]] 2>/dev/null; then
+    return 0
+  fi
+  echo "System Node.js ${ver} is too old (need >=${MIN_NODE_MAJOR})."
+  return 1
+}
+
+# ── Download portable Node.js if needed ──
+
+ensure_node() {
+  if has_usable_node; then
+    echo "Using system Node.js: $(node -v)"
+    return 0
+  fi
+
+  # Check if we already have a local copy
+  if [[ -x "${LOCAL_NODE_DIR}/bin/node" ]]; then
+    export PATH="${LOCAL_NODE_DIR}/bin:${PATH}"
+    if has_usable_node; then
+      echo "Using local Node.js: $(node -v)"
+      return 0
+    fi
+  fi
+
+  # Download portable Node.js
+  local arch
+  arch="$(uname -m)"
+  case "${arch}" in
+    arm64|aarch64) arch="arm64" ;;
+    *)             arch="x64"   ;;
+  esac
+
+  local url="https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-darwin-${arch}.tar.gz"
+  echo "Node.js not found — downloading ${NODE_VERSION} (${arch})..."
+
+  mkdir -p "${LOCAL_NODE_DIR}"
+  if ! curl -fsSL "${url}" | tar -xz --strip-components=1 -C "${LOCAL_NODE_DIR}"; then
+    echo "Failed to download Node.js. Please install Node.js ${MIN_NODE_MAJOR}+ manually."
+    exit 1
+  fi
+
+  export PATH="${LOCAL_NODE_DIR}/bin:${PATH}"
+  echo "Installed local Node.js: $(node -v) → ${LOCAL_NODE_DIR}"
+}
+
+ensure_node
+
 npm install -g "trapezohe-companion@__COMPANION_VERSION__"
 trapezohe-companion bootstrap --mode workspace --workspace "$HOME/trapezohe-workspace"
 EOS
 
 sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${TMP_SCRIPT}"
+sed -i '' "s/__NODE_VERSION__/${NODE_VERSION}/g" "${TMP_SCRIPT}"
 chmod +x "${TMP_SCRIPT}"
 
 if ! su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then
