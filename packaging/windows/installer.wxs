@@ -32,7 +32,7 @@
       Impersonate="yes" />
 
     <InstallExecuteSequence>
-      <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="RunCompanionBootstrap" After="InstallFiles" Condition="NOT Installed" />
     </InstallExecuteSequence>
   </Package>
 </Wix>
