@@ -14,13 +14,17 @@
       <Directory Id="INSTALLFOLDER" Name="Trapezohe Companion Installer" />
     </StandardDirectory>
 
-    <Component Id="InstallerFilesComponent" Directory="INSTALLFOLDER" Guid="*">
+    <Component Id="RunInstallCmdComponent" Directory="INSTALLFOLDER" Guid="*">
       <File Id="RunInstallCmd" Source="$(var.InstallerSourceDir)\run-install.cmd" KeyPath="yes" />
-      <File Id="InstallCompanionPs1" Source="$(var.InstallerSourceDir)\install-companion.ps1" />
+    </Component>
+
+    <Component Id="InstallCompanionPs1Component" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="InstallCompanionPs1" Source="$(var.InstallerSourceDir)\install-companion.ps1" KeyPath="yes" />
     </Component>
 
     <Feature Id="MainFeature" Title="Companion Installer" Level="1">
-      <ComponentRef Id="InstallerFilesComponent" />
+      <ComponentRef Id="RunInstallCmdComponent" />
+      <ComponentRef Id="InstallCompanionPs1Component" />
     </Feature>
 
     <CustomAction
