@@ -360,6 +360,8 @@ export function createCompanionServer({
   setPermissionPolicy = async () => {
     throw new Error('Permission policy updates are not enabled.')
   },
+  shutdownFn = null,
+  cleanupFn = null,
 }) {
   void loadRunStore().catch(() => undefined)
   void loadApprovalStore().catch(() => undefined)
@@ -432,6 +434,51 @@ export function createCompanionServer({
         mcpTools: mcpManager.getAllTools().length,
         permissionPolicy: normalizePermissionPolicy(getPermissionPolicy()),
       })
+    }
+
+    // ── System management endpoints ──
+
+    if (req.method === 'POST' && pathname === '/api/system/shutdown') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      if (typeof shutdownFn !== 'function') {
+        return sendJson(res, 501, { error: 'Shutdown not available.' })
+      }
+      sendJson(res, 200, { ok: true })
+      setTimeout(() => shutdownFn(), 200)
+      return
+    }
+
+    if (req.method === 'POST' && pathname === '/api/system/restart') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      if (typeof shutdownFn !== 'function') {
+        return sendJson(res, 501, { error: 'Restart not available.' })
+      }
+      // Spawn a detached replacement daemon, then shut down current process.
+      const { spawn } = await import('node:child_process')
+      const child = spawn(process.execPath, [process.argv[1], 'start', '-d'], {
+        detached: true,
+        stdio: 'ignore',
+      })
+      child.unref()
+      sendJson(res, 200, { ok: true, message: 'restarting' })
+      setTimeout(() => shutdownFn(), 500)
+      return
+    }
+
+    if (req.method === 'POST' && pathname === '/api/system/cleanup') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const errors = []
+      if (typeof cleanupFn === 'function') {
+        try { await cleanupFn() } catch (err) { errors.push(err.message || String(err)) }
+      }
+      sendJson(res, 200, { ok: true, errors: errors.length > 0 ? errors : undefined })
+      if (typeof shutdownFn === 'function') {
+        setTimeout(() => shutdownFn(), 200)
+      }
+      return
     }
 
     // ── Command Runtime endpoints ──

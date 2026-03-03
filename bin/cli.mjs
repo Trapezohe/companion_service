@@ -257,6 +257,7 @@ async function handleStart() {
 
   const mcpManager = new McpManager(config.mcpServers)
   let currentPermissionPolicy = normalizePermissionPolicy(config.permissionPolicy)
+  const hooks = {}
   const server = createCompanionServer({
     token,
     mcpManager,
@@ -266,6 +267,8 @@ async function handleStart() {
       config.permissionPolicy = currentPermissionPolicy
       await saveConfig(config)
     },
+    shutdownFn: () => hooks.shutdown?.(),
+    cleanupFn: () => hooks.cleanup?.(),
   })
 
   let shuttingDown = false
@@ -296,6 +299,15 @@ async function handleStart() {
       console.error(`[trapezohe-companion] Error removing PID file: ${err.message}`)
     }
     process.exit(0)
+  }
+
+  hooks.shutdown = () => shutdown().catch((err) => {
+    console.error('[trapezohe-companion] HTTP-triggered shutdown error:', err.message)
+    process.exit(1)
+  })
+  hooks.cleanup = async () => {
+    await handleUnregister()
+    await removeAutostart()
   }
 
   process.on('SIGINT', () => {
@@ -797,6 +809,22 @@ WantedBy=default.target
   }
 
   return { ok: false, strategy: 'unsupported', target: process.platform }
+}
+
+async function removeAutostart() {
+  if (process.platform === 'darwin') {
+    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'ai.trapezohe.companion.plist')
+    await execFileAsync('launchctl', ['unload', plistPath]).catch(() => undefined)
+    await fs.unlink(plistPath).catch(() => undefined)
+  } else if (process.platform === 'linux') {
+    const serviceName = `${AUTOSTART_SERVICE_NAME}.service`
+    await execFileAsync('systemctl', ['--user', 'disable', serviceName]).catch(() => undefined)
+    await execFileAsync('systemctl', ['--user', 'stop', serviceName]).catch(() => undefined)
+    const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', serviceName)
+    await fs.unlink(servicePath).catch(() => undefined)
+  } else if (process.platform === 'win32') {
+    await execFileAsync('schtasks', ['/Delete', '/TN', AUTOSTART_WIN_TASK_NAME, '/F']).catch(() => undefined)
+  }
 }
 
 async function startDaemonDetached() {
