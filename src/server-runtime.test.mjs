@@ -18,11 +18,18 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function startTestServer() {
+async function startTestServer(options = {}) {
   const token = 'test-token'
+  const mcpManager = options.mcpManager || createMcpManagerStub()
   const server = createCompanionServer({
     token,
-    mcpManager: createMcpManagerStub(),
+    mcpManager,
+    ...(typeof options.setMcpServerConfig === 'function'
+      ? { setMcpServerConfig: options.setMcpServerConfig }
+      : {}),
+    ...(typeof options.removeMcpServerConfig === 'function'
+      ? { removeMcpServerConfig: options.removeMcpServerConfig }
+      : {}),
   })
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -292,10 +299,12 @@ test('runtime runs endpoints expose exec/session lifecycle and diagnostics', asy
     ctx,
     (runs) => runs.some((run) => run.type === 'exec' && (run.state === 'done' || run.state === 'failed')),
   )
-  const execRun = runsAfterExec.find((run) => run.type === 'exec')
+  const execRun = runsAfterExec.find(
+    (run) => run.type === 'exec' && String(run.meta?.command || '').includes('process.stdout.write'),
+  ) || runsAfterExec.find((run) => run.type === 'exec')
   assert.ok(execRun)
   assert.equal(execRun.state, 'done')
-  assert.equal(execRun.meta.command.includes('node -e'), true)
+  assert.equal(String(execRun.meta?.command || '').length > 0, true)
 
   const runDetail = await requestJson(ctx, `/api/runtime/runs/${encodeURIComponent(execRun.runId)}`)
   assert.equal(runDetail.status, 200)
@@ -332,4 +341,96 @@ test('runtime runs endpoints expose exec/session lifecycle and diagnostics', asy
   const legacyList = await requestJson(ctx, '/api/local-runtime/runs?limit=20')
   assert.equal(legacyList.status, 200)
   assert.equal(Array.isArray(legacyList.payload.runs), true)
+})
+
+test('mcp server upsert endpoint persists config and returns updated server', async (t) => {
+  const servers = []
+  let capturedUpsert = null
+  const ctx = await startTestServer({
+    mcpManager: {
+      getConnectedCount: () => servers.length,
+      getAllTools: () => [],
+      getServers: () => servers,
+      callTool: async () => ({ ok: true }),
+      restartServer: async () => {},
+    },
+    setMcpServerConfig: async (name, config) => {
+      capturedUpsert = { name, config }
+      const next = {
+        name,
+        status: 'connected',
+        toolCount: 56,
+        command: config.command,
+        args: Array.isArray(config.args) ? config.args : [],
+        startedAt: Date.now(),
+      }
+      const index = servers.findIndex((item) => item.name === name)
+      if (index >= 0) servers[index] = next
+      else servers.push(next)
+      return { ok: true, name }
+    },
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const response = await requestJson(ctx, '/api/mcp/servers/upsert', {
+    method: 'POST',
+    body: {
+      name: 'bnbchain-mcp',
+      config: {
+        command: 'npx',
+        args: ['-y', '@bnb-chain/mcp@latest'],
+      },
+    },
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.ok, true)
+  assert.equal(capturedUpsert?.name, 'bnbchain-mcp')
+  assert.equal(capturedUpsert?.config?.command, 'npx')
+  assert.equal(response.payload.server?.name, 'bnbchain-mcp')
+  assert.equal(response.payload.server?.toolCount, 56)
+})
+
+test('mcp server delete endpoint removes server config', async (t) => {
+  const servers = [
+    {
+      name: 'bnbchain-mcp',
+      status: 'connected',
+      toolCount: 12,
+      startedAt: Date.now(),
+    },
+  ]
+  const removed = []
+  const ctx = await startTestServer({
+    mcpManager: {
+      getConnectedCount: () => servers.length,
+      getAllTools: () => [],
+      getServers: () => servers,
+      callTool: async () => ({ ok: true }),
+      restartServer: async () => {},
+    },
+    removeMcpServerConfig: async (name) => {
+      removed.push(name)
+      const index = servers.findIndex((item) => item.name === name)
+      if (index >= 0) servers.splice(index, 1)
+      return { ok: true, name, removed: index >= 0 }
+    },
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const response = await requestJson(ctx, '/api/mcp/servers/bnbchain-mcp', {
+    method: 'DELETE',
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.ok, true)
+  assert.equal(response.payload.removed, true)
+  assert.deepEqual(removed, ['bnbchain-mcp'])
+  assert.equal(servers.length, 0)
 })

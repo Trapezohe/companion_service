@@ -92,6 +92,89 @@ export async function saveConfig(config) {
   await safeChmod(CONFIG_FILE, CONFIG_FILE_MODE)
 }
 
+function normalizeMcpServerConfig(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('MCP server config must be an object.')
+  }
+  const command = typeof input.command === 'string' ? input.command.trim() : ''
+  if (!command) {
+    throw new Error('MCP server config.command is required.')
+  }
+
+  const args = Array.isArray(input.args)
+    ? input.args
+      .filter((item) => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    : []
+
+  const env = {}
+  if (input.env !== undefined) {
+    if (!input.env || typeof input.env !== 'object' || Array.isArray(input.env)) {
+      throw new Error('MCP server config.env must be an object when provided.')
+    }
+    for (const [key, value] of Object.entries(input.env)) {
+      if (typeof value !== 'string') {
+        throw new Error(`MCP server env "${key}" must be a string.`)
+      }
+      env[key] = value
+    }
+  }
+
+  const cwd = typeof input.cwd === 'string' && input.cwd.trim()
+    ? input.cwd.trim()
+    : undefined
+
+  return {
+    command,
+    args,
+    env,
+    ...(cwd ? { cwd } : {}),
+  }
+}
+
+export async function updateMcpServerConfig(name, serverConfig) {
+  const serverName = typeof name === 'string' ? name.trim() : ''
+  if (!serverName) {
+    throw new Error('MCP server name is required.')
+  }
+  const normalizedServerConfig = normalizeMcpServerConfig(serverConfig)
+
+  const config = await loadConfig()
+  const nextMcpServers = {
+    ...(config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {}),
+    [serverName]: normalizedServerConfig,
+  }
+  const nextConfig = {
+    ...config,
+    mcpServers: nextMcpServers,
+  }
+  await saveConfig(nextConfig)
+  return nextConfig
+}
+
+export async function removeMcpServerConfig(name) {
+  const serverName = typeof name === 'string' ? name.trim() : ''
+  if (!serverName) {
+    throw new Error('MCP server name is required.')
+  }
+  const config = await loadConfig()
+  const currentServers = config.mcpServers && typeof config.mcpServers === 'object'
+    ? { ...config.mcpServers }
+    : {}
+  const removed = Object.prototype.hasOwnProperty.call(currentServers, serverName)
+  if (!removed) {
+    return { config, removed: false }
+  }
+  delete currentServers[serverName]
+  const nextConfig = {
+    ...config,
+    mcpServers: currentServers,
+  }
+  await saveConfig(nextConfig)
+  return { config: nextConfig, removed: true }
+}
+
 export async function initConfig() {
   await ensureConfigDir()
 

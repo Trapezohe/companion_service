@@ -26,6 +26,8 @@ import {
   loadConfig,
   saveConfig,
   initConfig,
+  updateMcpServerConfig,
+  removeMcpServerConfig,
   resolveToken,
   getConfigPath,
   writePid,
@@ -266,6 +268,18 @@ async function handleStart() {
       currentPermissionPolicy = normalizePermissionPolicy(nextPolicy)
       config.permissionPolicy = currentPermissionPolicy
       await saveConfig(config)
+    },
+    setMcpServerConfig: async (name, nextServerConfig) => {
+      const updated = await updateMcpServerConfig(name, nextServerConfig)
+      config.mcpServers = updated.mcpServers
+      await mcpManager.upsertServer(name, updated.mcpServers[name])
+      return { ok: true, name }
+    },
+    removeMcpServerConfig: async (name) => {
+      const { config: updated, removed } = await removeMcpServerConfig(name)
+      config.mcpServers = updated.mcpServers
+      const runtimeResult = await mcpManager.deleteServer(name)
+      return { ok: true, name, removed: removed || runtimeResult.removed }
     },
     shutdownFn: () => hooks.shutdown?.(),
     cleanupFn: () => hooks.cleanup?.(),

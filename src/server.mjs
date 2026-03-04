@@ -360,6 +360,12 @@ export function createCompanionServer({
   setPermissionPolicy = async () => {
     throw new Error('Permission policy updates are not enabled.')
   },
+  setMcpServerConfig = async () => {
+    throw new Error('MCP server config updates are not enabled.')
+  },
+  removeMcpServerConfig = async () => {
+    throw new Error('MCP server config removal is not enabled.')
+  },
   shutdownFn = null,
   cleanupFn = null,
 }) {
@@ -715,6 +721,43 @@ export function createCompanionServer({
         return sendJson(res, 200, result)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // Upsert MCP server config and hot-reload that server
+    if (req.method === 'POST' && pathname === '/api/mcp/servers/upsert') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const name = typeof body.name === 'string' ? body.name.trim() : ''
+        if (!name) {
+          return sendJson(res, 400, { error: '"name" is required.' })
+        }
+        const config = body.config
+        await setMcpServerConfig(name, config)
+        const server = mcpManager.getServers().find((item) => item.name === name)
+        return sendJson(res, 200, { ok: true, name, server })
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message || 'Invalid request.' })
+      }
+    }
+
+    // Remove MCP server config and stop that server
+    const serverDeleteMatch = pathname.match(/^\/api\/mcp\/servers\/([^/]+)$/)
+    if (req.method === 'DELETE' && serverDeleteMatch) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const name = decodeURIComponent(serverDeleteMatch[1])
+      try {
+        const result = await removeMcpServerConfig(name)
+        return sendJson(res, 200, {
+          ok: true,
+          name,
+          removed: Boolean(result?.removed ?? true),
+        })
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: err.message || 'Failed to remove MCP server.' })
       }
     }
 

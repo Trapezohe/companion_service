@@ -275,4 +275,59 @@ export class McpManager {
     }
     return count
   }
+
+  async upsertServer(name, config, options = {}) {
+    const serverName = typeof name === 'string' ? name.trim() : ''
+    if (!serverName) throw new Error('MCP server name is required.')
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error('MCP server config must be an object.')
+    }
+    const command = typeof config.command === 'string' ? config.command.trim() : ''
+    if (!command) throw new Error('MCP server config.command is required.')
+    const normalizedConfig = {
+      command,
+      args: Array.isArray(config.args)
+        ? config.args.filter((item) => typeof item === 'string')
+        : [],
+      env: config.env && typeof config.env === 'object' && !Array.isArray(config.env)
+        ? config.env
+        : {},
+      cwd: typeof config.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : undefined,
+    }
+
+    const existing = this.#servers.get(serverName)
+    if (existing) {
+      await this.stopServer(serverName)
+      existing.config = normalizedConfig
+      existing.error = null
+    } else {
+      this.#servers.set(serverName, {
+        name: serverName,
+        config: normalizedConfig,
+        status: 'stopped',
+        transport: null,
+        tools: [],
+        capabilities: null,
+        error: null,
+        startedAt: null,
+      })
+    }
+
+    if (options.start === false) {
+      return { ok: true, name: serverName }
+    }
+
+    await this.startServer(serverName)
+    return { ok: true, name: serverName }
+  }
+
+  async deleteServer(name) {
+    const serverName = typeof name === 'string' ? name.trim() : ''
+    if (!serverName) throw new Error('MCP server name is required.')
+    const existing = this.#servers.get(serverName)
+    if (!existing) return { ok: true, name: serverName, removed: false }
+    await this.stopServer(serverName)
+    this.#servers.delete(serverName)
+    return { ok: true, name: serverName, removed: true }
+  }
 }
