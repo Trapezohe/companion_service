@@ -58,6 +58,7 @@ import {
 } from './approval-store.mjs'
 import { handleAcpRequest } from './acp-routes.mjs'
 import { cleanupAllAcpSessions } from './acp-session.mjs'
+import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
 
 // ── Auth rate limiter ──
 
@@ -505,6 +506,28 @@ export function createCompanionServer({
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       return sendJson(res, 200, buildCompanionCapabilitiesPayload())
+    }
+
+    if (req.method === 'GET' && pathname === '/api/system/diagnostics') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const capabilities = buildCompanionCapabilitiesPayload()
+      const diagnostics = await buildDiagnosticsPayload({
+        protocolVersion: capabilities.protocolVersion,
+        version: capabilities.version,
+        getPermissionPolicy,
+        mcpManager,
+      })
+      return sendJson(res, 200, diagnostics)
+    }
+
+    if (req.method === 'GET' && pathname === '/api/system/self-check') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const result = await runCompanionSelfCheck({
+        getPermissionPolicy,
+      })
+      return sendJson(res, 200, result)
     }
 
     // ── Command Runtime endpoints ──

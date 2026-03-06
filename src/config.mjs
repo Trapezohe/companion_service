@@ -16,7 +16,7 @@ export const COMPANION_SUPPORTED_FEATURES = {
   acp: true,
   mcp: true,
   cronReplay: true,
-  diagnostics: false,
+  diagnostics: true,
   approvalStore: true,
   runLedger: true,
 }

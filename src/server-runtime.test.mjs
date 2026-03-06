@@ -96,6 +96,46 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(capabilities.payload.supportedFeatures.approvalStore, true)
 })
 
+test('diagnostics and self-check endpoints return structured companion health details', async (t) => {
+  const ctx = await startTestServer({
+    mcpManager: {
+      getConnectedCount: () => 1,
+      getAllTools: () => [{ server: 'bnbchain-mcp', name: 'get_latest_block' }],
+      getServers: () => [{
+        name: 'bnbchain-mcp',
+        status: 'connected',
+        toolCount: 1,
+        command: 'node',
+        args: ['server.js'],
+      }],
+      callTool: async () => ({ ok: true }),
+      restartServer: async () => {},
+    },
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const diagnostics = await requestJson(ctx, '/api/system/diagnostics')
+  assert.equal(diagnostics.status, 200)
+  assert.equal(typeof diagnostics.payload.protocolVersion, 'string')
+  assert.equal(typeof diagnostics.payload.version, 'string')
+  assert.equal(typeof diagnostics.payload.mcp.connectedServers, 'number')
+  assert.ok(Array.isArray(diagnostics.payload.mcp.servers))
+  assert.ok(Array.isArray(diagnostics.payload.runs.recentFailed))
+  assert.ok(Array.isArray(diagnostics.payload.approvals.pending))
+  assert.equal(typeof diagnostics.payload.acp.totalSessions, 'number')
+
+  const selfCheck = await requestJson(ctx, '/api/system/self-check')
+  assert.equal(selfCheck.status, 200)
+  assert.equal(selfCheck.payload.ok, true)
+  assert.equal(typeof selfCheck.payload.checks.configReadable.ok, 'boolean')
+  assert.equal(typeof selfCheck.payload.checks.tokenPresent.ok, 'boolean')
+  assert.equal(typeof selfCheck.payload.checks.workspacePolicy.ok, 'boolean')
+  assert.ok(Array.isArray(selfCheck.payload.checks.mcpExecutables))
+})
+
 async function waitForSessionExit(ctx, sessionId, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
