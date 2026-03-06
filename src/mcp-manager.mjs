@@ -6,6 +6,9 @@
  */
 
 import { spawn } from 'node:child_process'
+import os from 'node:os'
+import { dirname, delimiter as PATH_DELIMITER, join } from 'node:path'
+import { existsSync, readdirSync } from 'node:fs'
 import { StdioTransport } from './mcp-transport.mjs'
 
 const MCP_PROTOCOL_VERSION = '2024-11-05'
@@ -13,6 +16,62 @@ const MCP_PROTOCOL_VERSION = '2024-11-05'
 const CLIENT_INFO = {
   name: 'trapezohe-companion',
   version: '0.1.0',
+}
+
+function splitPathEntries(pathValue) {
+  if (!pathValue || typeof pathValue !== 'string') return []
+  return pathValue.split(PATH_DELIMITER).map((entry) => entry.trim()).filter(Boolean)
+}
+
+function getNvmNodeBinDirs(homeDir) {
+  if (!homeDir) return []
+  const nodeVersionsRoot = join(homeDir, '.nvm', 'versions', 'node')
+  try {
+    return readdirSync(nodeVersionsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      .map((version) => join(nodeVersionsRoot, version, 'bin'))
+      .filter((binDir) => existsSync(binDir))
+  } catch {
+    return []
+  }
+}
+
+export function buildMcpSpawnPath(basePath, opts = {}) {
+  const homeDir = opts.homeDir !== undefined ? opts.homeDir : (process.env.HOME || os.homedir())
+  const execDir = opts.execDir || dirname(process.execPath)
+  const entries = [
+    ...splitPathEntries(basePath),
+    execDir,
+    ...(homeDir ? [join(homeDir, 'bin'), join(homeDir, '.local', 'bin')] : []),
+    ...getNvmNodeBinDirs(homeDir),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ]
+
+  const deduped = []
+  const seen = new Set()
+  for (const entry of entries) {
+    if (!entry || seen.has(entry)) continue
+    seen.add(entry)
+    deduped.push(entry)
+  }
+  return deduped.join(PATH_DELIMITER)
+}
+
+function normalizeServerName(input) {
+  return typeof input === 'string' ? input.trim().toLowerCase() : ''
+}
+
+function getServerBaseName(input) {
+  const normalized = normalizeServerName(input)
+  if (!normalized) return ''
+  return normalized.endsWith('-mcp') ? normalized.slice(0, -4) : normalized
 }
 
 export class McpManager {
@@ -85,6 +144,7 @@ export class McpManager {
 
       const { command, args = [], env = {}, cwd } = entry.config
       const childEnv = { ...process.env, ...env }
+      childEnv.PATH = buildMcpSpawnPath(childEnv.PATH)
 
       // Use a promise to detect early spawn failure
       const proc = spawn(command, args, {
@@ -234,18 +294,20 @@ export class McpManager {
   }
 
   async callTool(serverName, toolName, args = {}) {
-    const entry = this.#servers.get(serverName)
+    const entry = this.#resolveServerEntry(serverName)
     if (!entry) {
-      return { ok: false, error: `Unknown MCP server: ${serverName}` }
+      const available = this.getServers().map((item) => item.name).filter(Boolean)
+      const hint = available.length > 0 ? ` Available servers: ${available.join(', ')}` : ''
+      return { ok: false, error: `Unknown MCP server: ${serverName}.${hint}` }
     }
     if (entry.status !== 'connected' || !entry.transport || entry.transport.closed) {
-      return { ok: false, error: `MCP server "${serverName}" is not connected (status: ${entry.status})` }
+      return { ok: false, error: `MCP server "${entry.name}" is not connected (status: ${entry.status})` }
     }
 
     // Verify tool exists
     const tool = entry.tools.find((t) => t.name === toolName)
     if (!tool) {
-      return { ok: false, error: `Tool "${toolName}" not found on server "${serverName}"` }
+      return { ok: false, error: `Tool "${toolName}" not found on server "${entry.name}"` }
     }
 
     try {
@@ -262,6 +324,35 @@ export class McpManager {
     } catch (err) {
       return { ok: false, error: err.message }
     }
+  }
+
+  #resolveServerEntry(serverName) {
+    const requested = typeof serverName === 'string' ? serverName.trim() : ''
+    if (!requested) return null
+
+    const exact = this.#servers.get(requested)
+    if (exact) return exact
+
+    const normalizedRequested = normalizeServerName(requested)
+    const requestedBase = getServerBaseName(requested)
+    if (!normalizedRequested || !requestedBase) return null
+
+    const candidates = []
+    for (const [, entry] of this.#servers) {
+      const normalizedEntry = normalizeServerName(entry.name)
+      if (!normalizedEntry) continue
+      const entryBase = getServerBaseName(entry.name)
+      if (
+        normalizedEntry === normalizedRequested
+        || entryBase === requestedBase
+        || normalizedEntry === `${requestedBase}-mcp`
+      ) {
+        candidates.push(entry)
+      }
+    }
+
+    if (candidates.length !== 1) return null
+    return candidates[0]
   }
 
   getServerCount() {
