@@ -6,7 +6,7 @@
  * The extension polls /api/cron/pending on startup and catches up.
  */
 
-import { getJobs, addPendingRun } from './cron-store.mjs'
+import { getJobs, addPendingRun, upsertJob } from './cron-store.mjs'
 import { createRun, updateRun } from './run-store.mjs'
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
@@ -63,6 +63,8 @@ function scheduleJob(job) {
   if (!job.enabled) return
 
   const delay = computeDelay(job.schedule)
+  job.nextRunAt = Date.now() + delay
+  void upsertJob(job).catch(() => undefined)
 
   const timer = setTimeout(async () => {
     console.log(`[cron-companion] Timer fired for "${job.name}" (${job.id}), marking as pending`)

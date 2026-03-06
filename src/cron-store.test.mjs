@@ -66,3 +66,28 @@ test('ackPendingRuns removes all entries for given taskIds', async () => {
     assert.equal(pending[0].taskId, 'task-b')
   })
 })
+
+test('addPendingRun returns a correlated pending record with stable fields', async () => {
+  await withTempHome(async ({ mod }) => {
+    const pending = await mod.addPendingRun('task-z')
+    assert.equal(pending.taskId, 'task-z')
+    assert.equal(typeof pending.pendingId, 'string')
+    assert.equal(typeof pending.missedAt, 'number')
+  })
+})
+
+test('upsertJob preserves nextRunAt metadata', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.upsertJob({
+      id: 'job-next',
+      name: 'Job next',
+      enabled: true,
+      schedule: { kind: 'interval', minutes: 5 },
+      nextRunAt: 123456,
+    })
+
+    const jobs = mod.getJobs()
+    assert.equal(jobs.length, 1)
+    assert.equal(jobs[0].nextRunAt, 123456)
+  })
+})

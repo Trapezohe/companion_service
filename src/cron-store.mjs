@@ -7,6 +7,7 @@
  */
 
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { getConfigDir, ensureConfigDir } from './config.mjs'
 
@@ -86,8 +87,10 @@ export async function addPendingRun(taskId) {
   // Compaction: keep only the latest pending entry per taskId.
   // Older entries for the same task are stale (the extension coalesces by latest missedAt anyway).
   store.pending = store.pending.filter((p) => p.taskId !== taskId)
-  store.pending.push({ taskId, missedAt: Date.now() })
+  const pending = { pendingId: randomUUID(), taskId, missedAt: Date.now() }
+  store.pending.push(pending)
   await saveStore()
+  return pending
 }
 
 export async function ackPendingRuns(taskIds) {
