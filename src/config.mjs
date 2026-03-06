@@ -108,6 +108,14 @@ function normalizeMcpServerConfig(input) {
       .filter(Boolean)
     : []
 
+  // Backward-compatibility shim: historical docs/examples used a package name
+  // that does not exist on npm. Rewrite it to the canonical package.
+  for (let i = 0; i < args.length; i++) {
+    if (/^@bnb-chain\/bnbchain-mcp(?:@.+)?$/i.test(args[i])) {
+      args[i] = '@bnb-chain/mcp@latest'
+    }
+  }
+
   const env = {}
   if (input.env !== undefined) {
     if (!input.env || typeof input.env !== 'object' || Array.isArray(input.env)) {

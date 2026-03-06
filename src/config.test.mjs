@@ -64,3 +64,18 @@ test('config directory and files are private by default on unix-like platforms',
     assert.equal(pidRaw.trim(), '12345')
   })
 })
+
+test('updateMcpServerConfig rewrites legacy bnbchain package name to canonical package', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.initConfig()
+    await mod.updateMcpServerConfig('bnbchain-mcp', {
+      command: 'npx',
+      args: ['-y', '@bnb-chain/bnbchain-mcp'],
+    })
+
+    const loaded = await mod.loadConfig()
+    const server = loaded.mcpServers['bnbchain-mcp']
+    assert.ok(server)
+    assert.deepEqual(server.args, ['-y', '@bnb-chain/mcp@latest'])
+  })
+})
