@@ -98,3 +98,24 @@ test('stopServer clears stale disconnected/error state', async () => {
   assert.equal(status.error, null)
   assert.equal(status.toolCount, 0)
 })
+
+test('startServer applies restart backoff after repeated failures', async () => {
+  const manager = new McpManager({
+    broken: {
+      command: 'definitely-not-a-real-binary-trapezohe',
+      args: [],
+    },
+  })
+
+  await assert.rejects(() => manager.startServer('broken'))
+  await assert.rejects(
+    () => manager.startServer('broken'),
+    /backoff|retry/i,
+  )
+
+  const status = manager.getServers().find((item) => item.name === 'broken')
+  assert.ok(status)
+  assert.equal(typeof status.failureCount, 'number')
+  assert.equal(status.failureCount >= 1, true)
+  assert.equal(typeof status.nextRetryAt, 'number')
+})

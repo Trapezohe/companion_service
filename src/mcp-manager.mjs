@@ -17,6 +17,8 @@ const CLIENT_INFO = {
   name: 'trapezohe-companion',
   version: '0.1.0',
 }
+const MCP_RESTART_BASE_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS || 2_000)
+const MCP_RESTART_MAX_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS || 30_000)
 
 function splitPathEntries(pathValue) {
   if (!pathValue || typeof pathValue !== 'string') return []
@@ -99,6 +101,9 @@ export class McpManager {
         capabilities: null,
         error: null,
         startedAt: null,
+        failureCount: 0,
+        lastFailureAt: null,
+        nextRetryAt: null,
       })
     }
   }
@@ -125,6 +130,11 @@ export class McpManager {
   async startServer(name) {
     const entry = this.#servers.get(name)
     if (!entry) throw new Error(`Unknown MCP server: ${name}`)
+
+    const now = Date.now()
+    if (typeof entry.nextRetryAt === 'number' && entry.nextRetryAt > now) {
+      throw new Error(`MCP server "${name}" is in restart backoff. Retry after ${entry.nextRetryAt}.`)
+    }
 
     // Prevent concurrent startServer() calls for the same server
     if (this.#startingLocks.has(name)) {
@@ -224,12 +234,21 @@ export class McpManager {
       }
 
       entry.status = 'connected'
+      entry.failureCount = 0
+      entry.lastFailureAt = null
+      entry.nextRetryAt = null
       console.log(`[MCP] "${name}" connected — ${entry.tools.length} tool(s)`)
       return { name, tools: entry.tools.length }
     } catch (err) {
       entry.status = 'error'
       entry.error = err.message
       entry.tools = []
+      entry.failureCount = Number(entry.failureCount || 0) + 1
+      entry.lastFailureAt = now
+      entry.nextRetryAt = now + Math.min(
+        MCP_RESTART_MAX_BACKOFF_MS,
+        MCP_RESTART_BASE_BACKOFF_MS * (2 ** Math.max(0, entry.failureCount - 1)),
+      )
       // Cleanup transport if it was created
       if (entry.transport) {
         entry.transport.close()
@@ -272,6 +291,9 @@ export class McpManager {
         startedAt: entry.startedAt,
         command: entry.config.command,
         args: entry.config.args || [],
+        failureCount: entry.failureCount || 0,
+        lastFailureAt: entry.lastFailureAt,
+        nextRetryAt: entry.nextRetryAt,
       })
     }
     return result
