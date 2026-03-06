@@ -15,7 +15,7 @@ const MAX_RUNS = Math.max(1, Number(process.env.TRAPEZOHE_MAX_RUNS || 200) || 20
 const WRITE_DEBOUNCE_MS = Number(process.env.TRAPEZOHE_RUNS_WRITE_DEBOUNCE_MS || 300)
 
 const RUN_TYPES = new Set(['exec', 'session', 'cron', 'heartbeat', 'acp'])
-const RUN_STATES = new Set(['queued', 'running', 'waiting_approval', 'retrying', 'done', 'failed'])
+const RUN_STATES = new Set(['queued', 'idle', 'running', 'waiting_approval', 'retrying', 'done', 'failed', 'cancelled'])
 
 function RUNS_FILE() {
   return path.join(getConfigDir(), 'runs.json')
@@ -29,7 +29,7 @@ function RUNS_BACKUP_FILE() {
  * @typedef {{
  *   runId: string,
  *   type: 'exec'|'session'|'cron'|'heartbeat',
- *   state: 'queued'|'running'|'waiting_approval'|'retrying'|'done'|'failed',
+ *   state: 'queued'|'idle'|'running'|'waiting_approval'|'retrying'|'done'|'failed'|'cancelled',
  *   createdAt: number,
  *   updatedAt: number,
  *   startedAt?: number,

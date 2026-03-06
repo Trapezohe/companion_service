@@ -20,6 +20,7 @@ import {
   buildAgentPath,
   classifyNoOutputDiagnostic,
 } from './acp-session.mjs'
+import { setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -84,6 +85,31 @@ test('createAcpSession creates session in idle state', async (t) => {
   assert.ok(session)
   assert.equal(session.agentType, 'raw')
   assert.equal(session.state, 'idle')
+})
+
+test('ACP lifecycle hook receives create -> running -> terminal transitions', async (t) => {
+  cleanupAllAcpSessions()
+  t.after(() => cleanupAllAcpSessions())
+
+  const transitions = []
+  const detach = setAcpSessionTransitionHook((event) => {
+    transitions.push(`${event.fromState || 'none'}->${event.toState}`)
+  })
+  t.after(() => detach())
+
+  const { sessionId } = createAcpSession({
+    agentType: 'raw',
+    cwd: process.cwd(),
+    command: 'node -e "process.stdin.on(\'data\', () => { console.log(JSON.stringify({type:\'message_stop\',message:{stop_reason:\'end_turn\'}})); process.exit(0); })"',
+    timeoutMs: 8_000,
+  })
+
+  await enqueuePrompt(sessionId, { prompt: 'hello' })
+  await waitForEventType(sessionId, 'done')
+  await waitForState(sessionId, ['done', 'error'])
+
+  assert.ok(transitions.includes('idle->running'))
+  assert.ok(transitions.some((item) => item === 'running->done' || item === 'running->error'))
 })
 
 // ── Test 2: enqueuePrompt spawns agent and produces events ──

@@ -10,6 +10,13 @@ import { createInterface } from 'node:readline'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { readdirSync, existsSync, mkdirSync, copyFileSync, cpSync, statSync } from 'node:fs'
 import { join, dirname, delimiter as PATH_DELIMITER } from 'node:path'
+import { applyAcpSessionState, setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
+import {
+  buildAgentPath as buildAgentPathFromAuth,
+  normalizeClaudeAuthEnv as normalizeClaudeAuthEnvFromAuth,
+  resolveAgentAuthCheck as resolveAgentAuthCheckFromAuth,
+  resolveAgentDefaultCommand,
+} from './acp-auth.mjs'
 
 // ── Constants ──
 
@@ -34,6 +41,8 @@ const CODEX_ISOLATED_HOME_DIRNAME = 'codex-home'
 const CODEX_HOME_SYNC_FILES = ['auth.json', 'config.toml', 'models_cache.json', 'version.json', 'AGENTS.md']
 const CODEX_HOME_SYNC_DIRS = ['skills', 'rules', 'vendor_imports']
 const DEFAULT_SESSION_PROBE_HEARTBEATS = Number(process.env.TRAPEZOHE_ACP_SESSION_PROBE_HEARTBEATS || 2)
+
+export { setAcpSessionTransitionHook }
 
 // ── Module-level singletons ──
 
@@ -363,29 +372,7 @@ function getNvmNodeBinDirs(homeDir) {
 }
 
 export function buildAgentPath(basePath, opts = {}) {
-  const homeDir = opts.homeDir !== undefined ? opts.homeDir : process.env.HOME
-  const execDir = opts.execDir || dirname(process.execPath)
-  const entries = [
-    ...splitPathEntries(basePath),
-    execDir,
-    ...(homeDir ? [join(homeDir, 'bin'), join(homeDir, '.local', 'bin')] : []),
-    ...getNvmNodeBinDirs(homeDir),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-    '/bin',
-    '/usr/sbin',
-    '/sbin',
-  ].filter(Boolean)
-
-  const deduped = []
-  const seen = new Set()
-  for (const entry of entries) {
-    if (seen.has(entry)) continue
-    seen.add(entry)
-    deduped.push(entry)
-  }
-  return deduped.join(PATH_DELIMITER)
+  return buildAgentPathFromAuth(basePath, opts)
 }
 
 function looksLikeApiKeyToken(value) {
@@ -411,82 +398,11 @@ function stripAgentRuntimeMarkers(env, agentType) {
 
 
 export function normalizeClaudeAuthEnv(env = {}) {
-  const normalized = env
-
-  // 1. Explicit ANTHROPIC_API_KEY takes highest priority
-  const currentApiKey = hasNonEmptyString(normalized.ANTHROPIC_API_KEY)
-    ? normalized.ANTHROPIC_API_KEY.trim()
-    : ''
-  if (currentApiKey) {
-    normalized.ANTHROPIC_API_KEY = currentApiKey
-    return normalized
-  }
-
-  // 2. CRS_OAI_KEY → ANTHROPIC_API_KEY (x-api-key header for CRS proxy).
-  //    Using API_KEY path bypasses Claude Code's OAuth validation, which would
-  //    fail because cr_ tokens are not valid Anthropic OAuth tokens.
-  //    Caller is responsible for clearing ANTHROPIC_AUTH_TOKEN when appropriate.
-  const crsKey = hasNonEmptyString(normalized.CRS_OAI_KEY)
-    ? normalized.CRS_OAI_KEY.trim()
-    : ''
-  if (crsKey) {
-    normalized.ANTHROPIC_API_KEY = crsKey
-    return normalized
-  }
-
-  // 3. ANTHROPIC_AUTH_TOKEN that looks like a real API key → promote to ANTHROPIC_API_KEY
-  const authToken = hasNonEmptyString(normalized.ANTHROPIC_AUTH_TOKEN)
-    ? normalized.ANTHROPIC_AUTH_TOKEN.trim()
-    : ''
-  if (looksLikeApiKeyToken(authToken)) {
-    normalized.ANTHROPIC_API_KEY = authToken
-  }
-  return normalized
+  return normalizeClaudeAuthEnvFromAuth(env)
 }
 
 export function resolveAgentAuthCheck(agentType, env = {}) {
-  const normalizedType = String(agentType || '').toLowerCase()
-  if (normalizedType !== 'claude-code') {
-    return { blocking: false, missingKeys: [] }
-  }
-  const enforceAuthEnv = parseOptionalBoolean(process.env.TRAPEZOHE_ACP_ENFORCE_CLAUDE_AUTH_ENV) === true
-  const normalizedEnv = normalizeClaudeAuthEnv({ ...env })
-
-  const token = hasNonEmptyString(normalizedEnv.ANTHROPIC_API_KEY)
-    ? normalizedEnv.ANTHROPIC_API_KEY.trim()
-    : hasNonEmptyString(normalizedEnv.CRS_OAI_KEY)
-      ? normalizedEnv.CRS_OAI_KEY.trim()
-      : hasNonEmptyString(normalizedEnv.ANTHROPIC_AUTH_TOKEN)
-        ? normalizedEnv.ANTHROPIC_AUTH_TOKEN.trim()
-        : ''
-  const authToken = hasNonEmptyString(normalizedEnv.ANTHROPIC_AUTH_TOKEN)
-    ? normalizedEnv.ANTHROPIC_AUTH_TOKEN.trim()
-    : hasNonEmptyString(normalizedEnv.ANTHROPIC_API_KEY)
-      ? normalizedEnv.ANTHROPIC_API_KEY.trim()
-      : ''
-
-  if (!token) {
-    if (enforceAuthEnv) {
-      return {
-        blocking: true,
-        missingKeys: ['ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY'],
-        message:
-          'Missing Claude auth env. Configure ANTHROPIC_AUTH_TOKEN (or ANTHROPIC_API_KEY) in extension Environment Variables.',
-      }
-    }
-    // Default behavior: allow Claude Code local credentials (~/.claude) without env vars.
-    return { blocking: false, missingKeys: [] }
-  }
-
-  const missingKeys = []
-  if (
-    (token.startsWith('cr_') || authToken.startsWith('cr_'))
-    && !hasNonEmptyString(normalizedEnv.ANTHROPIC_BASE_URL)
-  ) {
-    missingKeys.push('ANTHROPIC_BASE_URL')
-  }
-
-  return { blocking: false, missingKeys }
+  return resolveAgentAuthCheckFromAuth(agentType, env)
 }
 
 function supportsClaudeNonInteractivePermissionsFlag() {
@@ -1411,7 +1327,7 @@ function spawnAgentChild(session, opts) {
   const { command, cwd, env, timeoutMs, prompt } = opts
   const startedAt = now()
   session.startedAt = startedAt
-  session.state = 'running'
+  applyAcpSessionState(session, 'running', { reason: 'spawn', cwd: cwd || process.cwd() })
 
   let args
   let bin
@@ -1510,7 +1426,7 @@ function spawnAgentChild(session, opts) {
       message: authCheck.message || 'Missing auth env for agent process.',
     })
     session.terminalEmitted = true
-    session.state = 'error'
+    applyAcpSessionState(session, 'error', { reason: 'missing_auth_env' })
     session.finishedAt = now()
     return
   }
@@ -1528,7 +1444,7 @@ function spawnAgentChild(session, opts) {
       message: err.message,
     })
     if (termEvent) pushAcpEvent(session.sessionId, termEvent)
-    session.state = 'error'
+    applyAcpSessionState(session, 'error', { reason: 'spawn_failed' })
     session.finishedAt = now()
     return
   }
@@ -1600,7 +1516,7 @@ function spawnAgentChild(session, opts) {
         timeoutMs: effectiveTimeout,
       })
       if (termEvent) pushAcpEvent(session.sessionId, termEvent)
-      session.state = 'timeout'
+      applyAcpSessionState(session, 'timeout', { reason: 'timeout', timeoutMs: effectiveTimeout })
       session.finishedAt = now()
       clearNoOutputWatchdog(session)
       try { child.kill('SIGTERM') } catch { /* ignore */ }
@@ -1621,7 +1537,7 @@ function spawnAgentChild(session, opts) {
     })
     if (termEvent) pushAcpEvent(session.sessionId, termEvent)
     if (session.state === 'running') {
-      session.state = 'error'
+      applyAcpSessionState(session, 'error', { reason: 'child_error' })
       session.finishedAt = now()
     }
   })
@@ -1638,7 +1554,10 @@ function spawnAgentChild(session, opts) {
     })
     if (termEvent) pushAcpEvent(session.sessionId, termEvent)
     if (session.state === 'running') {
-      session.state = exitCode === 0 ? 'done' : 'error'
+      applyAcpSessionState(session, exitCode === 0 ? 'done' : 'error', {
+        reason: 'process_exit',
+        exitCode,
+      })
       session.finishedAt = now()
     }
   })
@@ -1656,37 +1575,7 @@ function spawnAgentChild(session, opts) {
  * Returns null for 'raw' (caller must provide command explicitly).
  */
 export function resolveDefaultCommand(agentType, prompt, agentSessionId) {
-  const type = (agentType || '').toLowerCase()
-  if (type === 'claude-code') {
-    // claude --print streams JSON to stdout; prompt is a positional arg
-    const command = [
-      'claude', '--print',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--dangerously-skip-permissions',
-      // ACP runs are non-interactive; avoid tool-induced deadlocks that require
-      // a human to answer questions in a non-tty context.
-      '--disallowedTools', 'AskUserQuestion',
-    ]
-    if (hasNonEmptyString(agentSessionId)) {
-      command.push('--session-id', String(agentSessionId).trim())
-    }
-    if (supportsClaudeNonInteractivePermissionsFlag()) {
-      command.push('--non-interactive-permissions', 'fail')
-    }
-    if (prompt) command.push(prompt)
-    return command
-  }
-  if (type === 'codex') {
-    return [
-      'codex', 'exec',
-      '--json',
-      '--dangerously-bypass-approvals-and-sandbox',
-      '-c', `model_reasoning_effort=${CODEX_SAFE_REASONING_EFFORT}`,
-      ...(prompt ? [prompt] : []),
-    ]
-  }
-  return null // 'raw' — caller supplies command
+  return resolveAgentDefaultCommand(agentType, prompt, agentSessionId)
 }
 
 export function createAcpSession(opts = {}) {
@@ -1695,7 +1584,7 @@ export function createAcpSession(opts = {}) {
   const session = {
     sessionId,
     agentType,
-    state: 'idle',
+    state: null,
     cwd: opts.cwd || process.cwd(),
     command: opts.command || null, // resolved lazily in enqueuePrompt
     env: opts.env || undefined,
@@ -1736,7 +1625,8 @@ export function createAcpSession(opts = {}) {
   }
   acpSessions.set(sessionId, session)
   acpEventBuffers.set(sessionId, [])
-  return { sessionId, state: session.state }
+  applyAcpSessionState(session, 'idle', { reason: 'create' })
+  return getAcpSessionById(sessionId)
 }
 
 export function getAcpSessionById(sessionId) {
@@ -1757,6 +1647,13 @@ export function getAcpSessionById(sessionId) {
     terminalEmitted: session.terminalEmitted,
     runtimeSessionId: session.runtimeSessionId || null,
   }
+}
+
+export function attachAcpSessionRunId(sessionId, runId) {
+  const session = acpSessions.get(sessionId)
+  if (!session) return null
+  session.runId = runId || null
+  return getAcpSessionById(sessionId)
 }
 
 export function listAcpSessions(options = {}) {
@@ -1806,7 +1703,7 @@ export function enqueuePrompt(sessionId, opts = {}) {
       session.timeoutRef = undefined
     }
     clearNoOutputWatchdog(session)
-    session.state = 'idle'
+    applyAcpSessionState(session, 'idle', { reason: 'reuse_reset', previousState })
     session.startedAt = undefined
     session.finishedAt = undefined
     session.currentTurnId = null
@@ -1946,7 +1843,7 @@ export function cancelAcpSession(sessionId) {
       pushAcpEvent(session.sessionId, termEvent)
     }
 
-    session.state = 'cancelled'
+    applyAcpSessionState(session, 'cancelled', { reason: 'cancel' })
     session.finishedAt = session.finishedAt || now()
 
     if (!session.child) {

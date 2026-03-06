@@ -57,7 +57,7 @@ import {
   flushApprovalStore,
 } from './approval-store.mjs'
 import { handleAcpRequest } from './acp-routes.mjs'
-import { cleanupAllAcpSessions } from './acp-session.mjs'
+import { cleanupAllAcpSessions, setAcpSessionTransitionHook } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
 
 // ── Auth rate limiter ──
@@ -381,9 +381,38 @@ export function createCompanionServer({
   shutdownFn = null,
   cleanupFn = null,
 }) {
-  void loadRunStore().catch(() => undefined)
-  void loadApprovalStore().catch(() => undefined)
+  const initStoresPromise = Promise.all([
+    loadRunStore().catch(() => undefined),
+    loadApprovalStore().catch(() => undefined),
+  ])
   const sessionRunIndex = new Map()
+  const detachAcpTransitionHook = setAcpSessionTransitionHook(async (event) => {
+    const runId = event.runId || sessionRunIndex.get(event.sessionId)
+    if (!runId) return
+    const mappedState =
+      event.toState === 'idle'
+        ? 'idle'
+        : event.toState === 'running'
+          ? 'running'
+          : event.toState === 'done'
+            ? 'done'
+            : event.toState === 'cancelled'
+              ? 'cancelled'
+              : 'failed'
+    await updateRun(runId, {
+      state: mappedState,
+      ...(mappedState === 'running' || mappedState === 'idle'
+        ? { startedAt: Date.now() }
+        : { finishedAt: Date.now() }),
+      summary: `ACP session ${event.toState}`,
+      ...(mappedState === 'failed' ? { error: String(event.meta?.reason || 'acp_error') } : {}),
+      meta: {
+        sessionId: event.sessionId,
+        agentType: event.agentType,
+        ...(event.meta && typeof event.meta === 'object' ? event.meta : {}),
+      },
+    }).catch(() => undefined)
+  })
   const detachSessionExitListener = addSessionExitListener((session) => {
     const runId = sessionRunIndex.get(session.sessionId || '')
     if (!runId) return
@@ -430,7 +459,27 @@ export function createCompanionServer({
     }
   }
 
+  const createAcpRun = async (session) => {
+    try {
+      const run = await createRun({
+        type: 'acp',
+        state: 'idle',
+        summary: 'ACP session created',
+        meta: {
+          sessionId: session.sessionId,
+          agentType: session.agentType,
+          cwd: session.cwd,
+        },
+      })
+      sessionRunIndex.set(session.sessionId, run.runId)
+      return run
+    } catch {
+      return null
+    }
+  }
+
   const server = createServer(async (req, res) => {
+    await initStoresPromise
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
     const pathname = url.pathname
 
@@ -937,6 +986,7 @@ export function createCompanionServer({
       authorize: (r) => authorize(r, token),
       sendJson,
       readJsonBody,
+      createAcpRun,
     })
     if (acpHandled) return
 
@@ -949,6 +999,7 @@ export function createCompanionServer({
   // Cleanup on server close
   server.on('close', () => {
     detachSessionExitListener()
+    detachAcpTransitionHook()
     sessionRunIndex.clear()
     stopSessionPruner()
     cleanupAllSessions()

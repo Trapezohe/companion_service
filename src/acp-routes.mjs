@@ -6,6 +6,7 @@
 
 import {
   createAcpSession,
+  attachAcpSessionRunId,
   getAcpSessionById,
   listAcpSessions,
   enqueuePrompt,
@@ -48,7 +49,13 @@ export async function handleAcpRequest(req, res, url, pathname, ctx) {
         env: body.env,
         timeoutMs: body.timeoutMs,
       })
-      sendJson(res, 200, result)
+      if (typeof ctx.createAcpRun === 'function') {
+        const run = await ctx.createAcpRun(result)
+        if (run?.runId) {
+          attachAcpSessionRunId(result.sessionId, run.runId)
+        }
+      }
+      sendJson(res, 200, getAcpSessionById(result.sessionId) || result)
       return true
     }
 

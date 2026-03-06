@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { createCompanionServer } from './server.mjs'
 import { cleanupAllSessions } from './runtime.mjs'
+import { listRuns } from './run-store.mjs'
 
 function createMcpManagerStub() {
   return {
@@ -496,4 +497,50 @@ test('mcp server delete endpoint removes server config', async (t) => {
   assert.equal(response.payload.removed, true)
   assert.deepEqual(removed, ['bnbchain-mcp'])
   assert.equal(servers.length, 0)
+})
+
+test('ACP session creation and prompt execution are reflected in runtime runs ledger', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const created = await requestJson(ctx, '/api/acp/sessions', {
+    method: 'POST',
+    body: {
+      agentType: 'raw',
+      cwd: process.cwd(),
+      command: [
+        'node',
+        '-e',
+        'process.stdin.on("data", () => { console.log(JSON.stringify({ type: "message_stop", message: { stop_reason: "end_turn" } })); process.exit(0); })',
+      ],
+      timeoutMs: 5_000,
+    },
+  })
+  assert.equal(created.status, 200)
+  assert.ok(created.payload.sessionId)
+  assert.ok(created.payload.runId)
+
+  const promptRes = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/prompt`, {
+    method: 'POST',
+    body: { prompt: 'hello' },
+  })
+  assert.equal(promptRes.status, 200)
+
+  const deadline = Date.now() + 8_000
+  let acpRun = null
+  while (Date.now() < deadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    acpRun = runs.runs.find((run) => run.runId === created.payload.runId) || null
+    if (acpRun && ['done', 'failed'].includes(acpRun.state)) {
+      break
+    }
+    await delay(50)
+  }
+  assert.ok(acpRun)
+  assert.equal(acpRun.type, 'acp')
+  assert.equal(acpRun.meta?.sessionId, created.payload.sessionId)
+  assert.equal(acpRun.state, 'done')
 })
