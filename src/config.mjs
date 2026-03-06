@@ -11,6 +11,15 @@ const CONFIG_DIR_MODE = 0o700
 const CONFIG_FILE_MODE = 0o600
 
 const DEFAULT_PERMISSION_POLICY = normalizePermissionPolicy({ mode: 'full' })
+export const COMPANION_PROTOCOL_VERSION = '2026-03-07'
+export const COMPANION_SUPPORTED_FEATURES = {
+  acp: true,
+  mcp: true,
+  cronReplay: true,
+  diagnostics: false,
+  approvalStore: true,
+  runLedger: true,
+}
 
 const DEFAULT_CONFIG = {
   port: 41591,

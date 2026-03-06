@@ -7,6 +7,7 @@
 
 import { createServer } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { COMPANION_PROTOCOL_VERSION, COMPANION_SUPPORTED_FEATURES } from './config.mjs'
 import {
   runCommand,
   resolveCwd,
@@ -88,6 +89,16 @@ function sendJson(res, status, payload) {
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   })
   res.end(JSON.stringify(payload))
+}
+
+function buildCompanionCapabilitiesPayload() {
+  return {
+    protocolVersion: `trapezohe-companion/${COMPANION_PROTOCOL_VERSION}`,
+    version: '0.1.0',
+    supportedFeatures: {
+      ...COMPANION_SUPPORTED_FEATURES,
+    },
+  }
 }
 
 function isLoopback(addr) {
@@ -431,11 +442,14 @@ export function createCompanionServer({
     if (req.method === 'GET' && pathname === '/healthz') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const capabilities = buildCompanionCapabilitiesPayload()
       return sendJson(res, 200, {
         ok: true,
         ts: Date.now(),
         pid: process.pid,
-        version: '0.1.0',
+        version: capabilities.version,
+        protocolVersion: capabilities.protocolVersion,
+        supportedFeatures: capabilities.supportedFeatures,
         mcpServers: mcpManager.getConnectedCount(),
         mcpTools: mcpManager.getAllTools().length,
         permissionPolicy: normalizePermissionPolicy(getPermissionPolicy()),
@@ -485,6 +499,12 @@ export function createCompanionServer({
         setTimeout(() => shutdownFn(), 200)
       }
       return
+    }
+
+    if (req.method === 'GET' && pathname === '/api/system/capabilities') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      return sendJson(res, 200, buildCompanionCapabilitiesPayload())
     }
 
     // ── Command Runtime endpoints ──

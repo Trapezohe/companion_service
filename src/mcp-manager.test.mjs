@@ -61,3 +61,40 @@ test('callTool unknown-server error includes available server hints', async () =
   assert.match(result.error || '', /Unknown MCP server/)
   assert.match(result.error || '', /Available servers: bnbchain-mcp/)
 })
+
+test('startServer surfaces spawn failures and marks server status as error', async () => {
+  const manager = new McpManager({
+    broken: {
+      command: 'definitely-not-a-real-binary-trapezohe',
+      args: [],
+    },
+  })
+
+  await assert.rejects(
+    () => manager.startServer('broken'),
+    /ENOENT|not found|spawn/i,
+  )
+
+  const status = manager.getServers().find((item) => item.name === 'broken')
+  assert.ok(status)
+  assert.equal(status.status, 'error')
+  assert.match(status.error || '', /ENOENT|not found|spawn/i)
+})
+
+test('stopServer clears stale disconnected/error state', async () => {
+  const manager = new McpManager({
+    broken: {
+      command: 'definitely-not-a-real-binary-trapezohe',
+      args: [],
+    },
+  })
+
+  await assert.rejects(() => manager.startServer('broken'))
+  await manager.stopServer('broken')
+
+  const status = manager.getServers().find((item) => item.name === 'broken')
+  assert.ok(status)
+  assert.equal(status.status, 'stopped')
+  assert.equal(status.error, null)
+  assert.equal(status.toolCount, 0)
+})

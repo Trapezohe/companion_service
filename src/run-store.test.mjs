@@ -124,3 +124,34 @@ test('run store falls back to backup file when main file is corrupted', async ()
     assert.equal(run.summary, 'from backup')
   })
 })
+
+test('run store persists runs across module reload', async () => {
+  await withTempHome(async ({ mod }) => {
+    const created = await mod.createRun({
+      runId: 'run-persisted',
+      type: 'exec',
+      state: 'done',
+      summary: 'persist me',
+    })
+    assert.equal(created.runId, 'run-persisted')
+    await mod.flushRunStore()
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+
+    const fetched = await reloaded.getRunById('run-persisted')
+    assert.ok(fetched)
+    assert.equal(fetched.summary, 'persist me')
+  })
+})
+
+test('run store returns null for missing run updates', async () => {
+  await withTempHome(async ({ mod }) => {
+    const updated = await mod.updateRun('missing-run', {
+      state: 'done',
+      summary: 'should not exist',
+    })
+    assert.equal(updated, null)
+  })
+})

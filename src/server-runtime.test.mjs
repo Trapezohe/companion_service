@@ -73,6 +73,29 @@ async function requestJson(ctx, endpoint, options = {}) {
   }
 }
 
+test('health and capabilities endpoints expose protocol contract fields', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const health = await requestJson(ctx, '/healthz')
+  assert.equal(health.status, 200)
+  assert.equal(typeof health.payload.protocolVersion, 'string')
+  assert.equal(typeof health.payload.supportedFeatures, 'object')
+  assert.equal(health.payload.supportedFeatures.acp, true)
+  assert.equal(health.payload.supportedFeatures.mcp, true)
+  assert.equal(health.payload.supportedFeatures.cronReplay, true)
+
+  const capabilities = await requestJson(ctx, '/api/system/capabilities')
+  assert.equal(capabilities.status, 200)
+  assert.equal(capabilities.payload.protocolVersion, health.payload.protocolVersion)
+  assert.equal(capabilities.payload.version, health.payload.version)
+  assert.equal(capabilities.payload.supportedFeatures.runLedger, true)
+  assert.equal(capabilities.payload.supportedFeatures.approvalStore, true)
+})
+
 async function waitForSessionExit(ctx, sessionId, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
