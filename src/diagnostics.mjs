@@ -69,7 +69,7 @@ async function checkNativeHostRegistration(config) {
     if (await exists(manifestPath)) matches.push(manifestPath)
   }
   return {
-    ok: extensionIds.length === 0 ? matches.length > 0 : matches.length > 0,
+    ok: matches.length > 0,
     extensionIds,
     manifests: matches,
   }
@@ -77,7 +77,7 @@ async function checkNativeHostRegistration(config) {
 
 export async function buildDiagnosticsPayload(params) {
   const config = await loadConfig()
-  const runs = await listRuns({ limit: 20, offset: 0 })
+  const runs = await listRuns({ limit: 100, offset: 0 })
   const approvals = await listPendingApprovals()
   const acpSessions = listAcpSessions({ limit: 100, offset: 0 })
   const permissionPolicy = normalizePermissionPolicy(params.getPermissionPolicy?.() || config.permissionPolicy)

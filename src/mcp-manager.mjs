@@ -19,6 +19,8 @@ const CLIENT_INFO = {
 }
 const MCP_RESTART_BASE_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS || 2_000)
 const MCP_RESTART_MAX_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS || 30_000)
+const MCP_MAX_STARTING = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_STARTING || 4))
+const MCP_MAX_CONNECTED = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_CONNECTED || 32))
 
 function splitPathEntries(pathValue) {
   if (!pathValue || typeof pathValue !== 'string') return []
@@ -76,6 +78,17 @@ function getServerBaseName(input) {
   return normalized.endsWith('-mcp') ? normalized.slice(0, -4) : normalized
 }
 
+function isWriteCapableToolName(name) {
+  return /(?:write|edit|delete|remove|create|update|upsert|insert|save|apply|transfer|approve|swap|send|execute|run)/i.test(String(name || ''))
+}
+
+function resolveWriteCapable(config, tools = []) {
+  if (typeof config?.writeCapable === 'boolean') {
+    return config.writeCapable
+  }
+  return tools.some((tool) => isWriteCapableToolName(tool?.name))
+}
+
 export class McpManager {
   #servers = new Map() // name → ServerEntry
   #startingLocks = new Set() // prevent concurrent startServer() for the same name
@@ -104,6 +117,7 @@ export class McpManager {
         failureCount: 0,
         lastFailureAt: null,
         nextRetryAt: null,
+        writeCapable: resolveWriteCapable(config),
       })
     }
   }
@@ -134,6 +148,12 @@ export class McpManager {
     const now = Date.now()
     if (typeof entry.nextRetryAt === 'number' && entry.nextRetryAt > now) {
       throw new Error(`MCP server "${name}" is in restart backoff. Retry after ${entry.nextRetryAt}.`)
+    }
+    if (this.#startingLocks.size >= MCP_MAX_STARTING) {
+      throw new Error(`MCP starting concurrency limit reached (${MCP_MAX_STARTING})`)
+    }
+    if (this.getConnectedCount() >= MCP_MAX_CONNECTED) {
+      throw new Error(`MCP connected server limit reached (${MCP_MAX_CONNECTED})`)
     }
 
     // Prevent concurrent startServer() calls for the same server
@@ -228,6 +248,7 @@ export class McpManager {
             description: t.description || '',
             inputSchema: t.inputSchema || { type: 'object', properties: {} },
           }))
+          entry.writeCapable = resolveWriteCapable(entry.config, entry.tools)
         } catch (err) {
           console.warn(`[MCP] "${name}" tools/list failed:`, err.message)
         }
@@ -294,6 +315,7 @@ export class McpManager {
         failureCount: entry.failureCount || 0,
         lastFailureAt: entry.lastFailureAt,
         nextRetryAt: entry.nextRetryAt,
+        writeCapable: Boolean(entry.writeCapable),
       })
     }
     return result
@@ -406,6 +428,7 @@ export class McpManager {
         ? config.env
         : {},
       cwd: typeof config.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : undefined,
+      ...(typeof config.writeCapable === 'boolean' ? { writeCapable: config.writeCapable } : {}),
     }
 
     const existing = this.#servers.get(serverName)
@@ -413,6 +436,7 @@ export class McpManager {
       await this.stopServer(serverName)
       existing.config = normalizedConfig
       existing.error = null
+      existing.writeCapable = resolveWriteCapable(normalizedConfig, existing.tools)
     } else {
       this.#servers.set(serverName, {
         name: serverName,
@@ -423,6 +447,10 @@ export class McpManager {
         capabilities: null,
         error: null,
         startedAt: null,
+        failureCount: 0,
+        lastFailureAt: null,
+        nextRetryAt: null,
+        writeCapable: resolveWriteCapable(normalizedConfig),
       })
     }
 

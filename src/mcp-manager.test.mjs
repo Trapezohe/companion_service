@@ -119,3 +119,44 @@ test('startServer applies restart backoff after repeated failures', async () => 
   assert.equal(status.failureCount >= 1, true)
   assert.equal(typeof status.nextRetryAt, 'number')
 })
+
+test('upsertServer initializes lifecycle counters and write-capable flag for new servers', async () => {
+  const manager = new McpManager({})
+
+  await manager.upsertServer('writer', {
+    command: 'node',
+    args: ['-e', 'setTimeout(() => {}, 1000)'],
+    writeCapable: true,
+  }, { start: false })
+
+  const status = manager.getServers().find((item) => item.name === 'writer')
+  assert.ok(status)
+  assert.equal(status.failureCount, 0)
+  assert.equal(status.lastFailureAt, null)
+  assert.equal(status.nextRetryAt, null)
+  assert.equal(status.writeCapable, true)
+})
+
+test('startServer respects configured connected-server concurrency limit', async () => {
+  const prevLimit = process.env.TRAPEZOHE_MCP_MAX_CONNECTED
+  process.env.TRAPEZOHE_MCP_MAX_CONNECTED = '0'
+
+  try {
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const { McpManager: LimitedMcpManager } = await import(`./mcp-manager.mjs?bust=${cacheBust}`)
+    const manager = new LimitedMcpManager({
+      blocked: {
+        command: 'node',
+        args: ['-e', 'setTimeout(() => {}, 1000)'],
+      },
+    })
+
+    await assert.rejects(
+      () => manager.startServer('blocked'),
+      /connected server limit/i,
+    )
+  } finally {
+    if (prevLimit === undefined) delete process.env.TRAPEZOHE_MCP_MAX_CONNECTED
+    else process.env.TRAPEZOHE_MCP_MAX_CONNECTED = prevLimit
+  }
+})
