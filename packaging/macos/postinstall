@@ -25,8 +25,16 @@ TRAPEZOHE_DIR="$HOME/.trapezohe"
 LOCAL_NODE_DIR="${TRAPEZOHE_DIR}/node"
 NODE_VERSION="__NODE_VERSION__"
 MIN_NODE_MAJOR=18
+TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
+TRAY_BIN_PATH="${TRAY_APP_PATH}/Contents/MacOS/trapezohe-companion-tray"
+TRAY_AGENT_PATH="$HOME/Library/LaunchAgents/ai.trapezohe.companion.tray.plist"
+LEGACY_DAEMON_AGENT_PATH="$HOME/Library/LaunchAgents/ai.trapezohe.companion.plist"
+STARTUP_POLICY_PATH="$TRAPEZOHE_DIR/companion-startup.json"
+LEGACY_TRAY_PREFS_PATH="$TRAPEZOHE_DIR/companion-tray.json"
 
-# ── Check for usable Node.js ──
+log() {
+  echo "[$(date)] $*"
+}
 
 has_usable_node() {
   if ! command -v node >/dev/null 2>&1; then
@@ -39,52 +47,124 @@ has_usable_node() {
   if [[ "${major}" -ge "${MIN_NODE_MAJOR}" ]] 2>/dev/null; then
     return 0
   fi
-  echo "System Node.js ${ver} is too old (need >=${MIN_NODE_MAJOR})."
+  log "System Node.js ${ver} is too old (need >=${MIN_NODE_MAJOR})."
   return 1
 }
 
-# ── Download portable Node.js if needed ──
-
 ensure_node() {
   if has_usable_node; then
-    echo "Using system Node.js: $(node -v)"
+    log "Using system Node.js: $(node -v)"
     return 0
   fi
 
-  # Check if we already have a local copy
   if [[ -x "${LOCAL_NODE_DIR}/bin/node" ]]; then
     export PATH="${LOCAL_NODE_DIR}/bin:${PATH}"
     if has_usable_node; then
-      echo "Using local Node.js: $(node -v)"
+      log "Using local Node.js: $(node -v)"
       return 0
     fi
   fi
 
-  # Download portable Node.js
   local arch
   arch="$(uname -m)"
   case "${arch}" in
     arm64|aarch64) arch="arm64" ;;
-    *)             arch="x64"   ;;
+    *)             arch="x64" ;;
   esac
 
   local url="https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-darwin-${arch}.tar.gz"
-  echo "Node.js not found — downloading ${NODE_VERSION} (${arch})..."
+  log "Node.js not found; downloading ${NODE_VERSION} (${arch})"
 
   mkdir -p "${LOCAL_NODE_DIR}"
   if ! curl -fsSL "${url}" | tar -xz --strip-components=1 -C "${LOCAL_NODE_DIR}"; then
-    echo "Failed to download Node.js. Please install Node.js ${MIN_NODE_MAJOR}+ manually."
-    exit 1
+    log "Failed to download Node.js. Companion bootstrap skipped."
+    return 1
   fi
 
   export PATH="${LOCAL_NODE_DIR}/bin:${PATH}"
-  echo "Installed local Node.js: $(node -v) → ${LOCAL_NODE_DIR}"
+  log "Installed local Node.js: $(node -v) -> ${LOCAL_NODE_DIR}"
 }
 
-ensure_node
+write_startup_policy() {
+  mkdir -p "${TRAPEZOHE_DIR}"
+  cat > "${STARTUP_POLICY_PATH}" <<'JSON'
+{
+  "loginItem": "tray",
+  "ensureDaemonOnTrayLaunch": true
+}
+JSON
+  rm -f "${LEGACY_TRAY_PREFS_PATH}"
+  log "Wrote unified tray startup policy to ${STARTUP_POLICY_PATH}"
+}
 
-npm install -g "trapezohe-companion@__COMPANION_VERSION__"
-trapezohe-companion bootstrap --mode workspace --workspace "$HOME/trapezohe-workspace"
+remove_legacy_daemon_login_item() {
+  launchctl unload "${LEGACY_DAEMON_AGENT_PATH}" >/dev/null 2>&1 || true
+  rm -f "${LEGACY_DAEMON_AGENT_PATH}"
+  log "Removed legacy daemon login item if present"
+}
+
+register_tray_login_item() {
+  mkdir -p "$(dirname "${TRAY_AGENT_PATH}")"
+  cat > "${TRAY_AGENT_PATH}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.trapezohe.companion.tray</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${TRAY_BIN_PATH}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${TRAPEZOHE_DIR}/companion-tray.log</string>
+  <key>StandardErrorPath</key>
+  <string>${TRAPEZOHE_DIR}/companion-tray.error.log</string>
+</dict>
+</plist>
+PLIST
+  launchctl unload "${TRAY_AGENT_PATH}" >/dev/null 2>&1 || true
+  launchctl load "${TRAY_AGENT_PATH}" >/dev/null 2>&1 || true
+  log "Registered tray login item via ${TRAY_AGENT_PATH}"
+}
+
+bootstrap_companion() {
+  if ! ensure_node; then
+    return 1
+  fi
+
+  if ! npm install -g "trapezohe-companion@__COMPANION_VERSION__"; then
+    log "npm install failed; Companion bootstrap skipped"
+    return 1
+  fi
+
+  if ! trapezohe-companion bootstrap --mode workspace --workspace "$HOME/trapezohe-workspace"; then
+    log "Companion bootstrap command failed; tray will still be available"
+    return 1
+  fi
+
+  log "Companion bootstrap finished successfully"
+  return 0
+}
+
+launch_tray_once() {
+  if [[ ! -x "${TRAY_BIN_PATH}" ]]; then
+    log "Tray executable not found at ${TRAY_BIN_PATH}; skipping first launch"
+    return 0
+  fi
+  open -g -a "${TRAY_APP_PATH}" >/dev/null 2>&1 || "${TRAY_BIN_PATH}" >/dev/null 2>&1 &
+  log "Launched tray panel once for current user"
+}
+
+write_startup_policy
+remove_legacy_daemon_login_item
+register_tray_login_item
+bootstrap_companion || true
+launch_tray_once
 EOS
 
 sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${TMP_SCRIPT}"
@@ -93,7 +173,7 @@ chmod +x "${TMP_SCRIPT}"
 
 if ! su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then
   RC="$?"
-  echo "[$(date)] Companion bootstrap failed (exit=${RC}). Installation will continue; user can retry from extension Settings > Companion." >> "${LOG_FILE}" 2>&1
+  echo "[$(date)] Installer user bootstrap failed (exit=${RC}). Installation will continue; user can retry from extension Settings > Companion." >> "${LOG_FILE}" 2>&1
   rm -f "${TMP_SCRIPT}"
   exit 0
 fi

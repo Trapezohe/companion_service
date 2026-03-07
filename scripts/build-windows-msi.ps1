@@ -14,6 +14,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 $outDir = Join-Path $root "dist/installers"
 $workDir = Join-Path $env:TEMP ("trapezohe-companion-msi-" + [guid]::NewGuid().ToString("N"))
 $sourceDir = Join-Path $workDir "source"
+$trayStageDir = Join-Path $root "dist/installers/tray-windows-stage"
 $wxsPath = Join-Path $root "packaging/windows/installer.wxs"
 $msiPath = Join-Path $outDir "trapezohe-companion-windows.msi"
 
@@ -24,6 +25,10 @@ Copy-Item (Join-Path $root "packaging/windows/run-install.cmd") (Join-Path $sour
 $psTemplate = Get-Content (Join-Path $root "packaging/windows/install-companion.ps1") -Raw
 $psRendered = $psTemplate -replace "__COMPANION_VERSION__", $Version
 Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRendered -Encoding UTF8
+
+& (Join-Path $root "scripts/build-tray-windows.ps1") -Version $Version -StageOnly
+Copy-Item (Join-Path $trayStageDir "trapezohe-companion-tray.exe") (Join-Path $sourceDir "trapezohe-companion-tray.exe")
+Copy-Item (Join-Path $trayStageDir "README.txt") (Join-Path $sourceDir "tray.README.txt")
 
 $wix = Get-Command wix -ErrorAction SilentlyContinue
 if (-not $wix) {

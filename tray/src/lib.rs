@@ -6,6 +6,7 @@ mod models;
 mod tray;
 mod window;
 
+use autostart::StartupPolicy;
 use models::{CompanionConfig, StatusViewModel};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Wry};
@@ -55,6 +56,21 @@ fn attach_autostart_status(snapshot: &mut StatusViewModel) {
     }
 }
 
+fn should_ensure_daemon_on_startup(
+    policy: Option<&StartupPolicy>,
+    has_config: bool,
+    snapshot: &StatusViewModel,
+) -> bool {
+    has_config
+        && matches!(
+            policy,
+            Some(policy)
+                if policy.ensure_daemon_on_tray_launch
+                    && matches!(policy.login_item, autostart::LoginItemMode::Tray)
+        )
+        && matches!(snapshot.state, models::CompanionShellState::Stopped)
+}
+
 async fn refresh_snapshot(app: &AppHandle<Wry>, force_self_check: bool) -> StatusViewModel {
     match config::load_config() {
         Ok(config) => {
@@ -101,6 +117,22 @@ fn spawn_status_poller(app: AppHandle<Wry>) {
             let _ = refresh_snapshot(&app, false).await;
         }
     });
+}
+
+async fn run_startup_reconciliation(app: AppHandle<Wry>) {
+    let snapshot = refresh_snapshot(&app, true).await;
+    let policy = autostart::load_startup_policy().ok().flatten();
+    if !should_ensure_daemon_on_startup(policy.as_ref(), current_config(&app).is_some(), &snapshot)
+    {
+        return;
+    }
+
+    set_checking_snapshot(&app);
+    if daemon::start_daemon().is_ok() {
+        let _ = settle_after_action(&app, 1200, true).await;
+    } else {
+        let _ = refresh_snapshot(&app, true).await;
+    }
 }
 
 #[tauri::command]
@@ -206,7 +238,7 @@ pub fn run() {
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let _ = refresh_snapshot(&handle, true).await;
+                run_startup_reconciliation(handle).await;
             });
             Ok(())
         })
@@ -259,4 +291,73 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tray shell");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::autostart::{LoginItemMode, StartupPolicy};
+    use crate::models::CompanionShellState;
+
+    fn startup_policy_enabled() -> StartupPolicy {
+        StartupPolicy {
+            login_item: LoginItemMode::Tray,
+            ensure_daemon_on_tray_launch: true,
+        }
+    }
+
+    #[test]
+    fn starts_daemon_only_when_policy_owns_login_and_snapshot_is_stopped() {
+        let stopped_snapshot = StatusViewModel {
+            state: CompanionShellState::Stopped,
+            ..StatusViewModel::default()
+        };
+
+        assert!(should_ensure_daemon_on_startup(
+            Some(&startup_policy_enabled()),
+            true,
+            &stopped_snapshot,
+        ));
+
+        let healthy_snapshot = StatusViewModel {
+            state: CompanionShellState::Healthy {
+                version: "0.1.0".into(),
+                protocol_version: None,
+                pid: 42,
+                mcp_servers: 1,
+                mcp_tools: 3,
+            },
+            ..StatusViewModel::default()
+        };
+
+        assert!(!should_ensure_daemon_on_startup(
+            Some(&startup_policy_enabled()),
+            true,
+            &healthy_snapshot,
+        ));
+        assert!(!should_ensure_daemon_on_startup(
+            Some(&startup_policy_enabled()),
+            false,
+            &stopped_snapshot,
+        ));
+    }
+
+    #[test]
+    fn disabled_or_missing_policy_never_requests_daemon_ensure() {
+        let snapshot = StatusViewModel {
+            state: CompanionShellState::Stopped,
+            ..StatusViewModel::default()
+        };
+        let disabled = StartupPolicy {
+            login_item: LoginItemMode::Disabled,
+            ensure_daemon_on_tray_launch: false,
+        };
+
+        assert!(!should_ensure_daemon_on_startup(None, true, &snapshot));
+        assert!(!should_ensure_daemon_on_startup(
+            Some(&disabled),
+            true,
+            &snapshot,
+        ));
+    }
 }

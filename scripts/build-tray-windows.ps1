@@ -1,5 +1,6 @@
 param(
-    [string]$Version = ""
+    [string]$Version = "",
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,9 +34,12 @@ Copy-Item (Join-Path $root "tray/icons/icon.png") (Join-Path $stageDir "icon.png
 Trapezohe Companion Tray
 Version: $Version
 
-This portable bundle contains the tray shell executable.
-Launch trapezohe-companion-tray.exe to start the Companion panel.
+This stage directory contains the tray executable used by the platform installers.
 "@ | Set-Content (Join-Path $stageDir "README.txt")
 
-Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
-Write-Host "Built $zipPath"
+if (-not $StageOnly) {
+    Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
+    Write-Host "Built $zipPath"
+} else {
+    Write-Host "Staged $stageDir"
+}

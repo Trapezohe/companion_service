@@ -399,7 +399,7 @@
           actionButton('Run Self-Check', 'run_self_check', { disabled: !actionState.can_run_self_check }),
           actionButton('Open Logs', 'open_logs', { disabled: !actionState.can_open_logs }),
           actionButton(
-            autostartEnabled ? 'Disable Auto-start' : 'Enable Auto-start',
+            autostartEnabled ? 'Disable Desktop Startup' : 'Enable Desktop Startup',
             'set_autostart_enabled',
             {
               disabled: !actionState.can_toggle_autostart,
@@ -540,9 +540,9 @@
             <h2>Local Paths</h2>
             <div class="list">
               <div class="list-item">
-                <strong>Login Auto-start</strong>
+                <strong>Desktop Startup</strong>
                 <div class="muted"><code>${escapeHtml(autostartSummary)}</code></div>
-                <div class="note">This controls whether the tray shell launches on login. The daemon auto-start policy stays separate.</div>
+                <div class="note">The tray is the single desktop login item. When enabled, it launches on sign-in and brings the local daemon up on demand.</div>
               </div>
               <div class="list-item">
                 <strong>Endpoint</strong>

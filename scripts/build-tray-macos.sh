@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-$(node -p "require('${ROOT_DIR}/package.json').version")}"
+STAGE_ONLY="${2:-}"
 OUT_DIR="${ROOT_DIR}/dist/installers"
 BUILD_DIR="${ROOT_DIR}/tray/target/release"
 APP_NAME="Trapezohe Companion.app"
@@ -32,6 +33,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
   <string>${BIN_NAME}</string>
   <key>CFBundleIdentifier</key>
   <string>ai.trapezohe.companion.tray</string>
+  <key>CFBundleIconFile</key>
+  <string>icon.png</string>
   <key>CFBundleName</key>
   <string>Trapezohe Companion</string>
   <key>CFBundlePackageType</key>
@@ -49,6 +52,10 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 PLIST
 
 /usr/bin/xattr -cr "${APP_DIR}" 2>/dev/null || true
-COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --keepParent "${APP_DIR}" "${ZIP_PATH}"
 
-echo "Built ${ZIP_PATH}"
+if [[ "${STAGE_ONLY}" != "--stage-only" ]]; then
+  COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --keepParent "${APP_DIR}" "${ZIP_PATH}"
+  echo "Built ${ZIP_PATH}"
+else
+  echo "Staged ${APP_DIR}"
+fi

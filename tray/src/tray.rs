@@ -12,16 +12,14 @@ pub const MENU_OPEN_LOGS: &str = "open_logs";
 pub const MENU_TOGGLE_AUTOSTART: &str = "toggle_autostart";
 pub const MENU_QUIT: &str = "quit_tray";
 
-fn icon_path_for_state(state: &CompanionShellState) -> &'static str {
+fn icon_bytes_for_state(state: &CompanionShellState) -> &'static [u8] {
     match state {
-        CompanionShellState::Healthy { .. } => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/icons/tray-green.png")
-        }
+        CompanionShellState::Healthy { .. } => include_bytes!("../icons/tray-green.png"),
         CompanionShellState::Checking | CompanionShellState::Degraded { .. } => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/icons/tray-yellow.png")
+            include_bytes!("../icons/tray-yellow.png")
         }
         CompanionShellState::Stopped | CompanionShellState::Misconfigured { .. } => {
-            concat!(env!("CARGO_MANIFEST_DIR"), "/icons/tray-red.png")
+            include_bytes!("../icons/tray-red.png")
         }
     }
 }
@@ -105,14 +103,14 @@ fn build_menu(
         .map(|item| item.enabled)
         .unwrap_or(false);
     let autostart_summary = if autostart_enabled {
-        "Auto-start on login · On"
+        "Desktop startup via tray · On"
     } else {
-        "Auto-start on login · Off"
+        "Desktop startup via tray · Off"
     };
     let autostart_toggle_label = if autostart_enabled {
-        "Disable Auto-start on Login"
+        "Disable Desktop Startup"
     } else {
-        "Enable Auto-start on Login"
+        "Enable Desktop Startup"
     };
     MenuBuilder::new(app)
         .text("status_headline", snapshot.headline())
@@ -134,7 +132,7 @@ fn build_menu(
 
 pub fn build_tray(app: &AppHandle<Wry>, snapshot: &StatusViewModel) -> tauri::Result<()> {
     let menu = build_menu(app, snapshot)?;
-    let icon = Image::from_path(icon_path_for_state(&snapshot.state))?;
+    let icon = Image::from_bytes(icon_bytes_for_state(&snapshot.state))?;
     tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .menu(&menu)
@@ -146,9 +144,7 @@ pub fn build_tray(app: &AppHandle<Wry>, snapshot: &StatusViewModel) -> tauri::Re
 
 pub fn apply_snapshot(app: &AppHandle<Wry>, snapshot: &StatusViewModel) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        tray.set_icon(Some(Image::from_path(icon_path_for_state(
-            &snapshot.state,
-        ))?))?;
+        tray.set_icon(Some(Image::from_bytes(icon_bytes_for_state(&snapshot.state))?))?;
         tray.set_tooltip(Some(tooltip_for_state(snapshot)))?;
         let menu = build_menu(app, snapshot)?;
         tray.set_menu(Some(menu))?;

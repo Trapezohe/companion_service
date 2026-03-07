@@ -1,9 +1,18 @@
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use crate::models::{CompanionConfig, RepairAction, SelfCheckSnapshot};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliInvocation {
+    program: PathBuf,
+    prefix_args: Vec<String>,
+}
 
 pub fn resolve_repo_root() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -18,11 +27,8 @@ pub fn resolve_cli_entry() -> Result<PathBuf> {
 }
 
 pub fn start_daemon() -> Result<()> {
-    let cli = resolve_cli_entry()?;
-    let status = Command::new("node")
-        .arg(cli)
-        .arg("start")
-        .arg("-d")
+    let cli = resolve_cli_invocation()?;
+    let status = build_cli_command(&cli, &["start", "-d"])
         .status()
         .context("Failed to spawn companion daemon")?;
     if !status.success() {
@@ -98,10 +104,8 @@ pub fn run_repair(action: &str) -> Result<()> {
 }
 
 fn run_cli_json<T: DeserializeOwned>(args: &[&str]) -> Result<T> {
-    let cli = resolve_cli_entry()?;
-    let output = Command::new("node")
-        .arg(cli)
-        .args(args)
+    let cli = resolve_cli_invocation()?;
+    let output = build_cli_command(&cli, args)
         .output()
         .context("Failed to invoke companion CLI")?;
 
@@ -119,6 +123,96 @@ fn run_cli_json<T: DeserializeOwned>(args: &[&str]) -> Result<T> {
     }
 
     serde_json::from_slice(&output.stdout).context("Failed to parse CLI JSON output")
+}
+
+fn resolve_cli_invocation() -> Result<CliInvocation> {
+    let repo_cli = resolve_cli_entry().ok();
+    let home = dirs::home_dir();
+    resolve_cli_invocation_from(home.as_deref(), repo_cli.as_deref())
+}
+
+fn resolve_cli_invocation_from(home: Option<&Path>, repo_cli: Option<&Path>) -> Result<CliInvocation> {
+    if let Ok(override_path) = std::env::var("TRAPEZOHE_COMPANION_CLI") {
+        let trimmed = override_path.trim();
+        if !trimmed.is_empty() {
+            return Ok(CliInvocation {
+                program: PathBuf::from(trimmed),
+                prefix_args: Vec::new(),
+            });
+        }
+    }
+
+    if let Some(repo_cli) = repo_cli.filter(|path| path.exists()) {
+        return Ok(CliInvocation {
+            program: PathBuf::from("node"),
+            prefix_args: vec![repo_cli.display().to_string()],
+        });
+    }
+
+    if let Some(home) = home {
+        for candidate in installed_cli_candidates(home) {
+            if candidate.exists() {
+                return Ok(CliInvocation {
+                    program: candidate,
+                    prefix_args: Vec::new(),
+                });
+            }
+        }
+    }
+
+    if let Some(path_cli) = resolve_command_on_path("trapezohe-companion") {
+        return Ok(CliInvocation {
+            program: path_cli,
+            prefix_args: Vec::new(),
+        });
+    }
+
+    Ok(CliInvocation {
+        program: PathBuf::from("trapezohe-companion"),
+        prefix_args: Vec::new(),
+    })
+}
+
+fn installed_cli_candidates(home: &Path) -> Vec<PathBuf> {
+    let local_node_dir = home.join(".trapezohe").join("node");
+    if cfg!(target_os = "windows") {
+        vec![
+            local_node_dir.join("trapezohe-companion.cmd"),
+            local_node_dir.join("trapezohe-companion.exe"),
+            local_node_dir.join("trapezohe-companion"),
+        ]
+    } else {
+        vec![
+            local_node_dir.join("bin").join("trapezohe-companion"),
+            local_node_dir.join("trapezohe-companion"),
+            PathBuf::from("/opt/homebrew/bin/trapezohe-companion"),
+            PathBuf::from("/usr/local/bin/trapezohe-companion"),
+        ]
+    }
+}
+
+fn resolve_command_on_path(name: &str) -> Option<PathBuf> {
+    let lookup_program = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    let output = Command::new(lookup_program).arg(name).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+}
+
+fn build_cli_command(cli: &CliInvocation, args: &[&str]) -> Command {
+    let mut command = Command::new(&cli.program);
+    command.args(&cli.prefix_args).args(args);
+    command
 }
 
 fn extract_failing_checks(value: Option<&Value>) -> Vec<String> {
@@ -178,11 +272,37 @@ fn extract_repair_actions(value: Option<&Value>) -> Vec<RepairAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
-    fn resolves_cli_entry_under_repo_bin() {
-        let cli = resolve_cli_entry().expect("cli path");
-        assert!(cli.ends_with("bin/cli.mjs"));
+    fn prefers_repo_cli_entry_when_source_tree_exists() {
+        let temp = tempdir().expect("temp dir");
+        let repo_cli = temp.path().join("bin").join("cli.mjs");
+        std::fs::create_dir_all(repo_cli.parent().expect("bin dir")).expect("create bin dir");
+        std::fs::write(&repo_cli, "#!/usr/bin/env node\n").expect("write repo cli");
+
+        let invocation = resolve_cli_invocation_from(None, Some(&repo_cli)).expect("repo cli");
+        assert_eq!(invocation.program, PathBuf::from("node"));
+        assert_eq!(invocation.prefix_args, vec![repo_cli.display().to_string()]);
+    }
+
+    #[test]
+    fn falls_back_to_local_node_global_binary_when_present() {
+        let temp = tempdir().expect("temp dir");
+        let candidate = temp
+            .path()
+            .join(".trapezohe")
+            .join("node")
+            .join("bin")
+            .join("trapezohe-companion");
+        std::fs::create_dir_all(candidate.parent().expect("bin dir")).expect("create bin dir");
+        std::fs::write(&candidate, "#!/bin/sh\n").expect("write candidate");
+
+        let invocation =
+            resolve_cli_invocation_from(Some(temp.path()), Some(Path::new("/missing/repo-cli")))
+                .expect("fallback cli");
+        assert_eq!(invocation.program, candidate);
+        assert!(invocation.prefix_args.is_empty());
     }
 
     #[test]
