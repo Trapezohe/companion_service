@@ -17,9 +17,9 @@ import { fork } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { COMPANION_VERSION } from '../src/version.mjs'
 
 const CONFIG_FILE = path.join(os.homedir(), '.trapezohe', 'companion.json')
-const VERSION = '0.1.0'
 const DEFAULT_PORT = 41591
 
 // ── Native Messaging Protocol ──
@@ -99,7 +99,7 @@ async function loadCompanionConfig() {
     return {
       url: `http://127.0.0.1:${Number(config.port) || DEFAULT_PORT}`,
       token: typeof config.token === 'string' ? config.token : '',
-      version: VERSION,
+      version: COMPANION_VERSION,
     }
   } catch {
     return null

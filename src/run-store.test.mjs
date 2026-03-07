@@ -155,3 +155,72 @@ test('run store returns null for missing run updates', async () => {
     assert.equal(updated, null)
   })
 })
+
+test('run store filters by state and paginates deterministically', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.clearRunStoreForTests()
+    await mod.createRun({ runId: 'run-queued', type: 'exec', state: 'queued', summary: 'queued' })
+    await mod.createRun({ runId: 'run-running', type: 'session', state: 'running', summary: 'running', startedAt: Date.now() })
+    await mod.createRun({ runId: 'run-failed', type: 'acp', state: 'failed', summary: 'failed', finishedAt: Date.now() })
+
+    const running = await mod.listRuns({ state: 'running', limit: 10, offset: 0 })
+    assert.equal(running.total, 1)
+    assert.equal(running.runs[0].runId, 'run-running')
+
+    const paged = await mod.listRuns({ limit: 2, offset: 1 })
+    assert.equal(paged.limit, 2)
+    assert.equal(paged.offset, 1)
+    assert.equal(paged.runs.length, 2)
+    assert.equal(paged.hasMore, false)
+  })
+})
+
+test('run store clamps negative duration to zero for malformed timestamps', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.createRun({
+      runId: 'run-negative-duration',
+      type: 'exec',
+      state: 'done',
+      startedAt: Date.now(),
+      finishedAt: Date.now() - 1_000,
+      summary: 'negative duration',
+    })
+
+    const fetched = await mod.getRunById('run-negative-duration')
+    assert.ok(fetched)
+    assert.equal(fetched.durationMs, 0)
+  })
+})
+
+test('run store preserves concurrent create and update operations after flush', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.clearRunStoreForTests()
+    await Promise.all(
+      Array.from({ length: 4 }, (_, index) => mod.createRun({
+        runId: `run-concurrent-${index}`,
+        type: 'exec',
+        state: 'running',
+        startedAt: Date.now() - 1_000,
+        summary: `run-${index}`,
+      })),
+    )
+
+    await Promise.all(
+      Array.from({ length: 4 }, (_, index) => mod.updateRun(`run-concurrent-${index}`, {
+        state: 'done',
+        finishedAt: Date.now(),
+        summary: `done-${index}`,
+      })),
+    )
+
+    await mod.flushRunStore()
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+    const listed = await reloaded.listRuns({ limit: 10, offset: 0 })
+    const ours = listed.runs.filter((run) => String(run.runId).startsWith('run-concurrent-'))
+    assert.equal(ours.length, 4)
+    assert.equal(ours.every((run) => run.state === 'done'), true)
+  })
+})

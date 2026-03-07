@@ -12,6 +12,7 @@ import {
   COMPANION_SUPPORTED_FEATURES,
   repairConfigDefaults,
 } from './config.mjs'
+import { COMPANION_VERSION } from './version.mjs'
 import {
   runCommand,
   resolveCwd,
@@ -100,7 +101,7 @@ function sendJson(res, status, payload) {
 function buildCompanionCapabilitiesPayload() {
   return {
     protocolVersion: `trapezohe-companion/${COMPANION_PROTOCOL_VERSION}`,
-    version: '0.1.0',
+    version: COMPANION_VERSION,
     supportedFeatures: {
       ...COMPANION_SUPPORTED_FEATURES,
     },

@@ -10,12 +10,13 @@ import os from 'node:os'
 import { dirname, delimiter as PATH_DELIMITER, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
 import { StdioTransport } from './mcp-transport.mjs'
+import { COMPANION_VERSION } from './version.mjs'
 
 const MCP_PROTOCOL_VERSION = '2024-11-05'
 
 const CLIENT_INFO = {
   name: 'trapezohe-companion',
-  version: '0.1.0',
+  version: COMPANION_VERSION,
 }
 const MCP_RESTART_BASE_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS || 2_000)
 const MCP_RESTART_MAX_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS || 30_000)

@@ -40,6 +40,7 @@ import {
 import { createCompanionServer } from '../src/server.mjs'
 import { McpManager } from '../src/mcp-manager.mjs'
 import { runCompanionSelfCheck } from '../src/diagnostics.mjs'
+import { COMPANION_VERSION } from '../src/version.mjs'
 import {
   normalizePermissionPolicy,
   PERMISSION_MODE_WORKSPACE,
@@ -357,7 +358,7 @@ async function handleStart() {
 
     console.log('')
     console.log('  ╔══════════════════════════════════════════════╗')
-    console.log('  ║        Trapezohe Companion v0.1.0            ║')
+    console.log(`  ║        Trapezohe Companion v${COMPANION_VERSION.padEnd(15, ' ')}║`)
     console.log('  ╚══════════════════════════════════════════════╝')
     console.log('')
     console.log(`  Listening:  http://127.0.0.1:${config.port}`)
