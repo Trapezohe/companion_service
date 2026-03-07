@@ -48,6 +48,7 @@ export { setAcpSessionTransitionHook }
 const acpSessions = new Map()
 const acpEventBuffers = new Map()
 let nextAcpEventCursor = 1
+let sessionEventHook = null
 
 // ── ACP Event types (5 canonical types) ──
 // text_delta | tool_call | status | done | error
@@ -209,6 +210,16 @@ function pushAcpEvent(sessionId, event) {
   if (buffer.length > MAX_EVENTS_PER_SESSION) {
     buffer.splice(0, buffer.length - MAX_EVENTS_PER_SESSION)
   }
+  if (typeof sessionEventHook === 'function') {
+    const session = acpSessions.get(sessionId)
+    Promise.resolve(sessionEventHook({
+      ...full,
+      runId: session?.runId || null,
+      agentType: session?.agentType,
+      state: session?.state,
+      runtimeSessionId: session?.runtimeSessionId || null,
+    })).catch(() => undefined)
+  }
   return full
 }
 
@@ -360,6 +371,15 @@ export function attachAcpSessionRunId(sessionId, runId) {
   if (!session) return null
   session.runId = runId || null
   return getAcpSessionById(sessionId)
+}
+
+export function setAcpSessionEventHook(hook) {
+  sessionEventHook = typeof hook === 'function' ? hook : null
+  return () => {
+    if (sessionEventHook === hook) {
+      sessionEventHook = null
+    }
+  }
 }
 
 export function listAcpSessions(options = {}) {

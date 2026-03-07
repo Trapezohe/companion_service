@@ -643,6 +643,151 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
   assert.equal(approvalRun.meta?.resolvedBy, 'sidepanel')
 })
 
+test('repeated approval POSTs reuse the canonical run and resolve that same run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const body = {
+    requestId: 'approval-dedupe-1',
+    conversationId: 'conv-dedupe-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 5 USDT to 0xdef',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      correlationId: 'corr-dedupe-1',
+      toolCallId: 'tool-call-dedupe-1',
+    },
+  }
+
+  const created = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body,
+  })
+  assert.equal(created.status, 201)
+  assert.equal(typeof created.payload.meta?.runId, 'string')
+
+  const retried = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      ...body,
+      toolPreview: 'Transfer 5 USDT retry',
+      meta: {
+        correlationId: 'corr-dedupe-retry',
+      },
+    },
+  })
+  assert.ok([200, 201].includes(retried.status))
+  assert.equal(retried.payload.requestId, 'approval-dedupe-1')
+  assert.equal(retried.payload.meta?.runId, created.payload.meta?.runId)
+
+  let approvalRuns = []
+  const pendingDeadline = Date.now() + 5_000
+  while (Date.now() < pendingDeadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRuns = runs.runs.filter((run) => run.meta?.requestId === 'approval-dedupe-1')
+    if (approvalRuns.length >= 1) break
+    await delay(25)
+  }
+
+  assert.equal(approvalRuns.length, 1)
+  assert.equal(approvalRuns[0].runId, created.payload.meta.runId)
+  assert.equal(approvalRuns[0].state, 'waiting_approval')
+
+  const resolved = await requestJson(ctx, '/api/runtime/approvals/approval-dedupe-1/resolve', {
+    method: 'POST',
+    body: {
+      resolution: 'approved',
+      resolvedBy: 'retry-test',
+    },
+  })
+  assert.equal(resolved.status, 200)
+  assert.equal(resolved.payload.meta?.runId, created.payload.meta.runId)
+
+  const doneDeadline = Date.now() + 5_000
+  while (Date.now() < doneDeadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRuns = runs.runs.filter((run) => run.meta?.requestId === 'approval-dedupe-1')
+    if (approvalRuns.length === 1 && approvalRuns[0].state === 'done') break
+    await delay(25)
+  }
+
+  assert.equal(approvalRuns.length, 1)
+  assert.equal(approvalRuns[0].state, 'done')
+  assert.equal(approvalRuns[0].meta?.approvalStatus, 'approved')
+  assert.equal(approvalRuns[0].meta?.resolvedBy, 'retry-test')
+})
+
+test('ACP permission waits create approval records tied to the existing ACP run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const created = await requestJson(ctx, '/api/acp/sessions', {
+    method: 'POST',
+    body: {
+      agentType: 'raw',
+      cwd: process.cwd(),
+      command: [
+        'node',
+        '-e',
+        'process.stderr.write("Requested permissions were not granted yet.\\n"); setInterval(() => {}, 1000)',
+      ],
+      timeoutMs: 5_000,
+    },
+  })
+  assert.equal(created.status, 200)
+  assert.ok(created.payload.sessionId)
+  assert.ok(created.payload.runId)
+
+  const promptRes = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/prompt`, {
+    method: 'POST',
+    body: { prompt: 'inspect the workspace' },
+  })
+  assert.equal(promptRes.status, 200)
+
+  let pendingApproval = null
+  const approvalDeadline = Date.now() + 5_000
+  while (Date.now() < approvalDeadline) {
+    const pending = await requestJson(ctx, '/api/runtime/approvals/pending')
+    assert.equal(pending.status, 200)
+    pendingApproval = (pending.payload.approvals || []).find((item) => item.meta?.runId === created.payload.runId) || null
+    if (pendingApproval) break
+    await delay(25)
+  }
+
+  assert.ok(pendingApproval)
+  assert.equal(pendingApproval.status, 'pending')
+  assert.equal(pendingApproval.meta?.runId, created.payload.runId)
+  assert.equal(pendingApproval.meta?.sessionId, created.payload.sessionId)
+
+  let acpRun = null
+  const runDeadline = Date.now() + 5_000
+  while (Date.now() < runDeadline) {
+    const run = await listRuns({ limit: 100, offset: 0 })
+    acpRun = run.runs.find((item) => item.runId === created.payload.runId) || null
+    if (acpRun?.state === 'waiting_approval') break
+    await delay(25)
+  }
+
+  assert.ok(acpRun)
+  assert.equal(acpRun.state, 'waiting_approval')
+  assert.equal(acpRun.meta?.requestId, pendingApproval.requestId)
+  assert.equal(acpRun.meta?.approvalStatus, 'pending')
+
+  const cancelled = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/cancel`, {
+    method: 'POST',
+    body: {},
+  })
+  assert.equal(cancelled.status, 200)
+})
+
 test('startup recovery marks orphaned session and ACP runs as failed after companion restart', async (t) => {
   const { createRun, flushRunStore, getRunById } = await import('./run-store.mjs')
   const { flushApprovalStore } = await import('./approval-store.mjs')

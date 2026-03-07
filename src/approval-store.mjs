@@ -43,6 +43,19 @@ let store = { approvals: [] }
 let loaded = false
 let persistTimer = null
 
+function hasNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function mergeMetaPreservingCanonical(currentMeta, inputMeta) {
+  const incoming = inputMeta && typeof inputMeta === 'object' ? clone(inputMeta) : {}
+  const existing = currentMeta && typeof currentMeta === 'object' ? clone(currentMeta) : {}
+  return {
+    ...incoming,
+    ...existing,
+  }
+}
+
 function now() {
   return Date.now()
 }
@@ -127,23 +140,39 @@ export async function flushApprovalStore() {
 export async function createApproval(input) {
   await ensureLoaded()
   const requestId = input?.requestId || randomBytes(16).toString('hex')
-  const existingIndex = store.approvals.findIndex((approval) => approval.requestId === requestId)
+  const existingIndex = store.approvals.findLastIndex
+    ? store.approvals.findLastIndex((approval) => approval.requestId === requestId)
+    : store.approvals.findIndex((approval) => approval.requestId === requestId)
   if (existingIndex >= 0) {
     const current = store.approvals[existingIndex]
     const next = {
       ...current,
       requestId,
-      conversationId: String(input?.conversationId || current.conversationId || ''),
-      toolName: String(input?.toolName || current.toolName || ''),
-      toolPreview: String(input?.toolPreview || current.toolPreview || '').slice(0, 500),
-      riskLevel: String(input?.riskLevel || current.riskLevel || 'medium'),
-      channels: Array.isArray(input?.channels) ? input.channels.map(String) : current.channels,
-      status: 'pending',
-      createdAt: now(),
-      expiresAt: Number(input?.expiresAt) || current.expiresAt || now() + 120_000,
-      resolvedAt: undefined,
-      resolvedBy: undefined,
-      ...(input?.meta && typeof input.meta === 'object' ? { meta: clone(input.meta) } : {}),
+      conversationId: hasNonEmptyString(current.conversationId)
+        ? current.conversationId
+        : String(input?.conversationId || ''),
+      toolName: hasNonEmptyString(current.toolName)
+        ? current.toolName
+        : String(input?.toolName || ''),
+      toolPreview: (
+        hasNonEmptyString(current.toolPreview)
+          ? current.toolPreview
+          : String(input?.toolPreview || '')
+      ).slice(0, 500),
+      riskLevel: hasNonEmptyString(current.riskLevel)
+        ? current.riskLevel
+        : String(input?.riskLevel || 'medium'),
+      channels: Array.isArray(current.channels) && current.channels.length > 0
+        ? current.channels
+        : (Array.isArray(input?.channels) ? input.channels.map(String) : ['sidepanel']),
+      status: current.status,
+      createdAt: Number(current.createdAt) || now(),
+      expiresAt: Number(current.expiresAt) || Number(input?.expiresAt) || now() + 120_000,
+      ...(current.resolvedAt ? { resolvedAt: current.resolvedAt } : {}),
+      ...(current.resolvedBy ? { resolvedBy: current.resolvedBy } : {}),
+      ...(Object.keys(mergeMetaPreservingCanonical(current.meta, input?.meta)).length > 0
+        ? { meta: mergeMetaPreservingCanonical(current.meta, input?.meta) }
+        : {}),
     }
     store.approvals[existingIndex] = next
     schedulePersist()

@@ -67,7 +67,12 @@ import {
   flushApprovalStore,
 } from './approval-store.mjs'
 import { handleAcpRequest } from './acp-routes.mjs'
-import { cleanupAllAcpSessions, listAcpSessions, setAcpSessionTransitionHook } from './acp-session.mjs'
+import {
+  cleanupAllAcpSessions,
+  listAcpSessions,
+  setAcpSessionEventHook,
+  setAcpSessionTransitionHook,
+} from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
 
 // ── Auth rate limiter ──
@@ -118,6 +123,26 @@ const RECOVERABLE_ACTIVE_STATES = new Set(['queued', 'idle', 'running', 'waiting
 function getRunSessionId(run) {
   const sessionId = typeof run?.meta?.sessionId === 'string' ? run.meta.sessionId.trim() : ''
   return sessionId || ''
+}
+
+function trimApprovalText(value, maxChars = 500) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.slice(0, Math.max(32, maxChars - 16)).trimEnd()}...[truncated]`
+}
+
+function mergeRunMeta(run, extra = {}) {
+  return {
+    ...(run?.meta && typeof run.meta === 'object' ? run.meta : {}),
+    ...(extra && typeof extra === 'object' ? extra : {}),
+  }
+}
+
+function buildAcpApprovalRequestId(event) {
+  const sessionId = String(event?.sessionId || '').trim() || 'session'
+  const turnId = String(event?.turnId || '').trim() || 'turn'
+  return `acp-approval-${sessionId}-${turnId}`
 }
 
 async function restoreSessionRunStateOnStartup(sessionRunIndex) {
@@ -550,6 +575,7 @@ export function createCompanionServer({
   const detachAcpTransitionHook = setAcpSessionTransitionHook(async (event) => {
     const runId = event.runId || sessionRunIndex.get(event.sessionId)
     if (!runId) return
+    const currentRun = await getRunById(runId).catch(() => null)
     const mappedState =
       event.toState === 'idle'
         ? 'idle'
@@ -567,35 +593,72 @@ export function createCompanionServer({
         : { finishedAt: Date.now() }),
       summary: `ACP session ${event.toState}`,
       ...(mappedState === 'failed' ? { error: String(event.meta?.reason || 'acp_error') } : {}),
-      meta: {
+      meta: mergeRunMeta(currentRun, {
         sessionId: event.sessionId,
         agentType: event.agentType,
         ...(event.meta && typeof event.meta === 'object' ? event.meta : {}),
-      },
+      }),
     }).catch(() => undefined)
     if (mappedState === 'done' || mappedState === 'failed' || mappedState === 'cancelled') {
       await clearSessionRunLink(event.sessionId).catch(() => undefined)
       sessionRunIndex.delete(event.sessionId)
     }
   })
+  const detachAcpEventHook = setAcpSessionEventHook(async (event) => {
+    if (event.type !== 'status' || event.statusCode !== 'awaiting_approval') return
+    const runId = String(event.runId || sessionRunIndex.get(event.sessionId) || '').trim()
+    if (!runId) return
+
+    const currentRun = await getRunById(runId).catch(() => null)
+    const approval = await createApproval({
+      requestId: buildAcpApprovalRequestId(event),
+      conversationId: String(currentRun?.meta?.conversationId || ''),
+      toolName: 'acp_permission',
+      toolPreview: trimApprovalText(event.text || 'ACP session requires approval'),
+      riskLevel: 'high',
+      channels: ['sidepanel'],
+      expiresAt: Date.now() + 120_000,
+      meta: mergeRunMeta(currentRun, {
+        runId,
+        sessionId: event.sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.agentType ? { agentType: event.agentType } : {}),
+        approvalSource: 'acp',
+        approvalSignal: 'awaiting_approval',
+      }),
+    }).catch(() => null)
+    if (!approval) return
+
+    await updateRun(runId, {
+      state: 'waiting_approval',
+      summary: 'ACP awaiting approval',
+      meta: mergeRunMeta(currentRun, {
+        requestId: approval.requestId,
+        sessionId: event.sessionId,
+        approvalStatus: approval.status,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        approvalSource: 'acp',
+      }),
+    }).catch(() => undefined)
+  })
   const detachSessionExitListener = addSessionExitListener((session) => {
     const runId = sessionRunIndex.get(session.sessionId || '')
     if (!runId) return
     const succeeded = !session.timedOut && session.exitCode === 0
-    void updateRun(runId, {
+    void getRunById(runId).catch(() => null).then((currentRun) => updateRun(runId, {
       state: succeeded ? 'done' : 'failed',
       finishedAt: session.finishedAt || Date.now(),
       summary: succeeded ? 'Session completed' : 'Session failed',
       error: succeeded ? undefined : `exitCode=${session.exitCode}, timedOut=${Boolean(session.timedOut)}`,
-      meta: {
+      meta: mergeRunMeta(currentRun, {
         sessionId: session.sessionId,
         command: session.command?.slice(0, 500),
         cwd: session.cwd,
         exitCode: session.exitCode,
         timedOut: session.timedOut,
         durationMs: session.durationMs,
-      },
-    }).catch(() => undefined)
+      }),
+    }).catch(() => undefined))
       .finally(() => {
         void clearSessionRunLink(session.sessionId || '').catch(() => undefined)
         sessionRunIndex.delete(session.sessionId || '')
@@ -911,21 +974,27 @@ export function createCompanionServer({
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       try {
         const body = await readJsonBody(req)
-        const run = await createRun({
-          type: 'approval',
-          state: 'waiting_approval',
-          startedAt: Date.now(),
-          summary: 'Awaiting approval',
-          meta: {
-            requestId: String(body.requestId || ''),
-            conversationId: String(body.conversationId || ''),
-            toolName: String(body.toolName || ''),
-            toolPreview: String(body.toolPreview || '').slice(0, 500),
-            riskLevel: String(body.riskLevel || 'medium'),
-            channels: Array.isArray(body.channels) ? body.channels.map(String) : [],
-            ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
-          },
-        }).catch(() => null)
+        const requestId = String(body.requestId || '').trim()
+        const existing = requestId ? await getApprovalById(requestId).catch(() => null) : null
+        const existingRunId = String(existing?.meta?.runId || '').trim()
+        let run = existingRunId ? await getRunById(existingRunId).catch(() => null) : null
+        if (!run) {
+          run = await createRun({
+            type: 'approval',
+            state: 'waiting_approval',
+            startedAt: Date.now(),
+            summary: 'Awaiting approval',
+            meta: {
+              requestId,
+              conversationId: String(body.conversationId || ''),
+              toolName: String(body.toolName || ''),
+              toolPreview: String(body.toolPreview || '').slice(0, 500),
+              riskLevel: String(body.riskLevel || 'medium'),
+              channels: Array.isArray(body.channels) ? body.channels.map(String) : [],
+              ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+            },
+          }).catch(() => null)
+        }
         const record = await createApproval({
           ...body,
           meta: {
@@ -933,7 +1002,24 @@ export function createCompanionServer({
             ...(run?.runId ? { runId: run.runId } : {}),
           },
         })
-        return sendJson(res, 201, record)
+        if (run?.runId) {
+          await updateRun(run.runId, {
+            state: 'waiting_approval',
+            summary: 'Awaiting approval',
+            meta: mergeRunMeta(run, {
+              requestId: record.requestId,
+              conversationId: record.conversationId,
+              toolName: record.toolName,
+              toolPreview: record.toolPreview,
+              riskLevel: record.riskLevel,
+              channels: record.channels,
+              toolCallId: record.meta?.toolCallId,
+              correlationId: record.meta?.correlationId,
+              approvalStatus: record.status,
+            }),
+          }).catch(() => undefined)
+        }
+        return sendJson(res, existing ? 200 : 201, record)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }
@@ -1255,6 +1341,7 @@ export function createCompanionServer({
   server.on('close', () => {
     detachSessionExitListener()
     detachAcpTransitionHook()
+    detachAcpEventHook()
     sessionRunIndex.clear()
     stopSessionPruner()
     cleanupAllSessions()
