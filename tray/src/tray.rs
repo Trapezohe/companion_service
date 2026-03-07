@@ -9,6 +9,7 @@ pub const MENU_STOP: &str = "stop_service";
 pub const MENU_RESTART: &str = "restart_service";
 pub const MENU_DIAGNOSTICS: &str = "run_diagnostics";
 pub const MENU_OPEN_LOGS: &str = "open_logs";
+pub const MENU_TOGGLE_AUTOSTART: &str = "toggle_autostart";
 pub const MENU_QUIT: &str = "quit_tray";
 
 fn icon_path_for_state(state: &CompanionShellState) -> &'static str {
@@ -98,15 +99,32 @@ fn build_menu(
     app: &AppHandle<Wry>,
     snapshot: &StatusViewModel,
 ) -> tauri::Result<tauri::menu::Menu<Wry>> {
+    let autostart_enabled = snapshot
+        .autostart
+        .as_ref()
+        .map(|item| item.enabled)
+        .unwrap_or(false);
+    let autostart_summary = if autostart_enabled {
+        "Auto-start on login · On"
+    } else {
+        "Auto-start on login · Off"
+    };
+    let autostart_toggle_label = if autostart_enabled {
+        "Disable Auto-start on Login"
+    } else {
+        "Enable Auto-start on Login"
+    };
     MenuBuilder::new(app)
         .text("status_headline", snapshot.headline())
         .text("status_detail", status_detail(snapshot))
+        .text("autostart_status", autostart_summary)
         .separator()
         .text(MENU_OPEN_STATUS, "Open Companion Panel")
         .text(MENU_START, "Start Service")
         .text(MENU_STOP, "Stop Service")
         .text(MENU_RESTART, "Restart Service")
         .separator()
+        .text(MENU_TOGGLE_AUTOSTART, autostart_toggle_label)
         .text(MENU_DIAGNOSTICS, "Refresh Diagnostics")
         .text(MENU_OPEN_LOGS, "Open Logs Folder")
         .separator()

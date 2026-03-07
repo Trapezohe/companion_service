@@ -1,3 +1,4 @@
+mod autostart;
 mod config;
 mod daemon;
 mod health;
@@ -48,19 +49,27 @@ fn publish_snapshot(app: &AppHandle<Wry>, snapshot: StatusViewModel) {
     let _ = app.emit(STATUS_EVENT, &snapshot);
 }
 
+fn attach_autostart_status(snapshot: &mut StatusViewModel) {
+    if let Ok(status) = autostart::current_autostart_status() {
+        snapshot.autostart = Some(status);
+    }
+}
+
 async fn refresh_snapshot(app: &AppHandle<Wry>, force_self_check: bool) -> StatusViewModel {
     match config::load_config() {
         Ok(config) => {
             replace_config(app, Some(config.clone()));
             let previous = current_snapshot(app);
-            let snapshot =
+            let mut snapshot =
                 health::collect_status_snapshot(&config, Some(&previous), force_self_check).await;
+            attach_autostart_status(&mut snapshot);
             publish_snapshot(app, snapshot.clone());
             snapshot
         }
         Err(error) => {
             replace_config(app, None);
-            let snapshot = health::misconfigured_snapshot(error.to_string());
+            let mut snapshot = health::misconfigured_snapshot(error.to_string());
+            attach_autostart_status(&mut snapshot);
             publish_snapshot(app, snapshot.clone());
             snapshot
         }
@@ -69,7 +78,9 @@ async fn refresh_snapshot(app: &AppHandle<Wry>, force_self_check: bool) -> Statu
 
 fn set_checking_snapshot(app: &AppHandle<Wry>) {
     if let Some(config) = current_config(app) {
-        publish_snapshot(app, health::checking_snapshot(&config));
+        let mut snapshot = health::checking_snapshot(&config);
+        attach_autostart_status(&mut snapshot);
+        publish_snapshot(app, snapshot);
     }
 }
 
@@ -105,6 +116,18 @@ async fn refresh_status_snapshot(app: AppHandle<Wry>) -> Result<StatusViewModel,
 #[tauri::command]
 async fn run_self_check(app: AppHandle<Wry>) -> Result<StatusViewModel, String> {
     Ok(refresh_snapshot(&app, true).await)
+}
+
+#[tauri::command]
+async fn set_autostart_enabled(
+    app: AppHandle<Wry>,
+    enabled: bool,
+) -> Result<StatusViewModel, String> {
+    let status = autostart::set_autostart_enabled(enabled).map_err(|error| error.to_string())?;
+    let mut snapshot = current_snapshot(&app);
+    snapshot.autostart = Some(status);
+    publish_snapshot(&app, snapshot.clone());
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -155,6 +178,7 @@ pub fn run() {
             get_status_snapshot,
             refresh_status_snapshot,
             run_self_check,
+            set_autostart_enabled,
             start_service,
             stop_service,
             restart_service,
@@ -164,10 +188,13 @@ pub fn run() {
         .setup(|app| {
             let config_result = config::load_config();
             let loaded_config = config_result.as_ref().ok().cloned();
-            let initial_snapshot = match config_result {
+            let mut initial_snapshot = match config_result {
                 Ok(config) => health::checking_snapshot(&config),
                 Err(error) => health::misconfigured_snapshot(error.to_string()),
             };
+            if let Ok(status) = autostart::sync_autostart_on_launch() {
+                initial_snapshot.autostart = Some(status);
+            }
 
             app.manage(ShellResources {
                 config: Mutex::new(loaded_config),
@@ -216,6 +243,17 @@ pub fn run() {
             tray::MENU_OPEN_LOGS => {
                 let handle = app.clone();
                 let _ = open_logs(handle);
+            }
+            tray::MENU_TOGGLE_AUTOSTART => {
+                let handle = app.clone();
+                let enable = !current_snapshot(app)
+                    .autostart
+                    .as_ref()
+                    .map(|item| item.enabled)
+                    .unwrap_or(false);
+                tauri::async_runtime::spawn(async move {
+                    let _ = set_autostart_enabled(handle, enable).await;
+                });
             }
             _ => {}
         })

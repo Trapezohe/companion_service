@@ -387,15 +387,26 @@
       function actionButton(label, command, opts = {}) {
         const disabled = state.busy || Boolean(opts.disabled);
         const className = opts.className || '';
-        return `<button class="${className}" data-command="${escapeHtml(command)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
+        const payload = opts.args ? ` data-payload="${escapeHtml(JSON.stringify(opts.args))}"` : '';
+        return `<button class="${className}" data-command="${escapeHtml(command)}"${payload} ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
       }
 
       function renderActions(snapshot) {
         const actionState = snapshot?.actions || {};
+        const autostartEnabled = Boolean(snapshot?.autostart?.enabled);
         actions.innerHTML = [
           actionButton('Refresh Panel', 'refresh_status_snapshot', { className: 'secondary' }),
           actionButton('Run Self-Check', 'run_self_check', { disabled: !actionState.can_run_self_check }),
           actionButton('Open Logs', 'open_logs', { disabled: !actionState.can_open_logs }),
+          actionButton(
+            autostartEnabled ? 'Disable Auto-start' : 'Enable Auto-start',
+            'set_autostart_enabled',
+            {
+              disabled: !actionState.can_toggle_autostart,
+              className: autostartEnabled ? 'danger' : 'secondary',
+              args: { enabled: !autostartEnabled },
+            },
+          ),
           actionButton('Start Service', 'start_service', { disabled: !actionState.can_start }),
           actionButton('Stop Service', 'stop_service', { disabled: !actionState.can_stop, className: 'danger' }),
           actionButton('Restart Service', 'restart_service', { disabled: !actionState.can_restart }),
@@ -520,10 +531,19 @@
       }
 
       function renderConfig(snapshot) {
+        const autostart = snapshot?.autostart;
+        const autostartSummary = autostart
+          ? `${autostart.enabled ? 'Enabled' : 'Disabled'} · ${autostart.strategy || 'local'}`
+          : 'Unknown';
         return `
           <section class="panel full">
             <h2>Local Paths</h2>
             <div class="list">
+              <div class="list-item">
+                <strong>Login Auto-start</strong>
+                <div class="muted"><code>${escapeHtml(autostartSummary)}</code></div>
+                <div class="note">This controls whether the tray shell launches on login. The daemon auto-start policy stays separate.</div>
+              </div>
               <div class="list-item">
                 <strong>Endpoint</strong>
                 <div class="muted"><code>${escapeHtml(snapshot?.endpoint || 'unavailable')}</code></div>
@@ -594,7 +614,8 @@
       actions.addEventListener('click', async (event) => {
         const button = event.target.closest('button[data-command]');
         if (!button) return;
-        await runCommand(button.dataset.command);
+        const payload = button.dataset.payload ? JSON.parse(button.dataset.payload) : undefined;
+        await runCommand(button.dataset.command, payload);
       });
 
       grid.addEventListener('click', async (event) => {

@@ -94,12 +94,21 @@ pub struct SelfCheckSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AutoStartStatus {
+    pub enabled: bool,
+    pub strategy: String,
+    pub target: String,
+    pub launches: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StatusActions {
     pub can_start: bool,
     pub can_stop: bool,
     pub can_restart: bool,
     pub can_open_logs: bool,
     pub can_run_self_check: bool,
+    pub can_toggle_autostart: bool,
 }
 
 impl StatusActions {
@@ -111,6 +120,7 @@ impl StatusActions {
                 can_restart: true,
                 can_open_logs: has_logs_dir,
                 can_run_self_check: has_config,
+                can_toggle_autostart: true,
             },
             CompanionShellState::Stopped => Self {
                 can_start: has_config,
@@ -118,6 +128,7 @@ impl StatusActions {
                 can_restart: false,
                 can_open_logs: has_logs_dir,
                 can_run_self_check: has_config,
+                can_toggle_autostart: true,
             },
             CompanionShellState::Misconfigured { .. } => Self {
                 can_start: false,
@@ -125,6 +136,7 @@ impl StatusActions {
                 can_restart: false,
                 can_open_logs: has_logs_dir,
                 can_run_self_check: has_config,
+                can_toggle_autostart: true,
             },
             CompanionShellState::Checking => Self {
                 can_start: false,
@@ -132,6 +144,7 @@ impl StatusActions {
                 can_restart: false,
                 can_open_logs: has_logs_dir,
                 can_run_self_check: has_config,
+                can_toggle_autostart: true,
             },
         }
     }
@@ -148,6 +161,7 @@ pub struct StatusViewModel {
     pub health: Option<HealthSnapshot>,
     pub diagnostics: Option<DiagnosticsSnapshot>,
     pub self_check: Option<SelfCheckSnapshot>,
+    pub autostart: Option<AutoStartStatus>,
     pub actions: StatusActions,
 }
 
@@ -182,6 +196,7 @@ impl StatusViewModel {
             health,
             diagnostics,
             self_check,
+            autostart: None,
             actions,
         }
     }
