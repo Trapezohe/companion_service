@@ -19,7 +19,7 @@
   },
   "scripts": {
     "start": "node bin/cli.mjs start",
-    "test": "node --test src/*.test.mjs",
+    "test": "node --test",
     "build:installer:macos": "bash scripts/build-macos-pkg.sh",
     "build:installer:windows": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1",
     "stage:tray:macos": "bash scripts/build-tray-macos.sh",

@@ -52,10 +52,11 @@ import { loadRunStore, flushRunStore } from '../src/run-store.mjs'
 import { flushApprovalStore } from '../src/approval-store.mjs'
 import {
   NATIVE_HOST_NAMES,
-  DEFAULT_EXTENSION_IDS,
+  getConfiguredExtensionIds,
   getAllowedOrigins,
   getNativeHostManifestDirs,
   getNativeHostManifestTargets,
+  resolveBootstrapExtensionIds,
   resolveNativeHostExtensionIds,
 } from '../src/native-host.mjs'
 
@@ -787,6 +788,38 @@ async function registerNativeHost(
   }
 }
 
+async function unregisterNativeHost({ quiet = false } = {}) {
+  const targets = getNativeHostManifestTargets()
+  const removed = []
+
+  for (const target of targets) {
+    try {
+      await fs.unlink(target.manifestPath)
+      removed.push(target.manifestPath)
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw err
+      }
+    }
+  }
+
+  if (process.platform === 'win32') {
+    for (const hostName of NATIVE_HOST_NAMES) {
+      const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${hostName}`
+      try {
+        await execFileAsync('reg', ['delete', regKey, '/f'])
+        if (!quiet) {
+          console.log(`  Registry key removed: ${regKey}`)
+        }
+      } catch {
+        // Ignore if key doesn't exist
+      }
+    }
+  }
+
+  return { removed }
+}
+
 async function installAutostart() {
   if (process.platform === 'darwin') {
     const plistDir = path.join(os.homedir(), 'Library', 'LaunchAgents')
@@ -907,9 +940,6 @@ async function handleBootstrap() {
     ...getMultiFlagValues('--ext-id'),
     ...getMultiFlagValues('--extension-id'),
   ]
-  const extensionIds = requestedExtensionIds.length > 0
-    ? requestedExtensionIds
-    : DEFAULT_EXTENSION_IDS
 
   const defaultWorkspace = path.join(os.homedir(), 'trapezohe-workspace')
   const normalizedWorkspaceRoots = mode === PERMISSION_MODE_WORKSPACE
@@ -924,6 +954,10 @@ async function handleBootstrap() {
 
   const init = await initConfig()
   const config = await loadConfig()
+  const extensionIds = resolveBootstrapExtensionIds({
+    requestedExtensionIds,
+    configuredExtensionIds: getConfiguredExtensionIds(config),
+  })
   const token = resolveToken(config)
   const nextConfig = {
     ...config,
@@ -936,10 +970,24 @@ async function handleBootstrap() {
   await saveConfig(nextConfig)
 
   const registerResult = await registerNativeHost(extensionIds, {
-    allowConfigIds: true,
+    allowConfigIds: false,
     failIfMissing: false,
     quiet: true,
   })
+  if (!registerResult && extensionIds.length === 0) {
+    await unregisterNativeHost({ quiet: true })
+  }
+  const nativeHostResult = registerResult
+    ? {
+        status: 'registered',
+        reason: null,
+        extensionIds: registerResult.extensionIds,
+      }
+    : {
+        status: 'skipped',
+        reason: extensionIds.length === 0 ? 'missing_extension_id' : 'registration_unavailable',
+        extensionIds: [],
+      }
 
   let autostartResult = { ok: false, strategy: 'disabled', target: '' }
   if (!disableAutostart) {
@@ -965,6 +1013,7 @@ async function handleBootstrap() {
     workspaceRoots: nextConfig.permissionPolicy.workspaceRoots,
     nativeHostRegistered: Boolean(registerResult),
     extensionIds: registerResult?.extensionIds || [],
+    nativeHost: nativeHostResult,
     autostart: autostartResult,
     daemon: startResult,
   }
@@ -983,7 +1032,7 @@ async function handleBootstrap() {
   if (output.nativeHostRegistered) {
     console.log(`  Native host: registered (${output.extensionIds.join(', ')})`)
   } else {
-    console.log('  Native host: skipped')
+    console.log(`  Native host: skipped (${output.nativeHost.reason || 'unknown'})`)
   }
   if (autostartResult.ok) {
     console.log(`  Auto-start:  enabled (${autostartResult.strategy})`)
@@ -994,19 +1043,7 @@ async function handleBootstrap() {
 }
 
 async function handleUnregister() {
-  const targets = getNativeHostManifestTargets()
-  const removed = []
-
-  for (const target of targets) {
-    try {
-      await fs.unlink(target.manifestPath)
-      removed.push(target.manifestPath)
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        throw err
-      }
-    }
-  }
+  const { removed } = await unregisterNativeHost()
 
   if (removed.length === 0) {
     console.log('[trapezohe-companion] No native messaging host registration found.')
@@ -1016,19 +1053,6 @@ async function handleUnregister() {
   console.log('[trapezohe-companion] Native messaging host unregistered.')
   for (const manifestPath of removed) {
     console.log(`  Removed: ${manifestPath}`)
-  }
-
-  // Windows: remove registry key
-  if (process.platform === 'win32') {
-    for (const hostName of NATIVE_HOST_NAMES) {
-      const regKey = `HKCU\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\${hostName}`
-      try {
-        await execFileAsync('reg', ['delete', regKey, '/f'])
-        console.log(`  Registry key removed: ${regKey}`)
-      } catch {
-        // Ignore if key doesn't exist
-      }
-    }
   }
 }
 

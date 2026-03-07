@@ -2,7 +2,6 @@ import os from 'node:os'
 import path from 'node:path'
 
 export const NATIVE_HOST_NAMES = ['com.ghast.companion', 'com.trapezohe.companion']
-export const DEFAULT_EXTENSION_IDS = ['olngglipkifpkolknipcbdcifbkcfhkk']
 
 export function normalizeExtensionIds(ids = []) {
   return Array.from(
@@ -17,6 +16,15 @@ export function normalizeExtensionIds(ids = []) {
 
 export function getConfiguredExtensionIds(config) {
   return normalizeExtensionIds(config?.extensionIds)
+}
+
+export function resolveBootstrapExtensionIds({
+  requestedExtensionIds = [],
+  configuredExtensionIds = [],
+} = {}) {
+  const requested = normalizeExtensionIds(requestedExtensionIds)
+  if (requested.length > 0) return requested
+  return normalizeExtensionIds(configuredExtensionIds)
 }
 
 export function resolveNativeHostExtensionIds(
