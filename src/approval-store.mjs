@@ -196,6 +196,30 @@ export async function createApproval(input) {
   return clone(record)
 }
 
+export async function relinkApprovalRun(requestId, runId) {
+  await ensureLoaded()
+  const id = String(requestId || '').trim()
+  const nextRunId = String(runId || '').trim()
+  if (!id || !nextRunId) return null
+
+  const index = store.approvals.findLastIndex
+    ? store.approvals.findLastIndex((approval) => approval.requestId === id)
+    : store.approvals.findIndex((approval) => approval.requestId === id)
+  if (index < 0) return null
+
+  const current = store.approvals[index]
+  const nextMeta = {
+    ...(current.meta && typeof current.meta === 'object' ? clone(current.meta) : {}),
+    runId: nextRunId,
+  }
+  store.approvals[index] = {
+    ...current,
+    meta: nextMeta,
+  }
+  schedulePersist()
+  return clone(store.approvals[index])
+}
+
 export async function resolveApproval(requestId, resolution, resolvedBy) {
   await ensureLoaded()
   const id = String(requestId || '').trim()

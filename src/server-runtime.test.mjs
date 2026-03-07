@@ -4,7 +4,12 @@ import assert from 'node:assert/strict'
 import { createCompanionServer } from './server.mjs'
 import { cleanupAllSessions } from './runtime.mjs'
 import { clearRunStoreForTests, listRuns } from './run-store.mjs'
-import { clearApprovalStoreForTests } from './approval-store.mjs'
+import {
+  clearApprovalStoreForTests,
+  createApproval,
+  flushApprovalStore,
+  getApprovalById,
+} from './approval-store.mjs'
 
 function createMcpManagerStub() {
   return {
@@ -790,6 +795,104 @@ test('repeating POST after approval resolution does not reopen the canonical run
   assert.equal(runAfterRetry.payload.run.state, 'done')
   assert.equal(runAfterRetry.payload.run.meta?.approvalStatus, 'approved')
   assert.equal(runAfterRetry.payload.run.meta?.resolvedBy, 'initial-resolution')
+})
+
+test('repeated POST repairs stale approval run links when the stored run is missing', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await createApproval({
+    requestId: 'approval-stale-run-1',
+    conversationId: 'conv-stale-run-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 1 USDT to 0xabc',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      runId: 'missing-run',
+      correlationId: 'corr-stale-run-1',
+    },
+  })
+  await flushApprovalStore()
+
+  const ctx = await startTestServer({ preserveStores: true })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const retried = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      requestId: 'approval-stale-run-1',
+      conversationId: 'conv-stale-run-1',
+      toolName: 'execute_transaction',
+      toolPreview: 'Transfer 1 USDT retry',
+      riskLevel: 'high',
+      channels: ['sidepanel'],
+      meta: {
+        correlationId: 'corr-stale-run-retry-1',
+      },
+    },
+  })
+
+  assert.equal(retried.status, 200)
+  assert.equal(typeof retried.payload.meta?.runId, 'string')
+  assert.notEqual(retried.payload.meta.runId, 'missing-run')
+
+  const repairedApproval = await getApprovalById('approval-stale-run-1')
+  assert.ok(repairedApproval)
+  assert.equal(repairedApproval.meta?.runId, retried.payload.meta.runId)
+  assert.equal(repairedApproval.meta?.correlationId, 'corr-stale-run-1')
+
+  const repairedRun = await requestJson(ctx, `/api/runtime/runs/${retried.payload.meta.runId}`)
+  assert.equal(repairedRun.status, 200)
+  assert.equal(repairedRun.payload.run.meta?.requestId, 'approval-stale-run-1')
+})
+
+test('concurrent duplicate approval POSTs leave only one waiting approval run in the ledger', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const body = {
+    requestId: 'approval-concurrent-1',
+    conversationId: 'conv-concurrent-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 7 USDT to 0x777',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      correlationId: 'corr-concurrent-1',
+    },
+  }
+
+  const [first, second] = await Promise.all([
+    requestJson(ctx, '/api/runtime/approvals', { method: 'POST', body }),
+    requestJson(ctx, '/api/runtime/approvals', { method: 'POST', body }),
+  ])
+
+  assert.deepEqual(
+    new Set([first.status, second.status]),
+    new Set([201, 200]),
+  )
+  assert.equal(first.payload.meta?.runId, second.payload.meta?.runId)
+
+  let approvalRuns = []
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRuns = runs.runs.filter((run) => run.meta?.requestId === 'approval-concurrent-1')
+    if (approvalRuns.length === 1) break
+    await delay(25)
+  }
+
+  assert.equal(approvalRuns.length, 1)
+  assert.equal(approvalRuns[0].runId, first.payload.meta.runId)
+  assert.equal(approvalRuns[0].state, 'waiting_approval')
 })
 
 test('ACP permission waits create approval records tied to the existing ACP run', async (t) => {

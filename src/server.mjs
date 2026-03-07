@@ -65,6 +65,7 @@ import {
   listPendingApprovals,
   loadApprovalStore,
   flushApprovalStore,
+  relinkApprovalRun,
 } from './approval-store.mjs'
 import { handleAcpRequest } from './acp-routes.mjs'
 import {
@@ -143,6 +144,32 @@ function buildAcpApprovalRequestId(event) {
   const sessionId = String(event?.sessionId || '').trim() || 'session'
   const turnId = String(event?.turnId || '').trim() || 'turn'
   return `acp-approval-${sessionId}-${turnId}`
+}
+
+function createKeyedSerializer() {
+  const chains = new Map()
+  return async function runSerialized(key, fn) {
+    const normalizedKey = String(key || '').trim()
+    if (!normalizedKey) return fn()
+
+    const previous = chains.get(normalizedKey) || Promise.resolve()
+    let releaseCurrent
+    const current = new Promise((resolve) => {
+      releaseCurrent = resolve
+    })
+    const chain = previous.catch(() => undefined).then(() => current)
+    chains.set(normalizedKey, chain)
+
+    await previous.catch(() => undefined)
+    try {
+      return await fn()
+    } finally {
+      releaseCurrent()
+      if (chains.get(normalizedKey) === chain) {
+        chains.delete(normalizedKey)
+      }
+    }
+  }
 }
 
 async function restoreSessionRunStateOnStartup(sessionRunIndex) {
@@ -566,6 +593,7 @@ export function createCompanionServer({
   cleanupFn = null,
 }) {
   const sessionRunIndex = new Map()
+  const serializeApprovalMutation = createKeyedSerializer()
   const initStoresPromise = Promise.all([
     loadRunStore().catch(() => undefined),
     loadApprovalStore().catch(() => undefined),
@@ -975,66 +1003,75 @@ export function createCompanionServer({
       try {
         const body = await readJsonBody(req)
         const requestId = String(body.requestId || '').trim()
-        const existing = requestId ? await getApprovalById(requestId).catch(() => null) : null
-        const existingRunId = String(existing?.meta?.runId || '').trim()
-        let run = existingRunId ? await getRunById(existingRunId).catch(() => null) : null
-        if (!run) {
-          run = await createRun({
-            type: 'approval',
-            state: 'waiting_approval',
-            startedAt: Date.now(),
-            summary: 'Awaiting approval',
+        const result = await serializeApprovalMutation(requestId, async () => {
+          const existing = requestId ? await getApprovalById(requestId).catch(() => null) : null
+          const existingRunId = String(existing?.meta?.runId || '').trim()
+          let run = existingRunId ? await getRunById(existingRunId).catch(() => null) : null
+          if (!run) {
+            run = await createRun({
+              type: 'approval',
+              state: 'waiting_approval',
+              startedAt: Date.now(),
+              summary: 'Awaiting approval',
+              meta: {
+                requestId,
+                conversationId: String(body.conversationId || ''),
+                toolName: String(body.toolName || ''),
+                toolPreview: String(body.toolPreview || '').slice(0, 500),
+                riskLevel: String(body.riskLevel || 'medium'),
+                channels: Array.isArray(body.channels) ? body.channels.map(String) : [],
+                ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+              },
+            }).catch(() => null)
+          }
+          let record = await createApproval({
+            ...body,
             meta: {
-              requestId,
-              conversationId: String(body.conversationId || ''),
-              toolName: String(body.toolName || ''),
-              toolPreview: String(body.toolPreview || '').slice(0, 500),
-              riskLevel: String(body.riskLevel || 'medium'),
-              channels: Array.isArray(body.channels) ? body.channels.map(String) : [],
               ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+              ...(run?.runId ? { runId: run.runId } : {}),
             },
-          }).catch(() => null)
-        }
-        const record = await createApproval({
-          ...body,
-          meta: {
-            ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
-            ...(run?.runId ? { runId: run.runId } : {}),
-          },
+          })
+          if (run?.runId && String(record.meta?.runId || '').trim() !== run.runId) {
+            record = await relinkApprovalRun(record.requestId, run.runId).catch(() => null) || record
+          }
+          if (run?.runId) {
+            const desiredState = record.status === 'approved'
+              ? 'done'
+              : record.status === 'pending'
+                ? 'waiting_approval'
+                : 'cancelled'
+            await updateRun(run.runId, {
+              state: desiredState,
+              ...(desiredState === 'waiting_approval'
+                ? {}
+                : { finishedAt: Number(run.finishedAt) || Date.now() }),
+              summary: record.status === 'approved'
+                ? 'Approval approved'
+                : record.status === 'expired'
+                  ? 'Approval expired'
+                  : record.status === 'rejected'
+                    ? 'Approval rejected'
+                    : 'Awaiting approval',
+              meta: mergeRunMeta(run, {
+                requestId: record.requestId,
+                conversationId: record.conversationId,
+                toolName: record.toolName,
+                toolPreview: record.toolPreview,
+                riskLevel: record.riskLevel,
+                channels: record.channels,
+                toolCallId: record.meta?.toolCallId,
+                correlationId: record.meta?.correlationId,
+                approvalStatus: record.status,
+                ...(record.resolvedBy ? { resolvedBy: record.resolvedBy } : {}),
+              }),
+            }).catch(() => undefined)
+          }
+          return {
+            statusCode: existing ? 200 : 201,
+            record,
+          }
         })
-        if (run?.runId) {
-          const desiredState = record.status === 'approved'
-            ? 'done'
-            : record.status === 'pending'
-              ? 'waiting_approval'
-              : 'cancelled'
-          await updateRun(run.runId, {
-            state: desiredState,
-            ...(desiredState === 'waiting_approval'
-              ? {}
-              : { finishedAt: Number(run.finishedAt) || Date.now() }),
-            summary: record.status === 'approved'
-              ? 'Approval approved'
-              : record.status === 'expired'
-                ? 'Approval expired'
-                : record.status === 'rejected'
-                  ? 'Approval rejected'
-                  : 'Awaiting approval',
-            meta: mergeRunMeta(run, {
-              requestId: record.requestId,
-              conversationId: record.conversationId,
-              toolName: record.toolName,
-              toolPreview: record.toolPreview,
-              riskLevel: record.riskLevel,
-              channels: record.channels,
-              toolCallId: record.meta?.toolCallId,
-              correlationId: record.meta?.correlationId,
-              approvalStatus: record.status,
-              ...(record.resolvedBy ? { resolvedBy: record.resolvedBy } : {}),
-            }),
-          }).catch(() => undefined)
-        }
-        return sendJson(res, existing ? 200 : 201, record)
+        return sendJson(res, result.statusCode, result.record)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }
