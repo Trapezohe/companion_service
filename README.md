@@ -68,9 +68,9 @@ Get-FileHash .\trapezohe-companion-windows.msi -Algorithm SHA256
 
 Compare the command output with `SHA256SUMS.txt`.
 
-Both installers now ship the local daemon and the desktop tray panel together:
+Both installers now ship the local daemon and the desktop tray panel together. The desktop tray panel is installed together with the daemon as the default local control surface:
 
-- the tray is installed as a real app / executable instead of a separate portable bundle
+- the tray is installed as a real app / executable, not a separate public portable download
 - the tray becomes the single desktop login item
 - on sign-in, the tray checks daemon state and starts the local runtime if policy allows it
 

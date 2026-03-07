@@ -1,6 +1,6 @@
 param(
     [string]$Version = "",
-    [switch]$StageOnly
+    [switch]$Archive
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,9 +11,10 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = $package.version
 }
 
-$outDir = Join-Path $root "dist/installers"
-$stageDir = Join-Path $outDir "tray-windows-stage"
-$zipPath = Join-Path $outDir "trapezohe-companion-tray-windows.zip"
+$stageRoot = Join-Path $root "dist/stage"
+$stageDir = Join-Path $stageRoot "windows-tray"
+$archiveDir = Join-Path $root "dist/debug-artifacts"
+$zipPath = Join-Path $archiveDir "trapezohe-companion-tray-windows.zip"
 $planJson = & node (Join-Path $root "scripts/windows-build-plan.mjs") --json
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to resolve Windows tray build plan."
@@ -45,7 +46,8 @@ Version: $Version
 This stage directory contains the tray executable used by the platform installers.
 "@ | Set-Content (Join-Path $stageDir "README.txt")
 
-if (-not $StageOnly) {
+if ($Archive) {
+    New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
     Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
     Write-Host "Built $zipPath"
 } else {

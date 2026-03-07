@@ -3,18 +3,19 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-$(node -p "require('${ROOT_DIR}/package.json').version")}"
-STAGE_ONLY="${2:-}"
-OUT_DIR="${ROOT_DIR}/dist/installers"
+MODE="${2:---stage-only}"
+STAGE_ROOT="${ROOT_DIR}/dist/stage/macos-tray"
+ARCHIVE_ROOT="${ROOT_DIR}/dist/debug-artifacts"
 BUILD_DIR="${ROOT_DIR}/tray/target/release"
 APP_NAME="Trapezohe Companion.app"
-APP_DIR="${OUT_DIR}/${APP_NAME}"
+APP_DIR="${STAGE_ROOT}/${APP_NAME}"
 MACOS_DIR="${APP_DIR}/Contents/MacOS"
 RESOURCES_DIR="${APP_DIR}/Contents/Resources"
 BIN_NAME="trapezohe-companion-tray"
-ZIP_PATH="${OUT_DIR}/trapezohe-companion-tray-macos.zip"
+ZIP_PATH="${ARCHIVE_ROOT}/trapezohe-companion-tray-macos.zip"
 
 rm -rf "${APP_DIR}" "${ZIP_PATH}"
-mkdir -p "${OUT_DIR}"
+mkdir -p "${STAGE_ROOT}"
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 
 cargo build --manifest-path "${ROOT_DIR}/tray/Cargo.toml" --release
@@ -53,9 +54,17 @@ PLIST
 
 /usr/bin/xattr -cr "${APP_DIR}" 2>/dev/null || true
 
-if [[ "${STAGE_ONLY}" != "--stage-only" ]]; then
-  COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --keepParent "${APP_DIR}" "${ZIP_PATH}"
-  echo "Built ${ZIP_PATH}"
-else
-  echo "Staged ${APP_DIR}"
-fi
+case "${MODE}" in
+  --stage-only)
+    echo "Staged ${APP_DIR}"
+    ;;
+  --archive)
+    mkdir -p "${ARCHIVE_ROOT}"
+    COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --norsrc --keepParent "${APP_DIR}" "${ZIP_PATH}"
+    echo "Built ${ZIP_PATH}"
+    ;;
+  *)
+    echo "Unsupported mode: ${MODE}" >&2
+    exit 1
+    ;;
+esac

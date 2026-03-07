@@ -209,9 +209,9 @@ jobs:
 
             ## After Installation
 
-            The companion daemon starts automatically and pairs with the Trapezohe browser extension. No manual configuration needed.
+            The companion desktop tray panel is installed together with the daemon and pairs with the Trapezohe browser extension. No manual configuration is required for the default installer flow.
 
-            The tray shell bundle is optional. It gives users a visible status panel, lifecycle controls, and local diagnostics without opening Chrome.
+            After sign-in, the tray is the single desktop entry point: it surfaces local status, lifecycle controls, diagnostics, and daemon startup orchestration without opening Chrome.
 
             To verify it's running:
             ```bash

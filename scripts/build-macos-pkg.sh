@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-$(node -p "JSON.parse(require('fs').readFileSync('${ROOT_DIR}/package.json','utf8')).version")}"
 OUT_DIR="${ROOT_DIR}/dist/installers"
+STAGE_ROOT="${ROOT_DIR}/dist/stage/macos-tray"
 WORK_DIR="$(mktemp -d)"
 PKG_ROOT="${WORK_DIR}/root"
 PKG_SCRIPTS="${WORK_DIR}/scripts"
@@ -11,7 +12,7 @@ PAYLOAD_DIR="${PKG_ROOT}/usr/local/lib/trapezohe-companion-installer"
 APPLICATIONS_DIR="${PKG_ROOT}/Applications"
 PACKAGE_FILE="${OUT_DIR}/trapezohe-companion-macos.pkg"
 TRAY_APP_NAME="Trapezohe Companion.app"
-TRAY_APP_PATH="${OUT_DIR}/${TRAY_APP_NAME}"
+TRAY_APP_PATH="${STAGE_ROOT}/${TRAY_APP_NAME}"
 
 cleanup() {
   rm -rf "${WORK_DIR}"
