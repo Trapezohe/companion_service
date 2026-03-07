@@ -83,11 +83,37 @@ test('enforceCommandPolicy blocks absolute paths outside workspace', async () =>
   })
 })
 
+test('enforceCommandPolicy blocks shell-expanded home paths in workspace mode', async () => {
+  await withWorkspace(async ({ workspaceRoot }) => {
+    for (const command of [
+      'cat $HOME/.ssh/id_rsa',
+      'cat ${HOME}/.ssh/id_rsa',
+      'cat ~/.ssh/id_rsa',
+      'cat "$HOME/.ssh/id_rsa"',
+    ]) {
+      assert.throws(
+        () => enforceCommandPolicy({
+          command,
+          cwd: workspaceRoot,
+          permissionPolicy: { mode: PERMISSION_MODE_WORKSPACE, workspaceRoots: [workspaceRoot] },
+        }),
+        PermissionPolicyError
+      )
+    }
+  })
+})
+
 test('enforceCommandPolicy allows normal workspace commands', async () => {
   await withWorkspace(async ({ workspaceRoot, nested }) => {
     assert.doesNotThrow(() => enforceCommandPolicy({
       command: 'node ./scripts/build.js --out=./dist/out.txt',
       cwd: nested,
+      permissionPolicy: { mode: PERMISSION_MODE_WORKSPACE, workspaceRoots: [workspaceRoot] },
+    }))
+
+    assert.doesNotThrow(() => enforceCommandPolicy({
+      command: 'cat ./README.md',
+      cwd: workspaceRoot,
       permissionPolicy: { mode: PERMISSION_MODE_WORKSPACE, workspaceRoots: [workspaceRoot] },
     }))
 

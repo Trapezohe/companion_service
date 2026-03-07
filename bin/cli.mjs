@@ -50,6 +50,14 @@ import { loadCronStore } from '../src/cron-store.mjs'
 import { startCronScheduler, stopCronScheduler } from '../src/cron-scheduler.mjs'
 import { loadRunStore, flushRunStore } from '../src/run-store.mjs'
 import { flushApprovalStore } from '../src/approval-store.mjs'
+import {
+  NATIVE_HOST_NAMES,
+  DEFAULT_EXTENSION_IDS,
+  getAllowedOrigins,
+  getNativeHostManifestDirs,
+  getNativeHostManifestTargets,
+  resolveNativeHostExtensionIds,
+} from '../src/native-host.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const execFileAsync = promisify(execFile)
@@ -613,20 +621,31 @@ async function handleRepair() {
   }
 
   if (action === 'register_native_host') {
-    const extIds = getMultiFlagValues('--ext-id')
-    const result = await registerNativeHost(extIds, {
-      allowConfigIds: true,
-      failIfMissing: false,
-      quiet: jsonMode,
-    })
-    if (jsonMode) {
-      console.log(JSON.stringify({ ok: true, action, result }))
+    try {
+      const extIds = getMultiFlagValues('--ext-id')
+      const result = await registerNativeHost(extIds, {
+        allowConfigIds: true,
+        failIfMissing: true,
+        quiet: jsonMode,
+      })
+      if (jsonMode) {
+        console.log(JSON.stringify({ ok: true, action, result }))
+        return
+      }
+      console.log('[trapezohe-companion] Native host registration repaired.')
+      console.log(`  Hosts:       ${result.hostNames.join(', ')}`)
+      console.log(`  Origins:     ${result.allowedOrigins.join(', ')}`)
+      return
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (jsonMode) {
+        console.error(JSON.stringify({ ok: false, action, error: message }))
+      } else {
+        console.error(`[trapezohe-companion] ${message}`)
+      }
+      process.exit(1)
       return
     }
-    console.log('[trapezohe-companion] Native host registration repaired.')
-    console.log(`  Hosts:       ${result.hostNames.join(', ')}`)
-    console.log(`  Origins:     ${result.allowedOrigins.join(', ')}`)
-    return
   }
 
   console.error('[trapezohe-companion] Unsupported repair action. Use: repair_config | register_native_host')
@@ -635,51 +654,8 @@ async function handleRepair() {
 
 // ── Native Messaging Host Registration ──
 
-const NATIVE_HOST_NAMES = ['com.ghast.companion', 'com.trapezohe.companion']
 const AUTOSTART_SERVICE_NAME = 'trapezohe-companion'
 const AUTOSTART_WIN_TASK_NAME = 'TrapezoheCompanion'
-const DEFAULT_EXTENSION_IDS = ['olngglipkifpkolknipcbdcifbkcfhkk']
-
-function getNativeHostManifestDirs() {
-  const platform = process.platform
-  const home = os.homedir()
-
-  if (platform === 'darwin') {
-    return [
-      path.join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts'),
-      path.join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts'),
-      path.join(home, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts'),
-      path.join(home, 'Library', 'Application Support', 'Microsoft Edge', 'NativeMessagingHosts'),
-    ]
-  }
-  if (platform === 'linux') {
-    return [
-      path.join(home, '.config', 'google-chrome', 'NativeMessagingHosts'),
-      path.join(home, '.config', 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts'),
-      path.join(home, '.config', 'chromium', 'NativeMessagingHosts'),
-      path.join(home, '.config', 'microsoft-edge', 'NativeMessagingHosts'),
-    ]
-  }
-  if (platform === 'win32') {
-    return [path.join(home, '.trapezohe')]
-  }
-  throw new Error(`Unsupported platform: ${platform}`)
-}
-
-function getNativeHostManifestTargets() {
-  const dirs = getNativeHostManifestDirs()
-  const targets = []
-  for (const hostName of NATIVE_HOST_NAMES) {
-    for (const dir of dirs) {
-      targets.push({
-        hostName,
-        dir,
-        manifestPath: path.join(dir, `${hostName}.json`),
-      })
-    }
-  }
-  return targets
-}
 
 async function resolveNativeHostExecutable(nativeHostScript) {
   if (process.platform === 'win32') {
@@ -731,23 +707,16 @@ async function registerNativeHost(
 
   // Collect extension IDs from CLI args + config
   const config = await loadConfig()
-  const extraIds = allowConfigIds && Array.isArray(config.extensionIds) ? config.extensionIds : []
-  const cliIds = cliExtensionIds
-    .filter((item) => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter(Boolean)
-  const allIds = Array.from(new Set([...extraIds, ...cliIds]))
-
-  if (allIds.length === 0) {
-    if (!failIfMissing) {
-      return null
-    }
-    throw new Error(
-      'At least one extension ID is required. Use "trapezohe-companion register <extension-id>" or set extensionIds in companion config.',
-    )
-  }
-
-  const allowedOrigins = allIds.map((id) => `chrome-extension://${id}/`)
+  const existingIds = resolveNativeHostExtensionIds(config, [], {
+    allowConfigIds: true,
+    failIfMissing: false,
+  })
+  const allIds = resolveNativeHostExtensionIds(config, cliExtensionIds, {
+    allowConfigIds,
+    failIfMissing,
+  })
+  if (allIds.length === 0) return null
+  const allowedOrigins = getAllowedOrigins(allIds)
 
   const nativeHostExecutable = await resolveNativeHostExecutable(nativeHostScript)
 
@@ -796,7 +765,7 @@ async function registerNativeHost(
   }
 
   // Persist extension IDs to config for future use
-  if (JSON.stringify(allIds) !== JSON.stringify(extraIds)) {
+  if (JSON.stringify(allIds) !== JSON.stringify(existingIds)) {
     config.extensionIds = allIds
     await saveConfig(config)
     if (!quiet) {

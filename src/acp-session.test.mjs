@@ -19,6 +19,7 @@ import {
   synthesizeTerminalEvent,
   buildAgentPath,
   classifyNoOutputDiagnostic,
+  setAcpSessionEventHook,
 } from './acp-session.mjs'
 import { setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
 
@@ -697,6 +698,38 @@ test('Claude user tool_result error is surfaced as status signal', () => {
   assert.equal(events[0].type, 'status')
   assert.equal(events[0].statusCode, 'awaiting_approval')
   assert.match(events[0].text, /awaiting_approval/i)
+})
+
+test('ACP session event hook receives awaiting_approval status events with run correlation', async (t) => {
+  cleanupAllAcpSessions()
+  t.after(() => cleanupAllAcpSessions())
+
+  const seen = []
+  const detach = setAcpSessionEventHook((event) => {
+    seen.push(event)
+  })
+  t.after(() => detach())
+
+  const { sessionId } = createAcpSession({
+    agentType: 'raw',
+    cwd: process.cwd(),
+    runId: 'run-acp-approval-1',
+    command: [
+      'node',
+      '-e',
+      'process.stderr.write("Requested permissions were not granted yet.\\n"); setTimeout(() => process.exit(0), 50)',
+    ],
+    timeoutMs: 5_000,
+  })
+
+  await enqueuePrompt(sessionId, { prompt: 'needs approval' })
+  await waitForEventMatch(sessionId, (event) => event.type === 'status' && event.statusCode === 'awaiting_approval')
+
+  const approvalEvent = seen.find((event) => event.type === 'status' && event.statusCode === 'awaiting_approval')
+  assert.ok(approvalEvent)
+  assert.equal(approvalEvent.sessionId, sessionId)
+  assert.equal(approvalEvent.runId, 'run-acp-approval-1')
+  assert.equal(typeof approvalEvent.turnId, 'string')
 })
 
 test('Claude user non-error tool_result emits condensed diagnostic summary', () => {

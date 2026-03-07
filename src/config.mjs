@@ -154,6 +154,8 @@ function normalizeMcpServerConfig(input) {
     args,
     env,
     ...(cwd ? { cwd } : {}),
+    ...(typeof input.restartable === 'boolean' ? { restartable: input.restartable } : {}),
+    ...(typeof input.writeCapable === 'boolean' ? { writeCapable: input.writeCapable } : {}),
   }
 }
 

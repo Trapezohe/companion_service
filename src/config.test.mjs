@@ -2,7 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+
+const execFileAsync = promisify(execFile)
 
 async function withTempHome(run) {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-companion-test-'))
@@ -22,6 +26,28 @@ async function withTempHome(run) {
     else process.env.USERPROFILE = prevUserProfile
     await rm(tempHome, { recursive: true, force: true })
   }
+}
+
+async function importDiagnosticsModule() {
+  const cacheBust = `${Date.now()}-${Math.random()}`
+  return import(`./diagnostics.mjs?bust=${cacheBust}`)
+}
+
+async function runCli(tempHome, args) {
+  return execFileAsync(
+    process.execPath,
+    [
+      path.resolve(process.cwd(), 'bin/cli.mjs'),
+      ...args,
+    ],
+    {
+      env: {
+        ...process.env,
+        HOME: tempHome,
+        USERPROFILE: tempHome,
+      },
+    },
+  )
 }
 
 test('initConfig creates config and token', async () => {
@@ -106,6 +132,77 @@ test('repairConfigDefaults restores token while preserving MCP servers and exten
     assert.ok(loaded.mcpServers['bnbchain-mcp'])
     assert.deepEqual(loaded.extensionIds, ['ext-1'])
     assert.equal(loaded.permissionPolicy.mode, 'workspace')
+  })
+})
+
+test('updateMcpServerConfig preserves restartable flag for MCP lifecycle policy', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.initConfig()
+    await mod.updateMcpServerConfig('bnbchain-mcp', {
+      command: 'npx',
+      args: ['-y', '@bnb-chain/mcp@latest'],
+      restartable: false,
+    })
+
+    const loaded = await mod.loadConfig()
+    assert.equal(loaded.mcpServers['bnbchain-mcp']?.restartable, false)
+  })
+})
+
+test('self-check stays unhealthy when extension IDs are configured but native host registration is missing', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.saveConfig({
+      port: 41591,
+      token: 'test-token',
+      mcpServers: {},
+      permissionPolicy: { mode: 'full', workspaceRoots: [] },
+      extensionIds: ['ext-1'],
+    })
+
+    const diagnostics = await importDiagnosticsModule()
+    const payload = await diagnostics.runCompanionSelfCheck({
+      getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    })
+
+    assert.equal(payload.ok, false)
+    assert.equal(payload.checks.nativeHostRegistration.ok, false)
+    assert.equal(payload.checks.nativeHostRegistration.required, true)
+    assert.ok(payload.repairActions.some((action) => action.id === 'register_native_host'))
+  })
+})
+
+test('CLI native-host repair and self-check inspect the same manifest targets', async () => {
+  await withTempHome(async ({ tempHome, mod }) => {
+    await mod.initConfig()
+
+    const registered = await runCli(tempHome, [
+      'repair',
+      'register_native_host',
+      '--json',
+      '--ext-id',
+      'ext-1',
+    ])
+    const repairPayload = JSON.parse(String(registered.stdout || '{}'))
+    const diagnostics = await importDiagnosticsModule()
+    const selfCheck = await diagnostics.runCompanionSelfCheck({
+      getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    })
+
+    const expectedManifestPaths = [...(repairPayload.result?.manifestPaths || [])].sort()
+    const actualManifestPaths = [...(selfCheck.checks.nativeHostRegistration.manifests || [])].sort()
+
+    assert.deepEqual(actualManifestPaths, expectedManifestPaths)
+  })
+})
+
+test('CLI native-host repair fails clearly when no extension ID is available', async () => {
+  await withTempHome(async ({ tempHome, mod }) => {
+    await mod.initConfig()
+
+    await assert.rejects(
+      () => runCli(tempHome, ['repair', 'register_native_host', '--json']),
+      /At least one extension ID is required/i,
+    )
   })
 })
 

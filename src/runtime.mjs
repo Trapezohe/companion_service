@@ -227,8 +227,10 @@ const DANGEROUS_SHELL_PATTERNS = [
   { pattern: /\$\(/, reason: 'command substitution $(...) is not allowed in workspace mode' },
   { pattern: /`[^`]*`/, reason: 'backtick command substitution is not allowed in workspace mode' },
   { pattern: /\$\{/, reason: 'parameter expansion ${...} is not allowed in workspace mode' },
+  { pattern: /(^|[^\\])\$[A-Za-z_][A-Za-z0-9_]*/, reason: 'environment variable expansion is not allowed in workspace mode' },
   { pattern: /<\(/, reason: 'process substitution <(...) is not allowed in workspace mode' },
   { pattern: />\(/, reason: 'process substitution >(...) is not allowed in workspace mode' },
+  { pattern: /(^|[\s="'])~(?=\/|[\s"']|$)/, reason: 'home-directory expansion is not allowed in workspace mode' },
 ]
 
 export function enforceCommandPolicy({ command, cwd, permissionPolicy }) {
