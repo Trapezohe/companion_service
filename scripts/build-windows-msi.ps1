@@ -12,6 +12,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 $outDir = Join-Path $root "dist/installers"
+$trayStageRoot = Join-Path $root "dist/stage"
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
   $env:TEMP
 } elseif (-not [string]::IsNullOrWhiteSpace($env:TMPDIR)) {
@@ -21,7 +22,7 @@ $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
 }
 $workDir = Join-Path $tempRoot ("trapezohe-companion-msi-" + [guid]::NewGuid().ToString("N"))
 $sourceDir = Join-Path $workDir "source"
-$trayStageDir = Join-Path $root "dist/installers/tray-windows-stage"
+$trayStageDir = Join-Path $trayStageRoot "windows-tray"
 $msiPlanScript = Join-Path $root "scripts/windows-msi-plan.mjs"
 $msiPath = Join-Path $outDir "trapezohe-companion-windows.msi"
 $generatedWxsPath = Join-Path $workDir "installer.generated.wxs"
@@ -34,7 +35,7 @@ $psTemplate = Get-Content (Join-Path $root "packaging/windows/install-companion.
 $psRendered = $psTemplate -replace "__COMPANION_VERSION__", $Version
 Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRendered -Encoding UTF8
 
-& (Join-Path $root "scripts/build-tray-windows.ps1") -Version $Version -StageOnly
+& (Join-Path $root "scripts/build-tray-windows.ps1") -Version $Version
 Copy-Item (Join-Path $trayStageDir "trapezohe-companion-tray.exe") (Join-Path $sourceDir "trapezohe-companion-tray.exe")
 Copy-Item (Join-Path $trayStageDir "README.txt") (Join-Path $sourceDir "tray.README.txt")
 
