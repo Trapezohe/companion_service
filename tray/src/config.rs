@@ -1,6 +1,9 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use crate::models::CompanionConfig;
 
@@ -24,7 +27,10 @@ pub fn resolve_config_path() -> PathBuf {
 }
 
 pub fn resolve_logs_dir(config_path: &PathBuf) -> PathBuf {
-    config_path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf()
+    config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
 }
 
 pub fn load_config_from_path(config_path: &Path) -> Result<CompanionConfig> {
@@ -42,7 +48,9 @@ pub fn load_config_from_path(config_path: &Path) -> Result<CompanionConfig> {
         port: parsed.port.unwrap_or(41591),
         token,
         config_path: config_path.display().to_string(),
-        logs_dir: resolve_logs_dir(&config_path.to_path_buf()).display().to_string(),
+        logs_dir: resolve_logs_dir(&config_path.to_path_buf())
+            .display()
+            .to_string(),
     })
 }
 
@@ -59,18 +67,20 @@ mod tests {
 
     #[test]
     fn loads_valid_companion_config() {
-        let mut file = NamedTempFile::new().expect("temp file") ;
-        writeln!(file, "{{\"port\":41591,\"token\":\"abc\"}}") .expect("write config");
+        let mut file = NamedTempFile::new().expect("temp file");
+        writeln!(file, "{{\"port\":41591,\"token\":\"abc\"}}").expect("write config");
         let config = load_config_from_path(file.path()).expect("config should load");
         assert_eq!(config.port, 41591);
         assert_eq!(config.token, "abc");
-        assert!(config.config_path.ends_with(file.path().to_string_lossy().as_ref()));
+        assert!(config
+            .config_path
+            .ends_with(file.path().to_string_lossy().as_ref()));
     }
 
     #[test]
     fn rejects_missing_token() {
         let mut file = NamedTempFile::new().expect("temp file");
-        writeln!(file, "{{\"port\":41591,\"token\":\"\"}}") .expect("write config");
+        writeln!(file, "{{\"port\":41591,\"token\":\"\"}}").expect("write config");
         let error = load_config_from_path(file.path()).expect_err("config should fail");
         assert!(error.to_string().contains("missing token"));
     }

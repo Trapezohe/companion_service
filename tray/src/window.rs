@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, Wry, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewWindowBuilder, Wry};
 
 pub fn open_or_focus_status_window(app: &AppHandle<Wry>) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("status") {

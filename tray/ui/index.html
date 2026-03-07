@@ -5,33 +5,625 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Trapezohe Companion</title>
     <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08121c;
+        --panel: rgba(11, 24, 37, 0.86);
+        --panel-strong: rgba(15, 33, 49, 0.96);
+        --line: rgba(141, 175, 201, 0.18);
+        --text: #ecf4ff;
+        --muted: #9fb5c8;
+        --gold: #f5be67;
+        --green: #6ee3b4;
+        --red: #ff8d78;
+        --blue: #7dc7ff;
+        --shadow: 0 22px 56px rgba(0, 0, 0, 0.34);
+        --radius: 22px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         margin: 0;
-        padding: 24px;
-        background: #101318;
-        color: #e9eef6;
+        min-height: 100vh;
+        font-family: "Avenir Next", "SF Pro Display", "Segoe UI Variable", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(125, 199, 255, 0.18), transparent 32%),
+          radial-gradient(circle at top right, rgba(245, 190, 103, 0.15), transparent 28%),
+          linear-gradient(160deg, #06101a 0%, #0b1621 40%, #0a1118 100%);
       }
-      .card {
-        background: #171c24;
-        border: 1px solid #2a3342;
-        border-radius: 16px;
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background:
+          linear-gradient(120deg, rgba(255, 255, 255, 0.04), transparent 28%),
+          linear-gradient(300deg, rgba(255, 255, 255, 0.02), transparent 30%);
+        pointer-events: none;
+      }
+
+      .shell {
+        position: relative;
+        padding: 22px;
+        display: grid;
+        gap: 16px;
+        animation: enter 240ms ease-out;
+      }
+
+      .panel,
+      .hero {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        backdrop-filter: blur(16px);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
         padding: 20px;
+        background:
+          linear-gradient(145deg, rgba(20, 44, 66, 0.95), rgba(8, 18, 28, 0.92)),
+          linear-gradient(90deg, rgba(125, 199, 255, 0.2), transparent 38%);
       }
-      h1 { margin: 0 0 12px; font-size: 22px; }
-      p { color: #a9b7c8; line-height: 1.5; }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.06);
+      }
+
+      .eyebrow.healthy { color: var(--green); }
+      .eyebrow.degraded,
+      .eyebrow.checking { color: var(--gold); }
+      .eyebrow.stopped,
+      .eyebrow.misconfigured { color: var(--red); }
+
+      h1 {
+        margin: 16px 0 8px;
+        font-size: 30px;
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+      }
+
+      .lede,
+      .timestamp,
+      .note,
+      .muted {
+        color: var(--muted);
+      }
+
+      .lede {
+        margin: 0;
+        line-height: 1.55;
+        max-width: 54ch;
+      }
+
+      .hero-meta {
+        margin-top: 18px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .meta-pill {
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 16px;
+        padding: 12px 14px;
+        font: inherit;
+        font-weight: 600;
+        color: var(--text);
+        background: linear-gradient(145deg, rgba(125, 199, 255, 0.16), rgba(125, 199, 255, 0.08));
+        cursor: pointer;
+        transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        background: linear-gradient(145deg, rgba(125, 199, 255, 0.22), rgba(125, 199, 255, 0.12));
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      button.secondary {
+        background: linear-gradient(145deg, rgba(245, 190, 103, 0.18), rgba(245, 190, 103, 0.08));
+      }
+
+      button.danger {
+        background: linear-gradient(145deg, rgba(255, 141, 120, 0.22), rgba(255, 141, 120, 0.09));
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .panel h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+
+      .metric {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+        margin-bottom: 4px;
+      }
+
+      .list,
+      .repairs,
+      .servers {
+        display: grid;
+        gap: 10px;
+      }
+
+      .list-item,
+      .repair-item,
+      .server-item {
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        background: var(--panel-strong);
+      }
+
+      .list-item strong,
+      .server-item strong,
+      .repair-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .server-meta,
+      .repair-meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .banner {
+        display: none;
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 141, 120, 0.24);
+        background: rgba(255, 141, 120, 0.12);
+        color: #ffd0c7;
+      }
+
+      .banner.visible {
+        display: block;
+      }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
+      .note {
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
       code {
-        background: #0f141b;
+        display: inline-block;
         padding: 2px 6px;
-        border-radius: 6px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #d7e7f9;
+      }
+
+      @keyframes enter {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
       }
     </style>
   </head>
   <body>
-    <div class="card">
-      <h1>Trapezohe Companion</h1>
-      <p>Tray shell MVP is active. Companion runtime status will be surfaced here in the next batch.</p>
-      <p>Current shell mode: <code>tray + hidden status window</code></p>
-    </div>
+    <main class="shell">
+      <section class="banner" id="banner"></section>
+
+      <section class="hero" id="hero"></section>
+
+      <section class="actions" id="actions"></section>
+
+      <section class="grid" id="grid"></section>
+    </main>
+
+    <script>
+      const tauri = window.__TAURI__ || {};
+      const invoke = tauri.core?.invoke;
+      const listen = tauri.event?.listen;
+
+      const state = {
+        snapshot: null,
+        busy: false,
+        lastMessage: '',
+      };
+
+      const banner = document.getElementById('banner');
+      const hero = document.getElementById('hero');
+      const actions = document.getElementById('actions');
+      const grid = document.getElementById('grid');
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function relativeTime(timestamp) {
+        if (!timestamp) return 'Awaiting status';
+        const diff = Math.max(0, Date.now() - Number(timestamp));
+        if (diff < 10_000) return 'Updated just now';
+        const seconds = Math.floor(diff / 1000);
+        if (seconds < 60) return `Updated ${seconds}s ago`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `Updated ${minutes}m ago`;
+        const hours = Math.floor(minutes / 60);
+        return `Updated ${hours}h ago`;
+      }
+
+      function stateMeta(snapshot) {
+        const kind = snapshot?.state?.kind || 'checking';
+        switch (kind) {
+          case 'healthy':
+            return { label: 'Healthy', className: 'healthy' };
+          case 'degraded':
+            return { label: 'Needs Attention', className: 'degraded' };
+          case 'stopped':
+            return { label: 'Stopped', className: 'stopped' };
+          case 'misconfigured':
+            return { label: 'Setup Needed', className: 'misconfigured' };
+          default:
+            return { label: 'Checking', className: 'checking' };
+        }
+      }
+
+      function headline(snapshot) {
+        const kind = snapshot?.state?.kind || 'checking';
+        if (kind === 'healthy') return 'Companion is online and ready';
+        if (kind === 'degraded') return 'Companion is running, but something needs attention';
+        if (kind === 'stopped') return 'Companion is not running right now';
+        if (kind === 'misconfigured') return 'Companion needs local setup before it can run';
+        return 'Checking your local Companion runtime';
+      }
+
+      function subline(snapshot) {
+        const kind = snapshot?.state?.kind || 'checking';
+        const reason = snapshot?.state?.reason;
+        if (reason) return reason;
+        if (kind === 'healthy') {
+          const pid = snapshot?.health?.pid ?? snapshot?.state?.pid ?? '—';
+          const endpoint = snapshot?.endpoint || 'http://127.0.0.1';
+          return `Local runtime is responding at ${endpoint} with PID ${pid}.`;
+        }
+        if (kind === 'stopped') {
+          return 'Use Start Service to bring the local runtime back online, or run a repair if configuration drift is suspected.';
+        }
+        if (kind === 'misconfigured') {
+          return 'Repair the local config or native host registration, then refresh this panel.';
+        }
+        return 'Refreshing status, diagnostics, and self-check details.';
+      }
+
+      function metric(label, value, note) {
+        return `
+          <section class="panel">
+            <h2>${escapeHtml(label)}</h2>
+            <div class="metric">${escapeHtml(value)}</div>
+            <div class="muted">${escapeHtml(note)}</div>
+          </section>
+        `;
+      }
+
+      function renderHero(snapshot) {
+        const meta = stateMeta(snapshot);
+        const runtimeVersion = snapshot?.health?.version || snapshot?.state?.version || 'unknown';
+        const protocolVersion = snapshot?.health?.protocol_version || snapshot?.state?.protocol_version || 'n/a';
+        hero.innerHTML = `
+          <div class="eyebrow ${escapeHtml(meta.className)}">${escapeHtml(meta.label)}</div>
+          <h1>${escapeHtml(headline(snapshot))}</h1>
+          <p class="lede">${escapeHtml(subline(snapshot))}</p>
+          <div class="hero-meta">
+            <div class="meta-pill">Runtime v${escapeHtml(runtimeVersion)}</div>
+            <div class="meta-pill">Protocol ${escapeHtml(protocolVersion)}</div>
+            <div class="meta-pill">${escapeHtml(relativeTime(snapshot?.checked_at_ms))}</div>
+          </div>
+        `;
+      }
+
+      function actionButton(label, command, opts = {}) {
+        const disabled = state.busy || Boolean(opts.disabled);
+        const className = opts.className || '';
+        return `<button class="${className}" data-command="${escapeHtml(command)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
+      }
+
+      function renderActions(snapshot) {
+        const actionState = snapshot?.actions || {};
+        actions.innerHTML = [
+          actionButton('Refresh Panel', 'refresh_status_snapshot', { className: 'secondary' }),
+          actionButton('Run Self-Check', 'run_self_check', { disabled: !actionState.can_run_self_check }),
+          actionButton('Open Logs', 'open_logs', { disabled: !actionState.can_open_logs }),
+          actionButton('Start Service', 'start_service', { disabled: !actionState.can_start }),
+          actionButton('Stop Service', 'stop_service', { disabled: !actionState.can_stop, className: 'danger' }),
+          actionButton('Restart Service', 'restart_service', { disabled: !actionState.can_restart }),
+        ].join('');
+      }
+
+      function renderRepairs(snapshot) {
+        const repairs = snapshot?.self_check?.repair_actions || [];
+        if (!repairs.length) {
+          return `
+            <section class="panel full">
+              <h2>Repair Actions</h2>
+              <div class="note">No repair action is currently suggested by the latest self-check.</div>
+            </section>
+          `;
+        }
+
+        return `
+          <section class="panel full">
+            <h2>Repair Actions</h2>
+            <div class="repairs">
+              ${repairs
+                .map(
+                  (repair) => `
+                    <div class="repair-item">
+                      <strong>${escapeHtml(repair.title || repair.id)}</strong>
+                      <div class="repair-meta">${escapeHtml(repair.description || 'Local repair action available.')}</div>
+                      <div style="margin-top:10px;">
+                        <button class="secondary" data-repair="${escapeHtml(repair.id)}" ${state.busy ? 'disabled' : ''}>Run Repair</button>
+                      </div>
+                    </div>
+                  `,
+                )
+                .join('')}
+            </div>
+          </section>
+        `;
+      }
+
+      function renderFailures(snapshot) {
+        const failures = snapshot?.diagnostics?.recent_failures || [];
+        if (!failures.length) {
+          return `
+            <section class="panel">
+              <h2>Recent Failures</h2>
+              <div class="note">No recent failed runs were reported by Companion diagnostics.</div>
+            </section>
+          `;
+        }
+        return `
+          <section class="panel">
+            <h2>Recent Failures</h2>
+            <div class="list">
+              ${failures
+                .slice(0, 4)
+                .map(
+                  (item) => `
+                    <div class="list-item">
+                      <strong>${escapeHtml(item.summary || 'Unnamed failure')}</strong>
+                      <div class="muted"><code>${escapeHtml(item.run_id || 'unknown')}</code></div>
+                    </div>
+                  `,
+                )
+                .join('')}
+            </div>
+          </section>
+        `;
+      }
+
+      function renderServers(snapshot) {
+        const servers = snapshot?.diagnostics?.servers || [];
+        if (!servers.length) {
+          return `
+            <section class="panel">
+              <h2>MCP Servers</h2>
+              <div class="note">No connected MCP server details are available yet.</div>
+            </section>
+          `;
+        }
+        return `
+          <section class="panel">
+            <h2>MCP Servers</h2>
+            <div class="servers">
+              ${servers
+                .map(
+                  (server) => `
+                    <div class="server-item">
+                      <strong>${escapeHtml(server.name || 'Unnamed server')}</strong>
+                      <div class="server-meta">${escapeHtml(server.status || 'unknown')} · ${escapeHtml(server.tool_count)} tools · ${escapeHtml(server.command || 'n/a')}</div>
+                    </div>
+                  `,
+                )
+                .join('')}
+            </div>
+          </section>
+        `;
+      }
+
+      function renderSelfCheck(snapshot) {
+        const selfCheck = snapshot?.self_check;
+        if (!selfCheck) {
+          return `
+            <section class="panel full">
+              <h2>Self-Check</h2>
+              <div class="note">No self-check result is available yet. Use the Run Self-Check action to re-evaluate local config, native host registration, and MCP executables.</div>
+            </section>
+          `;
+        }
+
+        const items = selfCheck.failing_checks?.length
+          ? selfCheck.failing_checks.map((item) => `<code>${escapeHtml(item)}</code>`).join(' ')
+          : '<span class="note">No failing checks were reported.</span>';
+
+        return `
+          <section class="panel full">
+            <h2>Self-Check</h2>
+            <div class="metric">${selfCheck.ok ? 'Passed' : 'Needs Repair'}</div>
+            <div class="muted">${selfCheck.ok ? 'Local config, policy, and runtime checks look healthy.' : 'One or more local checks failed and may require repair.'}</div>
+            <div style="margin-top: 12px;">${items}</div>
+          </section>
+        `;
+      }
+
+      function renderConfig(snapshot) {
+        return `
+          <section class="panel full">
+            <h2>Local Paths</h2>
+            <div class="list">
+              <div class="list-item">
+                <strong>Endpoint</strong>
+                <div class="muted"><code>${escapeHtml(snapshot?.endpoint || 'unavailable')}</code></div>
+              </div>
+              <div class="list-item">
+                <strong>Config Path</strong>
+                <div class="muted"><code>${escapeHtml(snapshot?.config_path || 'unavailable')}</code></div>
+              </div>
+              <div class="list-item">
+                <strong>Logs Folder</strong>
+                <div class="muted"><code>${escapeHtml(snapshot?.logs_dir || 'unavailable')}</code></div>
+              </div>
+            </div>
+            <p class="note">Quitting the tray shell does not stop the Companion service. Use Stop Service if you want the local daemon to exit.</p>
+          </section>
+        `;
+      }
+
+      function renderGrid(snapshot) {
+        const diagnostics = snapshot?.diagnostics || {};
+        const health = snapshot?.health || snapshot?.state || {};
+        grid.innerHTML = [
+          metric('MCP Servers', diagnostics.connected_mcp_servers ?? health.mcp_servers ?? 0, `${diagnostics.configured_mcp_servers ?? 0} configured`),
+          metric('MCP Tools', diagnostics.total_mcp_tools ?? health.mcp_tools ?? 0, 'Visible to the runtime right now'),
+          metric('ACP Sessions', diagnostics.running_acp_sessions ?? 0, `${diagnostics.idle_acp_sessions ?? 0} idle sessions`),
+          metric('Pending Approvals', diagnostics.pending_approvals ?? 0, 'Tasks waiting for user decision'),
+          renderFailures(snapshot),
+          renderServers(snapshot),
+          renderSelfCheck(snapshot),
+          renderRepairs(snapshot),
+          renderConfig(snapshot),
+        ].join('');
+      }
+
+      function render(snapshot) {
+        state.snapshot = snapshot;
+        renderHero(snapshot);
+        renderActions(snapshot);
+        renderGrid(snapshot);
+      }
+
+      function setBanner(message, visible) {
+        banner.textContent = message || '';
+        banner.classList.toggle('visible', Boolean(visible && message));
+      }
+
+      async function runCommand(command, payload) {
+        if (!invoke) {
+          setBanner('Tauri bridge is unavailable in this window.', true);
+          return;
+        }
+        state.busy = true;
+        render(state.snapshot || {});
+        setBanner('', false);
+        try {
+          const result = await invoke(command, payload || {});
+          if (result && typeof result === 'object' && result.state) {
+            render(result);
+          }
+        } catch (error) {
+          setBanner(String(error), true);
+        } finally {
+          state.busy = false;
+          render(state.snapshot || {});
+        }
+      }
+
+      actions.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-command]');
+        if (!button) return;
+        await runCommand(button.dataset.command);
+      });
+
+      grid.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-repair]');
+        if (!button) return;
+        await runCommand('run_repair', { action: button.dataset.repair });
+      });
+
+      async function bootstrap() {
+        if (!invoke) {
+          setBanner('This panel must run inside the Tauri tray shell.', true);
+          return;
+        }
+
+        const initial = await invoke('get_status_snapshot');
+        render(initial);
+
+        if (listen) {
+          await listen('companion://status', (event) => {
+            if (event?.payload) {
+              render(event.payload);
+            }
+          });
+        }
+      }
+
+      bootstrap().catch((error) => {
+        setBanner(String(error), true);
+      });
+    </script>
   </body>
 </html>
