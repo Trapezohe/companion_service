@@ -722,6 +722,76 @@ test('repeated approval POSTs reuse the canonical run and resolve that same run'
   assert.equal(approvalRuns[0].meta?.resolvedBy, 'retry-test')
 })
 
+test('repeating POST after approval resolution does not reopen the canonical run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const body = {
+    requestId: 'approval-resolved-retry-1',
+    conversationId: 'conv-resolved-retry-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 9 USDT to 0x999',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      correlationId: 'corr-resolved-retry-1',
+      toolCallId: 'tool-call-resolved-retry-1',
+    },
+  }
+
+  const created = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body,
+  })
+  assert.equal(created.status, 201)
+  assert.equal(typeof created.payload.meta?.runId, 'string')
+  const runId = created.payload.meta.runId
+
+  const resolved = await requestJson(ctx, '/api/runtime/approvals/approval-resolved-retry-1/resolve', {
+    method: 'POST',
+    body: {
+      resolution: 'approved',
+      resolvedBy: 'initial-resolution',
+    },
+  })
+  assert.equal(resolved.status, 200)
+  assert.equal(resolved.payload.status, 'approved')
+
+  let firstDone = null
+  const firstDoneDeadline = Date.now() + 5_000
+  while (Date.now() < firstDoneDeadline) {
+    const result = await requestJson(ctx, `/api/runtime/runs/${runId}`)
+    if (result.status === 200) {
+      firstDone = result.payload.run || null
+      if (firstDone?.state === 'done') break
+    }
+    await delay(25)
+  }
+  assert.ok(firstDone)
+  assert.equal(firstDone.state, 'done')
+
+  const retried = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      ...body,
+      toolPreview: 'Transfer 9 USDT retry after resolve',
+    },
+  })
+  assert.equal(retried.status, 200)
+  assert.equal(retried.payload.status, 'approved')
+  assert.equal(retried.payload.meta?.runId, runId)
+
+  const runAfterRetry = await requestJson(ctx, `/api/runtime/runs/${runId}`)
+  assert.equal(runAfterRetry.status, 200)
+  assert.equal(runAfterRetry.payload.run.state, 'done')
+  assert.equal(runAfterRetry.payload.run.meta?.approvalStatus, 'approved')
+  assert.equal(runAfterRetry.payload.run.meta?.resolvedBy, 'initial-resolution')
+})
+
 test('ACP permission waits create approval records tied to the existing ACP run', async (t) => {
   const ctx = await startTestServer()
   t.after(async () => {

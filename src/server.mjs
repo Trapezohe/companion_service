@@ -1003,9 +1003,23 @@ export function createCompanionServer({
           },
         })
         if (run?.runId) {
+          const desiredState = record.status === 'approved'
+            ? 'done'
+            : record.status === 'pending'
+              ? 'waiting_approval'
+              : 'cancelled'
           await updateRun(run.runId, {
-            state: 'waiting_approval',
-            summary: 'Awaiting approval',
+            state: desiredState,
+            ...(desiredState === 'waiting_approval'
+              ? {}
+              : { finishedAt: Number(run.finishedAt) || Date.now() }),
+            summary: record.status === 'approved'
+              ? 'Approval approved'
+              : record.status === 'expired'
+                ? 'Approval expired'
+                : record.status === 'rejected'
+                  ? 'Approval rejected'
+                  : 'Awaiting approval',
             meta: mergeRunMeta(run, {
               requestId: record.requestId,
               conversationId: record.conversationId,
@@ -1016,6 +1030,7 @@ export function createCompanionServer({
               toolCallId: record.meta?.toolCallId,
               correlationId: record.meta?.correlationId,
               approvalStatus: record.status,
+              ...(record.resolvedBy ? { resolvedBy: record.resolvedBy } : {}),
             }),
           }).catch(() => undefined)
         }
