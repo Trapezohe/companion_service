@@ -136,7 +136,7 @@ pub fn build_tray(app: &AppHandle<Wry>, snapshot: &StatusViewModel) -> tauri::Re
     tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(false)
         .tooltip(tooltip_for_state(snapshot))
         .build(app)?;
     Ok(())

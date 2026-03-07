@@ -102,6 +102,13 @@ pub struct AutoStartStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StartupContextView {
+    pub launch_source: String,
+    pub phase: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StatusActions {
     pub can_start: bool,
     pub can_stop: bool,
@@ -162,6 +169,7 @@ pub struct StatusViewModel {
     pub diagnostics: Option<DiagnosticsSnapshot>,
     pub self_check: Option<SelfCheckSnapshot>,
     pub autostart: Option<AutoStartStatus>,
+    pub startup: Option<StartupContextView>,
     pub actions: StatusActions,
 }
 
@@ -197,6 +205,7 @@ impl StatusViewModel {
             diagnostics,
             self_check,
             autostart: None,
+            startup: None,
             actions,
         }
     }

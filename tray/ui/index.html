@@ -342,6 +342,10 @@
 
       function subline(snapshot) {
         const kind = snapshot?.state?.kind || 'checking';
+        const startupNote = snapshot?.startup?.note;
+        if (startupNote && (snapshot?.startup?.phase === 'ensuring' || kind === 'checking')) {
+          return startupNote;
+        }
         const reason = snapshot?.state?.reason;
         if (reason) return reason;
         if (kind === 'healthy') {
@@ -356,6 +360,20 @@
           return 'Repair the local config or native host registration, then refresh this panel.';
         }
         return 'Refreshing status, diagnostics, and self-check details.';
+      }
+
+      function startupSourceLabel(source) {
+        if (source === 'tray_boot') return 'Tray launch';
+        if (source === 'panel') return 'Panel action';
+        return source || 'Unknown source';
+      }
+
+      function startupPhaseLabel(phase) {
+        if (phase === 'checking') return 'Checking';
+        if (phase === 'ensuring') return 'Ensuring daemon';
+        if (phase === 'attention') return 'Needs attention';
+        if (phase === 'ready') return 'Ready';
+        return phase || 'Unknown';
       }
 
       function metric(label, value, note) {
@@ -379,6 +397,8 @@
           <div class="hero-meta">
             <div class="meta-pill">Runtime v${escapeHtml(runtimeVersion)}</div>
             <div class="meta-pill">Protocol ${escapeHtml(protocolVersion)}</div>
+            <div class="meta-pill">${escapeHtml(startupSourceLabel(snapshot?.startup?.launch_source))}</div>
+            <div class="meta-pill">${escapeHtml(startupPhaseLabel(snapshot?.startup?.phase))}</div>
             <div class="meta-pill">${escapeHtml(relativeTime(snapshot?.checked_at_ms))}</div>
           </div>
         `;
@@ -562,6 +582,31 @@
         `;
       }
 
+      function renderStartup(snapshot) {
+        const startup = snapshot?.startup;
+        if (!startup) {
+          return `
+            <section class="panel full">
+              <h2>Launch Orchestration</h2>
+              <div class="note">No launch orchestration details are available yet.</div>
+            </section>
+          `;
+        }
+
+        return `
+          <section class="panel full">
+            <h2>Launch Orchestration</h2>
+            <div class="list">
+              <div class="list-item">
+                <strong>${escapeHtml(startupPhaseLabel(startup.phase))}</strong>
+                <div class="muted"><code>${escapeHtml(startupSourceLabel(startup.launch_source))}</code></div>
+                <div class="note">${escapeHtml(startup.note || 'No launch note available.')}</div>
+              </div>
+            </div>
+          </section>
+        `;
+      }
+
       function renderGrid(snapshot) {
         const diagnostics = snapshot?.diagnostics || {};
         const health = snapshot?.health || snapshot?.state || {};
@@ -574,6 +619,7 @@
           renderServers(snapshot),
           renderSelfCheck(snapshot),
           renderRepairs(snapshot),
+          renderStartup(snapshot),
           renderConfig(snapshot),
         ].join('');
       }

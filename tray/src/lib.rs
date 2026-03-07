@@ -3,20 +3,28 @@ mod config;
 mod daemon;
 mod health;
 mod models;
+mod startup;
 mod tray;
 mod window;
 
-use autostart::StartupPolicy;
-use models::{CompanionConfig, StatusViewModel};
+use models::{CompanionConfig, StartupContextView, StatusViewModel};
+use startup::{
+    context_from_decision, decide_post_ensure_action, decide_startup_action, startup_context,
+    StartupAction,
+};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, Wry};
-use tokio::time::{interval, sleep, Duration};
+use tauri::{
+    tray::{MouseButton, MouseButtonState, TrayIconEvent},
+    AppHandle, Emitter, Manager, Wry,
+};
+use tokio::time::interval;
 
 const STATUS_EVENT: &str = "companion://status";
 
 struct ShellResources {
     config: Mutex<Option<CompanionConfig>>,
     snapshot: Mutex<StatusViewModel>,
+    startup_context: Mutex<Option<StartupContextView>>,
 }
 
 fn current_config(app: &AppHandle<Wry>) -> Option<CompanionConfig> {
@@ -31,17 +39,37 @@ fn replace_config(app: &AppHandle<Wry>, config: Option<CompanionConfig>) {
     };
 }
 
-fn current_snapshot(app: &AppHandle<Wry>) -> StatusViewModel {
+fn current_startup_context(app: &AppHandle<Wry>) -> Option<StartupContextView> {
     let state = app.state::<ShellResources>();
     state
+        .startup_context
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+fn replace_startup_context(app: &AppHandle<Wry>, context: Option<StartupContextView>) {
+    let state = app.state::<ShellResources>();
+    if let Ok(mut guard) = state.startup_context.lock() {
+        *guard = context;
+    };
+}
+
+fn current_snapshot(app: &AppHandle<Wry>) -> StatusViewModel {
+    let mut snapshot = app
+        .state::<ShellResources>()
         .snapshot
         .lock()
         .ok()
         .map(|guard| guard.clone())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    snapshot.startup = current_startup_context(app);
+    snapshot
 }
 
 fn publish_snapshot(app: &AppHandle<Wry>, snapshot: StatusViewModel) {
+    let mut snapshot = snapshot;
+    snapshot.startup = current_startup_context(app);
     let state = app.state::<ShellResources>();
     if let Ok(mut guard) = state.snapshot.lock() {
         *guard = snapshot.clone();
@@ -50,25 +78,15 @@ fn publish_snapshot(app: &AppHandle<Wry>, snapshot: StatusViewModel) {
     let _ = app.emit(STATUS_EVENT, &snapshot);
 }
 
+fn set_startup_context(app: &AppHandle<Wry>, context: Option<StartupContextView>) {
+    replace_startup_context(app, context);
+    publish_snapshot(app, current_snapshot(app));
+}
+
 fn attach_autostart_status(snapshot: &mut StatusViewModel) {
     if let Ok(status) = autostart::current_autostart_status() {
         snapshot.autostart = Some(status);
     }
-}
-
-fn should_ensure_daemon_on_startup(
-    policy: Option<&StartupPolicy>,
-    has_config: bool,
-    snapshot: &StatusViewModel,
-) -> bool {
-    has_config
-        && matches!(
-            policy,
-            Some(policy)
-                if policy.ensure_daemon_on_tray_launch
-                    && matches!(policy.login_item, autostart::LoginItemMode::Tray)
-        )
-        && matches!(snapshot.state, models::CompanionShellState::Stopped)
 }
 
 async fn refresh_snapshot(app: &AppHandle<Wry>, force_self_check: bool) -> StatusViewModel {
@@ -100,18 +118,9 @@ fn set_checking_snapshot(app: &AppHandle<Wry>) {
     }
 }
 
-async fn settle_after_action(
-    app: &AppHandle<Wry>,
-    delay_ms: u64,
-    force_self_check: bool,
-) -> StatusViewModel {
-    sleep(Duration::from_millis(delay_ms)).await;
-    refresh_snapshot(app, force_self_check).await
-}
-
 fn spawn_status_poller(app: AppHandle<Wry>) {
     tauri::async_runtime::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(5));
+        let mut ticker = interval(std::time::Duration::from_secs(5));
         loop {
             ticker.tick().await;
             let _ = refresh_snapshot(&app, false).await;
@@ -119,19 +128,75 @@ fn spawn_status_poller(app: AppHandle<Wry>) {
     });
 }
 
-async fn run_startup_reconciliation(app: AppHandle<Wry>) {
-    let snapshot = refresh_snapshot(&app, true).await;
-    let policy = autostart::load_startup_policy().ok().flatten();
-    if !should_ensure_daemon_on_startup(policy.as_ref(), current_config(&app).is_some(), &snapshot)
-    {
-        return;
+async fn start_daemon_flow(
+    app: &AppHandle<Wry>,
+    launch_source: &str,
+    attention_trigger: window::StatusWindowTrigger,
+) -> Result<StatusViewModel, String> {
+    set_startup_context(
+        app,
+        Some(startup_context(
+            launch_source,
+            "ensuring",
+            "Starting the local daemon and waiting for readiness.",
+        )),
+    );
+    set_checking_snapshot(app);
+
+    let config = current_config(app);
+    if let Err(error) = daemon::start_daemon_and_wait(config.as_ref()).await {
+        let message = error.to_string();
+        set_startup_context(
+            app,
+            Some(startup_context(
+                launch_source,
+                "attention",
+                format!("Failed to start the local daemon: {message}"),
+            )),
+        );
+        let snapshot = refresh_snapshot(app, true).await;
+        let decision = decide_post_ensure_action(&snapshot);
+        set_startup_context(app, Some(context_from_decision(launch_source, &decision)));
+        let _ = window::apply_status_window_intent(app, attention_trigger);
+        return Err(message);
     }
 
-    set_checking_snapshot(&app);
-    if daemon::start_daemon().is_ok() {
-        let _ = settle_after_action(&app, 1200, true).await;
-    } else {
-        let _ = refresh_snapshot(&app, true).await;
+    let snapshot = refresh_snapshot(app, true).await;
+    let decision = decide_post_ensure_action(&snapshot);
+    set_startup_context(app, Some(context_from_decision(launch_source, &decision)));
+    if matches!(decision.action, StartupAction::RevealPanel) {
+        let _ = window::apply_status_window_intent(app, attention_trigger);
+    }
+    Ok(current_snapshot(app))
+}
+
+async fn run_startup_reconciliation(app: AppHandle<Wry>) {
+    set_startup_context(
+        &app,
+        Some(startup_context(
+            "tray_boot",
+            "checking",
+            "Tray launched and is reconciling the local companion runtime.",
+        )),
+    );
+    let snapshot = refresh_snapshot(&app, true).await;
+    let policy = autostart::load_startup_policy().ok().flatten();
+    let decision = decide_startup_action(policy.as_ref(), current_config(&app).is_some(), &snapshot);
+    set_startup_context(&app, Some(context_from_decision("tray_boot", &decision)));
+
+    match decision.action {
+        StartupAction::Noop => {}
+        StartupAction::EnsureDaemon => {
+            let _ =
+                start_daemon_flow(&app, "tray_boot", window::StatusWindowTrigger::StartupAttention)
+                    .await;
+        }
+        StartupAction::RevealPanel => {
+            let _ = window::apply_status_window_intent(
+                &app,
+                window::StatusWindowTrigger::StartupAttention,
+            );
+        }
     }
 }
 
@@ -164,9 +229,7 @@ async fn set_autostart_enabled(
 
 #[tauri::command]
 async fn start_service(app: AppHandle<Wry>) -> Result<StatusViewModel, String> {
-    set_checking_snapshot(&app);
-    daemon::start_daemon().map_err(|error| error.to_string())?;
-    Ok(settle_after_action(&app, 1200, true).await)
+    start_daemon_flow(&app, "panel", window::StatusWindowTrigger::MenuCommand).await
 }
 
 #[tauri::command]
@@ -177,7 +240,15 @@ async fn stop_service(app: AppHandle<Wry>) -> Result<StatusViewModel, String> {
     daemon::stop_daemon(&config)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(settle_after_action(&app, 900, true).await)
+    set_startup_context(
+        &app,
+        Some(startup_context(
+            "panel",
+            "ready",
+            "The local daemon was stopped from the companion panel.",
+        )),
+    );
+    Ok(refresh_snapshot(&app, true).await)
 }
 
 #[tauri::command]
@@ -188,7 +259,15 @@ async fn restart_service(app: AppHandle<Wry>) -> Result<StatusViewModel, String>
     daemon::restart_daemon(&config)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(settle_after_action(&app, 1500, true).await)
+    set_startup_context(
+        &app,
+        Some(startup_context(
+            "panel",
+            "ensuring",
+            "Restarting the local daemon and waiting for the runtime to settle.",
+        )),
+    );
+    Ok(refresh_snapshot(&app, true).await)
 }
 
 #[tauri::command]
@@ -220,6 +299,11 @@ pub fn run() {
         .setup(|app| {
             let config_result = config::load_config();
             let loaded_config = config_result.as_ref().ok().cloned();
+            let startup_note = Some(startup_context(
+                "tray_boot",
+                "checking",
+                "Tray launched and is reconciling the local companion runtime.",
+            ));
             let mut initial_snapshot = match config_result {
                 Ok(config) => health::checking_snapshot(&config),
                 Err(error) => health::misconfigured_snapshot(error.to_string()),
@@ -227,12 +311,15 @@ pub fn run() {
             if let Ok(status) = autostart::sync_autostart_on_launch() {
                 initial_snapshot.autostart = Some(status);
             }
+            initial_snapshot.startup = startup_note.clone();
 
             app.manage(ShellResources {
                 config: Mutex::new(loaded_config),
                 snapshot: Mutex::new(initial_snapshot.clone()),
+                startup_context: Mutex::new(startup_note),
             });
 
+            window::ensure_status_window(&app.handle())?;
             tray::build_tray(&app.handle(), &initial_snapshot)?;
             spawn_status_poller(app.handle().clone());
 
@@ -241,6 +328,29 @@ pub fn run() {
                 run_startup_reconciliation(handle).await;
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            window::handle_status_window_event(window, event);
+        })
+        .on_tray_icon_event(|app, event| match event {
+            TrayIconEvent::Click {
+                id,
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } if id == tray::TRAY_ID => {
+                let _ =
+                    window::apply_status_window_intent(app, window::StatusWindowTrigger::TrayClick);
+            }
+            TrayIconEvent::DoubleClick {
+                id,
+                button: MouseButton::Left,
+                ..
+            } if id == tray::TRAY_ID => {
+                let _ =
+                    window::apply_status_window_intent(app, window::StatusWindowTrigger::TrayClick);
+            }
+            _ => {}
         })
         .on_menu_event(|app, event| match event.id().0.as_str() {
             tray::MENU_QUIT => app.exit(0),
@@ -298,6 +408,7 @@ mod tests {
     use super::*;
     use crate::autostart::{LoginItemMode, StartupPolicy};
     use crate::models::CompanionShellState;
+    use crate::startup::{decide_startup_action, StartupAction};
 
     fn startup_policy_enabled() -> StartupPolicy {
         StartupPolicy {
@@ -313,33 +424,12 @@ mod tests {
             ..StatusViewModel::default()
         };
 
-        assert!(should_ensure_daemon_on_startup(
+        let decision = decide_startup_action(
             Some(&startup_policy_enabled()),
             true,
             &stopped_snapshot,
-        ));
-
-        let healthy_snapshot = StatusViewModel {
-            state: CompanionShellState::Healthy {
-                version: "0.1.0".into(),
-                protocol_version: None,
-                pid: 42,
-                mcp_servers: 1,
-                mcp_tools: 3,
-            },
-            ..StatusViewModel::default()
-        };
-
-        assert!(!should_ensure_daemon_on_startup(
-            Some(&startup_policy_enabled()),
-            true,
-            &healthy_snapshot,
-        ));
-        assert!(!should_ensure_daemon_on_startup(
-            Some(&startup_policy_enabled()),
-            false,
-            &stopped_snapshot,
-        ));
+        );
+        assert_eq!(decision.action, StartupAction::EnsureDaemon);
     }
 
     #[test]
@@ -353,11 +443,14 @@ mod tests {
             ensure_daemon_on_tray_launch: false,
         };
 
-        assert!(!should_ensure_daemon_on_startup(None, true, &snapshot));
-        assert!(!should_ensure_daemon_on_startup(
-            Some(&disabled),
-            true,
-            &snapshot,
-        ));
+        assert_eq!(decide_startup_action(None, true, &snapshot).action, StartupAction::Noop);
+        assert_eq!(
+            decide_startup_action(Some(&disabled), true, &snapshot).action,
+            StartupAction::Noop
+        );
+        assert_eq!(
+            decide_startup_action(Some(&startup_policy_enabled()), false, &snapshot).action,
+            StartupAction::RevealPanel
+        );
     }
 }

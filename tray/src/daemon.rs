@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
+use tokio::time::{sleep, Instant};
 
 use crate::models::{CompanionConfig, RepairAction, SelfCheckSnapshot};
 
@@ -34,6 +36,18 @@ pub fn start_daemon() -> Result<()> {
     if !status.success() {
         anyhow::bail!("Companion daemon start command failed: {status}");
     }
+    Ok(())
+}
+
+pub async fn start_daemon_and_wait(config: Option<&CompanionConfig>) -> Result<()> {
+    start_daemon()?;
+
+    if let Some(config) = config {
+        wait_for_daemon_ready(config, Duration::from_secs(10)).await?;
+    } else {
+        sleep(Duration::from_millis(500)).await;
+    }
+
     Ok(())
 }
 
@@ -67,6 +81,34 @@ pub async fn restart_daemon(config: &CompanionConfig) -> Result<()> {
         .await?
         .error_for_status()?;
     Ok(())
+}
+
+async fn wait_for_daemon_ready(config: &CompanionConfig, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .timeout(Duration::from_secs(2))
+        .build()?;
+
+    loop {
+        let ready = client
+            .get(format!("http://127.0.0.1:{}/healthz", config.port))
+            .bearer_auth(&config.token)
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false);
+
+        if ready {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            anyhow::bail!("Timed out waiting for the companion daemon to become ready")
+        }
+
+        sleep(Duration::from_millis(250)).await;
+    }
 }
 
 pub fn open_logs_dir(path: &str) -> Result<()> {
