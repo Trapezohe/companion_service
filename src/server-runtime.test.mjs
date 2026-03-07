@@ -118,6 +118,9 @@ test('diagnostics and self-check endpoints return structured companion health de
         toolCount: 1,
         command: 'node',
         args: ['server.js'],
+        restartable: true,
+        restartPending: false,
+        nextRetryAt: null,
       }],
       callTool: async () => ({ ok: true }),
       restartServer: async () => {},
@@ -134,9 +137,13 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.equal(typeof diagnostics.payload.version, 'string')
   assert.equal(typeof diagnostics.payload.mcp.connectedServers, 'number')
   assert.ok(Array.isArray(diagnostics.payload.mcp.servers))
+  assert.equal(diagnostics.payload.mcp.servers[0]?.restartable, true)
+  assert.equal(diagnostics.payload.mcp.servers[0]?.restartPending, false)
   assert.ok(Array.isArray(diagnostics.payload.runs.recentFailed))
   assert.ok(Array.isArray(diagnostics.payload.approvals.pending))
   assert.equal(typeof diagnostics.payload.acp.totalSessions, 'number')
+  assert.equal(typeof diagnostics.payload.nativeHostRegistration, 'object')
+  assert.ok(Array.isArray(diagnostics.payload.nativeHostRegistration?.hostNames))
 
   const selfCheck = await requestJson(ctx, '/api/system/self-check')
   assert.equal(selfCheck.status, 200)

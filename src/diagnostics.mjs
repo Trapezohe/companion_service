@@ -1,6 +1,5 @@
 import { access } from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
 
 import { loadConfig, getConfigPath, getPidPath } from './config.mjs'
 import { listRuns } from './run-store.mjs'
@@ -8,28 +7,11 @@ import { listPendingApprovals } from './approval-store.mjs'
 import { listAcpSessions } from './acp-session.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
-
-const NATIVE_HOST_BASENAME = 'ai.ghast.companion'
-
-function getNativeHostManifestDirs() {
-  const home = os.homedir()
-  if (process.platform === 'darwin') {
-    return [
-      path.join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts'),
-      path.join(home, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts'),
-    ]
-  }
-  if (process.platform === 'win32') {
-    return [
-      path.join(home, 'AppData', 'Local', 'Google', 'Chrome', 'User Data', 'NativeMessagingHosts'),
-      path.join(home, 'AppData', 'Local', 'Chromium', 'User Data', 'NativeMessagingHosts'),
-    ]
-  }
-  return [
-    path.join(home, '.config', 'google-chrome', 'NativeMessagingHosts'),
-    path.join(home, '.config', 'chromium', 'NativeMessagingHosts'),
-  ]
-}
+import {
+  NATIVE_HOST_NAMES,
+  getConfiguredExtensionIds,
+  getNativeHostManifestTargets,
+} from './native-host.mjs'
 
 async function exists(target) {
   try {
@@ -62,16 +44,25 @@ async function resolveExecutable(command) {
 }
 
 async function checkNativeHostRegistration(config) {
-  const extensionIds = Array.isArray(config.extensionIds) ? config.extensionIds : []
-  const manifestPaths = getNativeHostManifestDirs().map((dir) => path.join(dir, `${NATIVE_HOST_BASENAME}.json`))
-  const matches = []
-  for (const manifestPath of manifestPaths) {
-    if (await exists(manifestPath)) matches.push(manifestPath)
+  const extensionIds = getConfiguredExtensionIds(config)
+  const manifestTargets = getNativeHostManifestTargets()
+  const manifests = []
+  const missingManifests = []
+  for (const target of manifestTargets) {
+    if (await exists(target.manifestPath)) manifests.push(target.manifestPath)
+    else missingManifests.push(target.manifestPath)
   }
+  const required = extensionIds.length > 0
+  const ok = manifests.length > 0 && (!required || missingManifests.length === 0)
   return {
-    ok: matches.length > 0,
+    ok,
+    required,
+    repairable: required,
     extensionIds,
-    manifests: matches,
+    hostNames: [...NATIVE_HOST_NAMES],
+    expectedManifests: manifestTargets.map((target) => target.manifestPath),
+    manifests,
+    missingManifests,
   }
 }
 
@@ -82,6 +73,7 @@ export async function buildDiagnosticsPayload(params) {
   const acpSessions = listAcpSessions({ limit: 100, offset: 0 })
   const permissionPolicy = normalizePermissionPolicy(params.getPermissionPolicy?.() || config.permissionPolicy)
   const servers = params.mcpManager?.getServers?.() || []
+  const nativeHostRegistration = await checkNativeHostRegistration(config)
 
   const payload = {
     protocolVersion: params.protocolVersion,
@@ -97,6 +89,7 @@ export async function buildDiagnosticsPayload(params) {
       totalTools: params.mcpManager?.getAllTools?.().length || 0,
       servers,
     },
+    nativeHostRegistration,
     runs: {
       recentFailed: runs.runs.filter((run) => run.state === 'failed').slice(0, 5),
     },
@@ -148,6 +141,7 @@ export async function runCompanionSelfCheck(params) {
   const ok = checks.configReadable.ok
     && checks.tokenPresent.ok
     && checks.workspacePolicy.ok
+    && (!checks.nativeHostRegistration.required || checks.nativeHostRegistration.ok)
     && checks.mcpExecutables.every((item) => item.ok)
 
   const repairActions = []
@@ -158,7 +152,7 @@ export async function runCompanionSelfCheck(params) {
       description: 'Rewrite missing config defaults while preserving MCP servers and extension ids where possible.',
     })
   }
-  if (!checks.nativeHostRegistration.ok) {
+  if (checks.nativeHostRegistration.required && !checks.nativeHostRegistration.ok) {
     repairActions.push({
       id: 'register_native_host',
       title: 'Re-register native host',

@@ -2,9 +2,70 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path, { delimiter as PATH_DELIMITER } from 'node:path'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 
 import { buildMcpSpawnPath, McpManager } from './mcp-manager.mjs'
+
+async function waitFor(check, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const value = await check()
+    if (value) return value
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error('Timed out waiting for condition.')
+}
+
+async function createLifecycleTestServer(tempDir) {
+  const scriptPath = path.join(tempDir, 'fake-mcp-server.mjs')
+  const startCountPath = path.join(tempDir, 'start-count.txt')
+  const source = `
+import { readFileSync, writeFileSync } from 'node:fs'
+
+const countPath = process.argv[2]
+let count = 0
+try {
+  count = Number(readFileSync(countPath, 'utf8').trim()) || 0
+} catch {}
+count += 1
+writeFileSync(countPath, String(count))
+
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let newlineIndex = buffer.indexOf('\\n')
+  while (newlineIndex >= 0) {
+    const line = buffer.slice(0, newlineIndex).trim()
+    buffer = buffer.slice(newlineIndex + 1)
+    if (line) handle(JSON.parse(line))
+    newlineIndex = buffer.indexOf('\\n')
+  }
+})
+
+function respond(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+function handle(message) {
+  if (message.method === 'initialize') {
+    respond(message.id, { capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } })
+    return
+  }
+
+  if (message.method === 'tools/list') {
+    respond(message.id, { tools: [] })
+    if (count === 1) {
+      setTimeout(() => process.exit(0), 20)
+    }
+    return
+  }
+}
+`
+
+  await writeFile(scriptPath, source, 'utf8')
+  return { scriptPath, startCountPath }
+}
 
 test('buildMcpSpawnPath appends common executable directories and nvm bins', async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-path-'))
@@ -158,5 +219,102 @@ test('startServer respects configured connected-server concurrency limit', async
   } finally {
     if (prevLimit === undefined) delete process.env.TRAPEZOHE_MCP_MAX_CONNECTED
     else process.env.TRAPEZOHE_MCP_MAX_CONNECTED = prevLimit
+  }
+})
+
+test('disconnected servers schedule bounded restart metadata and reconnect by default', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-restart-'))
+  const prevBase = process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS
+  const prevMax = process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS
+  process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS = '40'
+  process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS = '40'
+
+  try {
+    const { scriptPath, startCountPath } = await createLifecycleTestServer(tempDir)
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const { McpManager: RestartingMcpManager } = await import(`./mcp-manager.mjs?bust=${cacheBust}`)
+    const manager = new RestartingMcpManager({
+      flappy: {
+        command: process.execPath,
+        args: [scriptPath, startCountPath],
+      },
+    })
+
+    await manager.startServer('flappy')
+
+    const disconnected = await waitFor(() => {
+      const status = manager.getServers().find((item) => item.name === 'flappy')
+      if (status?.status === 'disconnected') return status
+      return null
+    })
+    assert.equal(disconnected.restartable, true)
+    assert.equal(disconnected.restartPending, true)
+    assert.equal(typeof disconnected.nextRetryAt, 'number')
+    assert.equal(disconnected.nextRetryAt > Date.now(), true)
+
+    const reconnected = await waitFor(() => {
+      const status = manager.getServers().find((item) => item.name === 'flappy')
+      if (status?.status === 'connected') return status
+      return null
+    })
+    assert.equal(reconnected.restartPending, false)
+
+    const startCount = Number(await readFile(startCountPath, 'utf8'))
+    assert.equal(startCount >= 2, true)
+
+    await manager.stopAll()
+  } finally {
+    if (prevBase === undefined) delete process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS
+    else process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS = prevBase
+    if (prevMax === undefined) delete process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS
+    else process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS = prevMax
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('servers marked restartable false do not auto-restart after disconnect', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-no-restart-'))
+  const prevBase = process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS
+  const prevMax = process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS
+  process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS = '40'
+  process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS = '40'
+
+  try {
+    const { scriptPath, startCountPath } = await createLifecycleTestServer(tempDir)
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const { McpManager: RestartingMcpManager } = await import(`./mcp-manager.mjs?bust=${cacheBust}`)
+    const manager = new RestartingMcpManager({
+      flappy: {
+        command: process.execPath,
+        args: [scriptPath, startCountPath],
+        restartable: false,
+      },
+    })
+
+    await manager.startServer('flappy')
+
+    const disconnected = await waitFor(() => {
+      const status = manager.getServers().find((item) => item.name === 'flappy')
+      if (status?.status === 'disconnected') return status
+      return null
+    })
+    assert.equal(disconnected.restartable, false)
+    assert.equal(disconnected.restartPending, false)
+    assert.equal(disconnected.nextRetryAt, null)
+
+    await new Promise((resolve) => setTimeout(resolve, 120))
+
+    const latest = manager.getServers().find((item) => item.name === 'flappy')
+    assert.equal(latest?.status, 'disconnected')
+    const startCount = Number(await readFile(startCountPath, 'utf8'))
+    assert.equal(startCount, 1)
+
+    await manager.stopAll()
+  } finally {
+    if (prevBase === undefined) delete process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS
+    else process.env.TRAPEZOHE_MCP_RESTART_BASE_BACKOFF_MS = prevBase
+    if (prevMax === undefined) delete process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS
+    else process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS = prevMax
+    await rm(tempDir, { recursive: true, force: true })
   }
 })
