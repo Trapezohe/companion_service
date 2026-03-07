@@ -67,6 +67,44 @@ function handle(message) {
   return { scriptPath, startCountPath }
 }
 
+async function createDelayedInitServer(tempDir, delayMs) {
+  const scriptPath = path.join(tempDir, 'slow-init-mcp-server.mjs')
+  const source = `
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let newlineIndex = buffer.indexOf('\\n')
+  while (newlineIndex >= 0) {
+    const line = buffer.slice(0, newlineIndex).trim()
+    buffer = buffer.slice(newlineIndex + 1)
+    if (line) handle(JSON.parse(line))
+    newlineIndex = buffer.indexOf('\\n')
+  }
+})
+
+function respond(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+function handle(message) {
+  if (message.method === 'initialize') {
+    setTimeout(() => {
+      respond(message.id, { capabilities: { tools: {} }, serverInfo: { name: 'slow', version: '1.0.0' } })
+    }, ${Math.max(1, delayMs)})
+    return
+  }
+
+  if (message.method === 'tools/list') {
+    respond(message.id, { tools: [] })
+  }
+}
+`
+
+  await writeFile(scriptPath, source, 'utf8')
+  return { scriptPath }
+}
+
 test('buildMcpSpawnPath appends common executable directories and nvm bins', async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-path-'))
   try {
@@ -219,6 +257,54 @@ test('startServer respects configured connected-server concurrency limit', async
   } finally {
     if (prevLimit === undefined) delete process.env.TRAPEZOHE_MCP_MAX_CONNECTED
     else process.env.TRAPEZOHE_MCP_MAX_CONNECTED = prevLimit
+  }
+})
+
+test('startServer uses env default timeout unless a per-server override is configured', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-timeout-'))
+  const previousTimeout = process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS
+  process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS = '30'
+
+  try {
+    const { scriptPath } = await createDelayedInitServer(tempDir, 120)
+
+    const timedOutManager = new McpManager({
+      slow: {
+        command: process.execPath,
+        args: [scriptPath],
+      },
+    })
+
+    await assert.rejects(
+      () => timedOutManager.startServer('slow'),
+      /timed out after 30ms: initialize/i,
+    )
+
+    const timedOutStatus = timedOutManager.getServers().find((item) => item.name === 'slow')
+    assert.ok(timedOutStatus)
+    assert.equal(timedOutStatus.status, 'error')
+    assert.equal(timedOutStatus.requestTimeoutMs, 30)
+
+    const manager = new McpManager({
+      slow: {
+        command: process.execPath,
+        args: [scriptPath],
+        requestTimeoutMs: 300,
+      },
+    })
+
+    await manager.startServer('slow')
+
+    const status = manager.getServers().find((item) => item.name === 'slow')
+    assert.ok(status)
+    assert.equal(status.status, 'connected')
+    assert.equal(status.requestTimeoutMs, 300)
+
+    await manager.stopServer('slow')
+  } finally {
+    if (previousTimeout === undefined) delete process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS
+    else process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS = previousTimeout
+    await rm(tempDir, { recursive: true, force: true })
   }
 })
 

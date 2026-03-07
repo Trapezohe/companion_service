@@ -149,6 +149,40 @@ test('updateMcpServerConfig preserves restartable flag for MCP lifecycle policy'
   })
 })
 
+test('updateMcpServerConfig preserves requestTimeoutMs override for MCP servers', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.initConfig()
+    await mod.updateMcpServerConfig('slow-mcp', {
+      command: 'npx',
+      args: ['-y', '@bnb-chain/mcp@latest'],
+      requestTimeoutMs: 45_000,
+    })
+
+    const loaded = await mod.loadConfig()
+    assert.equal(loaded.mcpServers['slow-mcp']?.requestTimeoutMs, 45_000)
+  })
+})
+
+test('updateMcpServerConfig clears requestTimeoutMs override when the field is blank', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.initConfig()
+    await mod.updateMcpServerConfig('slow-mcp', {
+      command: 'npx',
+      args: ['-y', '@bnb-chain/mcp@latest'],
+      requestTimeoutMs: 45_000,
+    })
+
+    await mod.updateMcpServerConfig('slow-mcp', {
+      command: 'npx',
+      args: ['-y', '@bnb-chain/mcp@latest'],
+      requestTimeoutMs: '',
+    })
+
+    const loaded = await mod.loadConfig()
+    assert.equal(loaded.mcpServers['slow-mcp']?.requestTimeoutMs, undefined)
+  })
+})
+
 test('self-check stays unhealthy when extension IDs are configured but native host registration is missing', async () => {
   await withTempHome(async ({ mod }) => {
     await mod.saveConfig({

@@ -5,7 +5,7 @@
  * Each message is a single JSON object followed by a newline character.
  */
 
-const REQUEST_TIMEOUT_MS = 30_000
+import { getDefaultMcpRequestTimeoutMs, normalizeMcpRequestTimeoutMs } from './config.mjs'
 
 export class StdioTransport {
   #proc
@@ -16,9 +16,14 @@ export class StdioTransport {
   #notificationHandler = null
   #stderrChunks = []
   #stderrSize = 0
+  #requestTimeoutMs
 
-  constructor(proc) {
+  constructor(proc, options = {}) {
     this.#proc = proc
+    this.#requestTimeoutMs = normalizeMcpRequestTimeoutMs(
+      options.requestTimeoutMs,
+      getDefaultMcpRequestTimeoutMs(),
+    )
 
     proc.stdout.setEncoding('utf8')
     proc.stdout.on('data', (chunk) => this.#onData(chunk))
@@ -48,6 +53,10 @@ export class StdioTransport {
     return this.#closed
   }
 
+  get requestTimeoutMs() {
+    return this.#requestTimeoutMs
+  }
+
   async request(method, params = {}) {
     if (this.#closed) {
       throw new Error('Transport is closed')
@@ -64,8 +73,8 @@ export class StdioTransport {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id)
-        reject(new Error(`MCP request timed out after ${REQUEST_TIMEOUT_MS}ms: ${method}`))
-      }, REQUEST_TIMEOUT_MS)
+        reject(new Error(`MCP request timed out after ${this.#requestTimeoutMs}ms: ${method}`))
+      }, this.#requestTimeoutMs)
 
       this.#pending.set(id, { resolve, reject, timer })
 

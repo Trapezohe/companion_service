@@ -11,6 +11,7 @@ import { dirname, delimiter as PATH_DELIMITER, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
 import { StdioTransport } from './mcp-transport.mjs'
 import { COMPANION_VERSION } from './version.mjs'
+import { getDefaultMcpRequestTimeoutMs, normalizeMcpRequestTimeoutMs } from './config.mjs'
 
 const MCP_PROTOCOL_VERSION = '2024-11-05'
 
@@ -88,6 +89,28 @@ function resolveWriteCapable(config, tools = []) {
     return config.writeCapable
   }
   return tools.some((tool) => isWriteCapableToolName(tool?.name))
+}
+
+function resolveServerRequestTimeoutMs(config) {
+  return normalizeMcpRequestTimeoutMs(config?.requestTimeoutMs, getDefaultMcpRequestTimeoutMs())
+}
+
+function normalizeManagerServerConfig(config) {
+  return {
+    command: config.command,
+    args: Array.isArray(config.args)
+      ? config.args.filter((item) => typeof item === 'string')
+      : [],
+    env: config.env && typeof config.env === 'object' && !Array.isArray(config.env)
+      ? config.env
+      : {},
+    cwd: typeof config.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : undefined,
+    ...(config.requestTimeoutMs !== undefined
+      ? { requestTimeoutMs: resolveServerRequestTimeoutMs(config) }
+      : {}),
+    ...(typeof config.restartable === 'boolean' ? { restartable: config.restartable } : {}),
+    ...(typeof config.writeCapable === 'boolean' ? { writeCapable: config.writeCapable } : {}),
+  }
 }
 
 export class McpManager {
@@ -170,9 +193,10 @@ export class McpManager {
         console.warn(`[MCP] Skipping server "${name}": no command specified`)
         continue
       }
+      const normalizedConfig = normalizeManagerServerConfig(config)
       this.#servers.set(name, {
         name,
-        config,
+        config: normalizedConfig,
         status: 'stopped',
         transport: null,
         tools: [],
@@ -184,7 +208,7 @@ export class McpManager {
         nextRetryAt: null,
         restartPending: false,
         restartTimer: null,
-        writeCapable: resolveWriteCapable(config),
+        writeCapable: resolveWriteCapable(normalizedConfig),
       })
     }
   }
@@ -292,7 +316,9 @@ export class McpManager {
         }
       })
 
-      const transport = new StdioTransport(proc)
+      const transport = new StdioTransport(proc, {
+        requestTimeoutMs: resolveServerRequestTimeoutMs(entry.config),
+      })
       entry.transport = transport
       entry.startedAt = Date.now()
 
@@ -386,6 +412,7 @@ export class McpManager {
         startedAt: entry.startedAt,
         command: entry.config.command,
         args: entry.config.args || [],
+        requestTimeoutMs: entry.transport?.requestTimeoutMs ?? resolveServerRequestTimeoutMs(entry.config),
         failureCount: entry.failureCount || 0,
         lastFailureAt: entry.lastFailureAt,
         nextRetryAt: entry.nextRetryAt,
@@ -495,18 +522,10 @@ export class McpManager {
     }
     const command = typeof config.command === 'string' ? config.command.trim() : ''
     if (!command) throw new Error('MCP server config.command is required.')
-    const normalizedConfig = {
+    const normalizedConfig = normalizeManagerServerConfig({
+      ...config,
       command,
-      args: Array.isArray(config.args)
-        ? config.args.filter((item) => typeof item === 'string')
-        : [],
-      env: config.env && typeof config.env === 'object' && !Array.isArray(config.env)
-        ? config.env
-        : {},
-      cwd: typeof config.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : undefined,
-      ...(typeof config.restartable === 'boolean' ? { restartable: config.restartable } : {}),
-      ...(typeof config.writeCapable === 'boolean' ? { writeCapable: config.writeCapable } : {}),
-    }
+    })
 
     const existing = this.#servers.get(serverName)
     if (existing) {

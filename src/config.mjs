@@ -9,6 +9,9 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'companion.json')
 const PID_FILE = path.join(CONFIG_DIR, 'companion.pid')
 const CONFIG_DIR_MODE = 0o700
 const CONFIG_FILE_MODE = 0o600
+const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000
+const MIN_MCP_REQUEST_TIMEOUT_MS = 1
+const MAX_MCP_REQUEST_TIMEOUT_MS = 600_000
 
 const DEFAULT_PERMISSION_POLICY = normalizePermissionPolicy({ mode: 'full' })
 export const COMPANION_PROTOCOL_VERSION = '2026-03-07'
@@ -38,6 +41,37 @@ export function getConfigPath() {
 
 export function getPidPath() {
   return PID_FILE
+}
+
+function coerceMcpRequestTimeoutMs(value, fallback) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback
+  }
+  return Math.min(MAX_MCP_REQUEST_TIMEOUT_MS, Math.max(MIN_MCP_REQUEST_TIMEOUT_MS, Math.round(numeric)))
+}
+
+export function getDefaultMcpRequestTimeoutMs() {
+  return coerceMcpRequestTimeoutMs(
+    process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS,
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS,
+  )
+}
+
+export function normalizeMcpRequestTimeoutMs(value, fallback = getDefaultMcpRequestTimeoutMs()) {
+  return coerceMcpRequestTimeoutMs(value, fallback)
+}
+
+function parseOptionalMcpRequestTimeoutOverride(value) {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string' && value.trim() === '') return undefined
+
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new Error('MCP server config.requestTimeoutMs must be a positive number when provided.')
+  }
+
+  return normalizeMcpRequestTimeoutMs(numeric)
 }
 
 async function safeChmod(target, mode) {
@@ -148,12 +182,14 @@ function normalizeMcpServerConfig(input) {
   const cwd = typeof input.cwd === 'string' && input.cwd.trim()
     ? input.cwd.trim()
     : undefined
+  const requestTimeoutMs = parseOptionalMcpRequestTimeoutOverride(input.requestTimeoutMs)
 
   return {
     command,
     args,
     env,
     ...(cwd ? { cwd } : {}),
+    ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
     ...(typeof input.restartable === 'boolean' ? { restartable: input.restartable } : {}),
     ...(typeof input.writeCapable === 'boolean' ? { writeCapable: input.writeCapable } : {}),
   }
