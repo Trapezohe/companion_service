@@ -75,6 +75,7 @@ import {
   setAcpSessionTransitionHook,
 } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
+import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 
 // ── Auth rate limiter ──
 
@@ -97,13 +98,44 @@ function recordAuthFailure() {
 
 // ── Helpers ──
 
+const BASE_CORS_HEADERS = {
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+}
+
+export function buildCorsHeaders({
+  origin,
+  allowedOrigins = [],
+  allowUnpairedExtensionOrigin = false,
+} = {}) {
+  const headers = { ...BASE_CORS_HEADERS }
+  const requestedOrigin = typeof origin === 'string' ? origin.trim() : ''
+  const normalizedOrigin = normalizeExtensionOrigin(requestedOrigin)
+  if (!normalizedOrigin) return headers
+
+  const allowedOriginSet = new Set(
+    (Array.isArray(allowedOrigins) ? allowedOrigins : [])
+      .map((value) => normalizeExtensionOrigin(value))
+      .filter(Boolean),
+  )
+
+  const allowEnrollmentOrigin =
+    allowUnpairedExtensionOrigin &&
+    allowedOriginSet.size === 0 &&
+    isChromeExtensionOrigin(normalizedOrigin)
+
+  if (allowedOriginSet.has(normalizedOrigin) || allowEnrollmentOrigin) {
+    headers['Access-Control-Allow-Origin'] = requestedOrigin
+    headers.Vary = 'Origin'
+  }
+
+  return headers
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   })
   res.end(JSON.stringify(payload))
 }
@@ -579,6 +611,7 @@ async function handleRunDiagnostics(url, res) {
 export function createCompanionServer({
   token,
   mcpManager,
+  getAllowedOrigins = async () => [],
   getPermissionPolicy = () => normalizePermissionPolicy({ mode: 'full' }),
   setPermissionPolicy = async () => {
     throw new Error('Permission policy updates are not enabled.')
@@ -593,6 +626,10 @@ export function createCompanionServer({
   cleanupFn = null,
 }) {
   const sessionRunIndex = new Map()
+  let lastKnownOriginPolicy = {
+    allowedOrigins: [],
+    allowUnpairedExtensionOrigin: false,
+  }
   const serializeApprovalMutation = createKeyedSerializer()
   const initStoresPromise = Promise.all([
     loadRunStore().catch(() => undefined),
@@ -741,6 +778,25 @@ export function createCompanionServer({
     await initStoresPromise
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
     const pathname = url.pathname
+    try {
+      const resolvedAllowedOrigins = await getAllowedOrigins()
+      if (Array.isArray(resolvedAllowedOrigins)) {
+        lastKnownOriginPolicy = {
+          allowedOrigins: resolvedAllowedOrigins,
+          allowUnpairedExtensionOrigin: resolvedAllowedOrigins.length === 0,
+        }
+      }
+    } catch {
+      // Keep serving with the last known good origin policy when config reads fail.
+    }
+    const corsHeaders = buildCorsHeaders({
+      origin: req.headers.origin,
+      allowedOrigins: lastKnownOriginPolicy.allowedOrigins,
+      allowUnpairedExtensionOrigin: lastKnownOriginPolicy.allowUnpairedExtensionOrigin,
+    })
+    for (const [header, value] of Object.entries(corsHeaders)) {
+      res.setHeader(header, value)
+    }
 
     // CORS preflight
     if (req.method === 'OPTIONS') {

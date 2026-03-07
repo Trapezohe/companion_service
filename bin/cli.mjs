@@ -281,6 +281,10 @@ async function handleStart() {
   const server = createCompanionServer({
     token,
     mcpManager,
+    getAllowedOrigins: async () => {
+      const latestConfig = await loadConfig()
+      return getAllowedOrigins(getConfiguredExtensionIds(latestConfig))
+    },
     getPermissionPolicy: () => currentPermissionPolicy,
     setPermissionPolicy: async (nextPolicy) => {
       currentPermissionPolicy = normalizePermissionPolicy(nextPolicy)

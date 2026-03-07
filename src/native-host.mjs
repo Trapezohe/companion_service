@@ -18,6 +18,16 @@ export function getConfiguredExtensionIds(config) {
   return normalizeExtensionIds(config?.extensionIds)
 }
 
+export function normalizeExtensionOrigin(origin = '') {
+  if (typeof origin !== 'string') return ''
+  return origin.trim().replace(/\/+$/, '')
+}
+
+export function isChromeExtensionOrigin(origin = '') {
+  const normalized = normalizeExtensionOrigin(origin)
+  return /^chrome-extension:\/\/[a-p]{32}$/.test(normalized)
+}
+
 export function resolveBootstrapExtensionIds({
   requestedExtensionIds = [],
   configuredExtensionIds = [],
