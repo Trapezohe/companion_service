@@ -1,13 +1,20 @@
+import { spawnSync } from 'node:child_process'
 import { readdirSync, existsSync, mkdirSync, copyFileSync, cpSync, statSync } from 'node:fs'
 import { join, dirname, delimiter as PATH_DELIMITER } from 'node:path'
 
 const CLAUDE_HELP_PROBE_TIMEOUT_MS = Number(process.env.TRAPEZOHE_CLAUDE_HELP_PROBE_TIMEOUT_MS || 1_500)
 const CODEX_SAFE_REASONING_EFFORT = 'high'
+const SHELL_ENV_IMPORT_TIMEOUT_MS = Number(process.env.TRAPEZOHE_ACP_SHELL_ENV_IMPORT_TIMEOUT_MS || 5_000)
+const SHELL_ENV_IMPORT_CACHE_TTL_MS = Number(process.env.TRAPEZOHE_ACP_SHELL_ENV_CACHE_TTL_MS || 30_000)
 const CODEX_ISOLATED_HOME_DIRNAME = 'codex-home'
 const CODEX_HOME_SYNC_FILES = ['auth.json', 'config.toml', 'models_cache.json', 'version.json', 'AGENTS.md']
 const CODEX_HOME_SYNC_DIRS = ['skills', 'rules', 'vendor_imports']
 
 let claudeSupportsNonInteractivePermissions = null
+let shellEnvCache = {
+  expiresAt: 0,
+  values: {},
+}
 
 export const AGENT_AUTH_ENV_KEYS = {
   'claude-code': ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CRS_OAI_KEY'],
@@ -48,6 +55,60 @@ function splitPathEntries(pathValue) {
     .split(PATH_DELIMITER)
     .map((entry) => entry.trim())
     .filter(Boolean)
+}
+
+function readShellEnvMap() {
+  const shell = hasNonEmptyString(process.env.SHELL) ? process.env.SHELL.trim() : '/bin/zsh'
+  const shellName = shell.split('/').pop()?.toLowerCase() || ''
+  const shellArgs =
+    shellName.includes('zsh') || shellName.includes('bash')
+      ? ['-lic', 'env']
+      : ['-lc', 'env']
+  try {
+    const probe = spawnSync(shell, shellArgs, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: SHELL_ENV_IMPORT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    })
+    const stdout = String(probe.stdout || '')
+    if (!stdout.trim()) return {}
+    const values = {}
+    for (const line of stdout.split(/\r?\n/)) {
+      const idx = line.indexOf('=')
+      if (idx <= 0) continue
+      const key = line.slice(0, idx).trim()
+      if (!key) continue
+      values[key] = line.slice(idx + 1)
+    }
+    return values
+  } catch {
+    return {}
+  }
+}
+
+function getShellEnvValues(keys) {
+  const enabledOverride = parseOptionalBoolean(process.env.TRAPEZOHE_ACP_IMPORT_SHELL_ENV)
+  if (enabledOverride === false) return {}
+  if (!Array.isArray(keys) || keys.length === 0) return {}
+
+  const ts = Date.now()
+  if (shellEnvCache.expiresAt <= ts) {
+    const values = readShellEnvMap()
+    const hasValues = Object.keys(values).length > 0
+    shellEnvCache = {
+      expiresAt: ts + (hasValues ? Math.max(1_000, SHELL_ENV_IMPORT_CACHE_TTL_MS) : 1_000),
+      values,
+    }
+  }
+
+  const result = {}
+  for (const key of keys) {
+    const value = shellEnvCache.values[key]
+    if (!hasNonEmptyString(value)) continue
+    result[key] = String(value).trim()
+  }
+  return result
 }
 
 function getNvmNodeBinDirs(homeDir) {
@@ -301,6 +362,66 @@ export function prepareAgentEnvironment(baseEnv, agentType) {
     }
   }
   return agentEnv
+}
+
+export function prepareAgentSpawnEnvironment(options = {}) {
+  const agentType = String(options.agentType || '').toLowerCase()
+  const explicitEnv = options.explicitEnv && typeof options.explicitEnv === 'object'
+    ? options.explicitEnv
+    : null
+  const agentEnv = { ...(options.baseEnv || process.env) }
+
+  if (options.alwaysStripRuntimeMarkers !== false) {
+    stripAgentRuntimeMarkers(agentEnv, agentType)
+  }
+
+  if (
+    shouldSanitizeInheritedAgentEnv()
+    && (agentType === 'claude-code' || agentType === 'codex' || agentType === 'raw')
+  ) {
+    for (const key of Object.keys(agentEnv)) {
+      if (key.startsWith('CLAUDE') || key.startsWith('CODEX')) {
+        delete agentEnv[key]
+      }
+    }
+    delete agentEnv.ANTHROPIC_AUTH_TOKEN
+  }
+
+  const shellAuthEnv = getShellEnvValues(AGENT_AUTH_ENV_KEYS[agentType] || [])
+  for (const [key, value] of Object.entries(shellAuthEnv)) {
+    if (hasNonEmptyString(agentEnv[key])) continue
+    agentEnv[key] = value
+  }
+
+  if (explicitEnv) {
+    for (const [key, value] of Object.entries(explicitEnv)) {
+      if (value == null) continue
+      agentEnv[key] = String(value)
+    }
+  }
+
+  if (agentType === 'codex') {
+    const isolatedCodexHome = bootstrapCodexRuntimeHome(agentEnv)
+    if (isolatedCodexHome) {
+      agentEnv.CODEX_HOME = isolatedCodexHome
+    }
+  }
+
+  agentEnv.PATH = buildAgentPath(agentEnv.PATH, {
+    homeDir: agentEnv.HOME || process.env.HOME,
+  })
+
+  if (agentType === 'claude-code' && shouldUseLegacyAuthRewrite()) {
+    if (!explicitEnv?.ANTHROPIC_AUTH_TOKEN) {
+      delete agentEnv.ANTHROPIC_AUTH_TOKEN
+    }
+    normalizeClaudeAuthEnv(agentEnv)
+  }
+
+  return {
+    env: agentEnv,
+    authCheck: resolveAgentAuthCheck(agentType, agentEnv),
+  }
 }
 
 export function resolveAgentDefaultCommand(agentType, prompt, agentSessionId) {

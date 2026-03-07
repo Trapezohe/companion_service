@@ -5,11 +5,9 @@
  * actor-queue serialization, and cancel-bypass for AI agent sessions.
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { readdirSync, existsSync, mkdirSync, copyFileSync, cpSync, statSync } from 'node:fs'
-import { join, dirname, delimiter as PATH_DELIMITER } from 'node:path'
 import { applyAcpSessionState, setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
 import {
   parseAgentLine as parseAgentLineFromEvents,
@@ -23,6 +21,7 @@ import {
 import {
   buildAgentPath as buildAgentPathFromAuth,
   normalizeClaudeAuthEnv as normalizeClaudeAuthEnvFromAuth,
+  prepareAgentSpawnEnvironment,
   resolveAgentAuthCheck as resolveAgentAuthCheckFromAuth,
   resolveAgentDefaultCommand,
 } from './acp-auth.mjs'
@@ -38,17 +37,10 @@ const DEFAULT_NO_OUTPUT_CHECK_INTERVAL_MS = Number(process.env.TRAPEZOHE_ACP_NO_
 const NO_OUTPUT_DIAGNOSTIC_HEARTBEAT_THRESHOLD = Number(process.env.TRAPEZOHE_ACP_NO_OUTPUT_DIAGNOSTIC_HEARTBEATS || 4)
 const NO_OUTPUT_DIAGNOSTIC_REPEAT_HEARTBEATS = Number(process.env.TRAPEZOHE_ACP_NO_OUTPUT_DIAGNOSTIC_REPEAT_HEARTBEATS || 8)
 const NO_OUTPUT_DIAGNOSTIC_EVENT_SCAN_LIMIT = Number(process.env.TRAPEZOHE_ACP_NO_OUTPUT_DIAGNOSTIC_EVENT_SCAN_LIMIT || 120)
-const CLAUDE_HELP_PROBE_TIMEOUT_MS = Number(process.env.TRAPEZOHE_CLAUDE_HELP_PROBE_TIMEOUT_MS || 1_500)
-const CODEX_SAFE_REASONING_EFFORT = 'high'
-const SHELL_ENV_IMPORT_TIMEOUT_MS = Number(process.env.TRAPEZOHE_ACP_SHELL_ENV_IMPORT_TIMEOUT_MS || 5_000)
-const SHELL_ENV_IMPORT_CACHE_TTL_MS = Number(process.env.TRAPEZOHE_ACP_SHELL_ENV_CACHE_TTL_MS || 30_000)
 /** TTL for terminal sessions before GC sweeps them (default: 10 minutes). */
 const SESSION_TTL_MS = Number(process.env.TRAPEZOHE_ACP_SESSION_TTL_MS || 10 * 60 * 1000)
 /** GC sweep interval (default: 60 seconds). */
 const GC_INTERVAL_MS = Number(process.env.TRAPEZOHE_ACP_GC_INTERVAL_MS || 60_000)
-const CODEX_ISOLATED_HOME_DIRNAME = 'codex-home'
-const CODEX_HOME_SYNC_FILES = ['auth.json', 'config.toml', 'models_cache.json', 'version.json', 'AGENTS.md']
-const CODEX_HOME_SYNC_DIRS = ['skills', 'rules', 'vendor_imports']
 const DEFAULT_SESSION_PROBE_HEARTBEATS = Number(process.env.TRAPEZOHE_ACP_SESSION_PROBE_HEARTBEATS || 2)
 
 export { setAcpSessionTransitionHook }
@@ -58,35 +50,6 @@ export { setAcpSessionTransitionHook }
 const acpSessions = new Map()
 const acpEventBuffers = new Map()
 let nextAcpEventCursor = 1
-let claudeSupportsNonInteractivePermissions = null
-let shellEnvCache = {
-  expiresAt: 0,
-  values: {},
-}
-
-const AGENT_AUTH_ENV_KEYS = {
-  // Import auth config from shell as a fallback when the host process env does
-  // not include these keys (common for GUI-launched daemons).
-  'claude-code': ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CRS_OAI_KEY'],
-  codex: ['CRS_OAI_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
-}
-
-const AGENT_RUNTIME_MARKER_ENV_KEYS = {
-  'claude-code': [
-    // Nested Claude Code runtime/session markers from IDE/agent hosts.
-    'CLAUDECODE',
-    'CLAUDE_CODE_ENTRYPOINT',
-    'CLAUDE_CODE_SSE_PORT',
-    'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING',
-    'CLAUDE_AGENT_SDK_VERSION',
-  ],
-  codex: [
-    // Nested Codex runtime markers from Codex Desktop/CLI host sessions.
-    'CODEX_THREAD_ID',
-    'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
-    'CODEX_SHELL',
-  ],
-}
 
 // ── ACP Event types (5 canonical types) ──
 // text_delta | tool_call | status | done | error
@@ -138,200 +101,13 @@ function parseOptionalBoolean(value) {
   return null
 }
 
-function splitPathEntries(pathValue) {
-  if (typeof pathValue !== 'string' || !pathValue.trim()) return []
-  return pathValue
-    .split(PATH_DELIMITER)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-}
-
 function shouldEmitSessionProbeDiagnostics() {
   return parseOptionalBoolean(process.env.TRAPEZOHE_ACP_DIAGNOSTIC_SESSION_PROBE) !== false
-}
-
-function shouldIsolateCodexHome() {
-  const override = parseOptionalBoolean(process.env.TRAPEZOHE_ACP_CODEX_ISOLATE_HOME)
-  if (override !== null) return override
-  // Default ON: isolates ACP Codex runs from interactive ~/.codex state DB.
-  return true
-}
-
-function resolveCodexSourceHome(baseEnv = {}) {
-  if (hasNonEmptyString(baseEnv.CODEX_HOME)) {
-    return String(baseEnv.CODEX_HOME).trim()
-  }
-  if (hasNonEmptyString(baseEnv.HOME)) {
-    return join(String(baseEnv.HOME).trim(), '.codex')
-  }
-  if (hasNonEmptyString(process.env.HOME)) {
-    return join(String(process.env.HOME).trim(), '.codex')
-  }
-  return ''
-}
-
-function resolveCodexRuntimeHome(baseEnv = {}) {
-  if (hasNonEmptyString(process.env.TRAPEZOHE_ACP_CODEX_RUNTIME_HOME)) {
-    return String(process.env.TRAPEZOHE_ACP_CODEX_RUNTIME_HOME).trim()
-  }
-  if (hasNonEmptyString(baseEnv.HOME)) {
-    return join(String(baseEnv.HOME).trim(), '.trapezohe', CODEX_ISOLATED_HOME_DIRNAME)
-  }
-  if (hasNonEmptyString(process.env.HOME)) {
-    return join(String(process.env.HOME).trim(), '.trapezohe', CODEX_ISOLATED_HOME_DIRNAME)
-  }
-  return ''
-}
-
-function syncFileIfMissingOrStale(sourcePath, targetPath) {
-  if (!existsSync(sourcePath)) return
-  let shouldCopy = false
-  if (!existsSync(targetPath)) {
-    shouldCopy = true
-  } else {
-    try {
-      const sourceMtime = statSync(sourcePath).mtimeMs
-      const targetMtime = statSync(targetPath).mtimeMs
-      shouldCopy = sourceMtime > targetMtime
-    } catch {
-      shouldCopy = true
-    }
-  }
-  if (!shouldCopy) return
-  mkdirSync(dirname(targetPath), { recursive: true })
-  copyFileSync(sourcePath, targetPath)
-}
-
-function syncDirectoryIfMissing(sourceDir, targetDir) {
-  if (!existsSync(sourceDir) || existsSync(targetDir)) return
-  mkdirSync(dirname(targetDir), { recursive: true })
-  cpSync(sourceDir, targetDir, { recursive: true })
-}
-
-function bootstrapCodexRuntimeHome(baseEnv = {}) {
-  if (!shouldIsolateCodexHome()) return null
-  const runtimeHome = resolveCodexRuntimeHome(baseEnv)
-  if (!runtimeHome) return null
-
-  mkdirSync(runtimeHome, { recursive: true })
-  const sourceHome = resolveCodexSourceHome(baseEnv)
-  if (!sourceHome || sourceHome === runtimeHome) {
-    return runtimeHome
-  }
-
-  for (const fileName of CODEX_HOME_SYNC_FILES) {
-    syncFileIfMissingOrStale(
-      join(sourceHome, fileName),
-      join(runtimeHome, fileName),
-    )
-  }
-  for (const dirName of CODEX_HOME_SYNC_DIRS) {
-    syncDirectoryIfMissing(
-      join(sourceHome, dirName),
-      join(runtimeHome, dirName),
-    )
-  }
-  return runtimeHome
-}
-
-function readShellEnvMap() {
-  const shell = hasNonEmptyString(process.env.SHELL) ? process.env.SHELL.trim() : '/bin/zsh'
-  const shellName = shell.split('/').pop()?.toLowerCase() || ''
-  // `-i` is required on many setups where auth exports live in ~/.zshrc or ~/.bashrc.
-  const shellArgs =
-    shellName.includes('zsh') || shellName.includes('bash')
-      ? ['-lic', 'env']
-      : ['-lc', 'env']
-  try {
-    const probe = spawnSync(shell, shellArgs, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: SHELL_ENV_IMPORT_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-    })
-    const stdout = String(probe.stdout || '')
-    if (!stdout.trim()) return {}
-    const values = {}
-    for (const line of stdout.split(/\r?\n/)) {
-      const idx = line.indexOf('=')
-      if (idx <= 0) continue
-      const key = line.slice(0, idx).trim()
-      if (!key) continue
-      values[key] = line.slice(idx + 1)
-    }
-    return values
-  } catch {
-    return {}
-  }
-}
-
-function getShellEnvValues(keys) {
-  const enabledOverride = parseOptionalBoolean(process.env.TRAPEZOHE_ACP_IMPORT_SHELL_ENV)
-  if (enabledOverride === false) return {}
-  if (!Array.isArray(keys) || keys.length === 0) return {}
-
-  const ts = now()
-  if (shellEnvCache.expiresAt <= ts) {
-    const values = readShellEnvMap()
-    const hasValues = Object.keys(values).length > 0
-    shellEnvCache = {
-      // If shell env import fails/returns empty, retry quickly instead of
-      // caching the empty map for the full TTL.
-      expiresAt: ts + (hasValues ? Math.max(1_000, SHELL_ENV_IMPORT_CACHE_TTL_MS) : 1_000),
-      values,
-    }
-  }
-
-  const result = {}
-  for (const key of keys) {
-    const value = shellEnvCache.values[key]
-    if (!hasNonEmptyString(value)) continue
-    result[key] = String(value).trim()
-  }
-  return result
-}
-
-function getNvmNodeBinDirs(homeDir) {
-  if (!homeDir) return []
-  const nodeVersionsRoot = join(homeDir, '.nvm', 'versions', 'node')
-  try {
-    const dirs = readdirSync(nodeVersionsRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-      .map((version) => join(nodeVersionsRoot, version, 'bin'))
-      .filter((binDir) => existsSync(binDir))
-    return dirs
-  } catch {
-    return []
-  }
 }
 
 export function buildAgentPath(basePath, opts = {}) {
   return buildAgentPathFromAuth(basePath, opts)
 }
-
-function looksLikeApiKeyToken(value) {
-  const token = String(value || '').trim()
-  if (!token) return false
-  return /^(sk-|ak-|xai-|pk-)/i.test(token)
-}
-
-function shouldUseLegacyAuthRewrite() {
-  return parseOptionalBoolean(process.env.TRAPEZOHE_ACP_LEGACY_AUTH_REWRITE) === true
-}
-
-function shouldSanitizeInheritedAgentEnv() {
-  return parseOptionalBoolean(process.env.TRAPEZOHE_ACP_SANITIZE_AGENT_ENV) === true
-}
-
-function stripAgentRuntimeMarkers(env, agentType) {
-  const keys = AGENT_RUNTIME_MARKER_ENV_KEYS[agentType] || []
-  for (const key of keys) {
-    delete env[key]
-  }
-}
-
 
 export function normalizeClaudeAuthEnv(env = {}) {
   return normalizeClaudeAuthEnvFromAuth(env)
@@ -339,26 +115,6 @@ export function normalizeClaudeAuthEnv(env = {}) {
 
 export function resolveAgentAuthCheck(agentType, env = {}) {
   return resolveAgentAuthCheckFromAuth(agentType, env)
-}
-
-function supportsClaudeNonInteractivePermissionsFlag() {
-  const override = parseOptionalBoolean(process.env.TRAPEZOHE_CLAUDE_SUPPORTS_NON_INTERACTIVE_PERMISSIONS)
-  if (override !== null) return override
-  if (claudeSupportsNonInteractivePermissions !== null) return claudeSupportsNonInteractivePermissions
-
-  try {
-    const probe = spawnSync('claude', ['--help'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: CLAUDE_HELP_PROBE_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-    })
-    const output = `${probe.stdout || ''}\n${probe.stderr || ''}`
-    claudeSupportsNonInteractivePermissions = /--non-interactive-permissions\b/.test(output)
-  } catch {
-    claudeSupportsNonInteractivePermissions = false
-  }
-  return claudeSupportsNonInteractivePermissions
 }
 
 function isPermissionRelatedText(text) {
@@ -583,9 +339,6 @@ function spawnAgentChild(session, opts) {
     args = shell.args
   }
 
-  // Build environment from host process env (preserve local CLI auth/config by default),
-  // then apply optional shell-import values and explicit per-request overrides.
-  let baseEnv = { ...process.env }
   const explicitEnv =
     env && typeof env === 'object' && Object.keys(env).length > 0
       ? { ...env }
@@ -593,66 +346,12 @@ function spawnAgentChild(session, opts) {
 
   const agentType = (session.agentType || '').toLowerCase()
 
-  // Optional compatibility mode: sanitize ALL inherited CLI env before spawn.
-  // Default is OFF to honor local host CLI auth/config as-is.
-  if (
-    shouldSanitizeInheritedAgentEnv()
-    && (agentType === 'claude-code' || agentType === 'codex' || agentType === 'raw')
-  ) {
-    for (const key of Object.keys(baseEnv)) {
-      if (key.startsWith('CLAUDE') || key.startsWith('CODEX')) {
-        delete baseEnv[key]
-      }
-    }
-    delete baseEnv.ANTHROPIC_AUTH_TOKEN
-  }
-
-  // Always strip runtime nesting markers for managed ACP child processes.
-  // This prevents "nested session" rejections while still preserving auth/config env.
-  stripAgentRuntimeMarkers(baseEnv, agentType)
-
-  const shellAuthEnv = getShellEnvValues(AGENT_AUTH_ENV_KEYS[agentType] || [])
-  for (const [key, value] of Object.entries(shellAuthEnv)) {
-    if (hasNonEmptyString(baseEnv[key])) continue
-    baseEnv[key] = value
-  }
-
-  if (explicitEnv) {
-    for (const [key, value] of Object.entries(explicitEnv)) {
-      if (value == null) continue
-      baseEnv[key] = String(value)
-    }
-  }
-
-  if (agentType === 'codex') {
-    try {
-      const runtimeHome = bootstrapCodexRuntimeHome(baseEnv)
-      if (hasNonEmptyString(runtimeHome)) {
-        baseEnv.CODEX_HOME = runtimeHome
-      }
-    } catch (error) {
-      const message = normalizeStatusText(
-        error instanceof Error ? error.message : String(error),
-      )
-      pushAcpEvent(session.sessionId, {
-        type: 'status',
-        turnId: session.currentTurnId,
-        statusCode: 'codex_home_bootstrap_warning',
-        text: `[codex] runtime home bootstrap failed; falling back to host CODEX_HOME (${message || 'unknown error'}).`,
-      })
-    }
-  }
-
-  const mergedEnv = baseEnv
-  mergedEnv.PATH = buildAgentPath(baseEnv.PATH)
-  if (agentType === 'claude-code' && shouldUseLegacyAuthRewrite()) {
-    // Compatibility mode for legacy deployments that require CRS/OAuth remapping.
-    if (!explicitEnv?.ANTHROPIC_AUTH_TOKEN) {
-      delete mergedEnv.ANTHROPIC_AUTH_TOKEN
-    }
-    normalizeClaudeAuthEnv(mergedEnv)
-  }
-  const authCheck = resolveAgentAuthCheck(agentType, mergedEnv)
+  const { env: mergedEnv, authCheck } = prepareAgentSpawnEnvironment({
+    baseEnv: process.env,
+    agentType,
+    explicitEnv,
+    alwaysStripRuntimeMarkers: true,
+  })
   session.authDiagnosticMissingKeys = authCheck.missingKeys
 
   // Use 'ignore' for stdin when no prompt will be written (e.g. CLI args carry the prompt)

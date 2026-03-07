@@ -62,7 +62,7 @@ import {
   flushApprovalStore,
 } from './approval-store.mjs'
 import { handleAcpRequest } from './acp-routes.mjs'
-import { cleanupAllAcpSessions, setAcpSessionTransitionHook } from './acp-session.mjs'
+import { cleanupAllAcpSessions, listAcpSessions, setAcpSessionTransitionHook } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
 
 // ── Auth rate limiter ──
@@ -104,6 +104,57 @@ function buildCompanionCapabilitiesPayload() {
     supportedFeatures: {
       ...COMPANION_SUPPORTED_FEATURES,
     },
+  }
+}
+
+const RECOVERABLE_SESSION_RUN_TYPES = new Set(['session', 'acp'])
+const RECOVERABLE_ACTIVE_STATES = new Set(['queued', 'idle', 'running', 'waiting_approval', 'retrying'])
+
+function getRunSessionId(run) {
+  const sessionId = typeof run?.meta?.sessionId === 'string' ? run.meta.sessionId.trim() : ''
+  return sessionId || ''
+}
+
+async function restoreSessionRunStateOnStartup(sessionRunIndex) {
+  const snapshot = await listRuns({ limit: 500, offset: 0 }).catch(() => ({ runs: [] }))
+  const liveRuntimeSessions = new Set(
+    listSessions({ status: 'running', limit: 500, offset: 0 }).sessions
+      .map((session) => String(session.sessionId || '').trim())
+      .filter(Boolean),
+  )
+  const liveAcpSessions = new Set(
+    listAcpSessions({ limit: 500, offset: 0 }).sessions
+      .map((session) => String(session.sessionId || '').trim())
+      .filter(Boolean),
+  )
+
+  for (const run of snapshot.runs) {
+    if (!RECOVERABLE_SESSION_RUN_TYPES.has(run.type)) continue
+    if (!RECOVERABLE_ACTIVE_STATES.has(run.state)) continue
+    const sessionId = getRunSessionId(run)
+    if (!sessionId) continue
+
+    sessionRunIndex.set(sessionId, run.runId)
+    const liveSessionExists = run.type === 'acp'
+      ? liveAcpSessions.has(sessionId)
+      : liveRuntimeSessions.has(sessionId)
+    if (liveSessionExists) continue
+
+    await updateRun(run.runId, {
+      state: 'failed',
+      finishedAt: Date.now(),
+      summary: run.type === 'acp'
+        ? 'ACP session orphaned after companion restart'
+        : 'Session orphaned after companion restart',
+      error: 'companion_restart_recovery',
+      meta: {
+        ...(run.meta && typeof run.meta === 'object' ? run.meta : {}),
+        recoveredAfterRestart: true,
+        recoveryReason: 'missing_session',
+      },
+    }).catch(() => undefined)
+
+    sessionRunIndex.delete(sessionId)
   }
 }
 
@@ -445,11 +496,13 @@ export function createCompanionServer({
   shutdownFn = null,
   cleanupFn = null,
 }) {
+  const sessionRunIndex = new Map()
   const initStoresPromise = Promise.all([
     loadRunStore().catch(() => undefined),
     loadApprovalStore().catch(() => undefined),
-  ])
-  const sessionRunIndex = new Map()
+  ]).then(async () => {
+    await restoreSessionRunStateOnStartup(sessionRunIndex).catch(() => undefined)
+  })
   const detachAcpTransitionHook = setAcpSessionTransitionHook(async (event) => {
     const runId = event.runId || sessionRunIndex.get(event.sessionId)
     if (!runId) return

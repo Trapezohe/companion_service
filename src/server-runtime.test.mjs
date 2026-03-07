@@ -21,8 +21,10 @@ function delay(ms) {
 }
 
 async function startTestServer(options = {}) {
-  await clearRunStoreForTests()
-  await clearApprovalStoreForTests()
+  if (!options.preserveStores) {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+  }
   const token = 'test-token'
   const mcpManager = options.mcpManager || createMcpManagerStub()
   const server = createCompanionServer({
@@ -639,4 +641,45 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
   assert.equal(approvalRun.state, 'done')
   assert.equal(approvalRun.meta?.approvalStatus, 'approved')
   assert.equal(approvalRun.meta?.resolvedBy, 'sidepanel')
+})
+
+test('startup recovery marks orphaned session and ACP runs as failed after companion restart', async (t) => {
+  const { createRun, flushRunStore, getRunById } = await import('./run-store.mjs')
+  const { flushApprovalStore } = await import('./approval-store.mjs')
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+
+  await createRun({
+    runId: 'session-orphan',
+    type: 'session',
+    state: 'running',
+    startedAt: Date.now() - 10_000,
+    summary: 'Session started',
+    meta: { sessionId: 'session-1', command: 'node run.js' },
+  })
+  await createRun({
+    runId: 'acp-orphan',
+    type: 'acp',
+    state: 'idle',
+    summary: 'ACP session created',
+    meta: { sessionId: 'acp-1', agentType: 'codex' },
+  })
+  await flushRunStore()
+  await flushApprovalStore()
+
+  const ctx = await startTestServer({ preserveStores: true })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  await delay(50)
+
+  const orphanSessionRun = await getRunById('session-orphan')
+  const orphanAcpRun = await getRunById('acp-orphan')
+
+  assert.equal(orphanSessionRun?.state, 'failed')
+  assert.equal(orphanSessionRun?.meta?.recoveredAfterRestart, true)
+  assert.equal(orphanAcpRun?.state, 'failed')
+  assert.equal(orphanAcpRun?.meta?.recoveredAfterRestart, true)
 })
