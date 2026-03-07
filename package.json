@@ -21,7 +21,9 @@
     "start": "node bin/cli.mjs start",
     "test": "node --test src/*.test.mjs",
     "build:installer:macos": "bash scripts/build-macos-pkg.sh",
-    "build:installer:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1"
+    "build:installer:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1",
+    "build:tray:macos": "bash scripts/build-tray-macos.sh",
+    "build:tray:windows": "powershell -ExecutionPolicy Bypass -File scripts/build-tray-windows.ps1"
   },
   "keywords": [
     "trapezohe",

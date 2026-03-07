@@ -44,6 +44,8 @@ You can also install from GitHub Releases:
 
 - macOS: `trapezohe-companion-macos.pkg`
 - Windows: `trapezohe-companion-windows.msi`
+- macOS tray shell: `trapezohe-companion-tray-macos.zip`
+- Windows tray shell: `trapezohe-companion-tray-windows.zip`
 - Integrity file: `SHA256SUMS.txt`
 
 Latest release page:
@@ -67,6 +69,8 @@ Get-FileHash .\trapezohe-companion-windows.msi -Algorithm SHA256
 ```
 
 Compare the command output with `SHA256SUMS.txt`.
+
+Tray shell bundles are portable downloads. Unzip them, launch the tray app, and it will surface Companion status in the OS menu bar / notification area.
 
 > Note: unsigned installers can trigger OS trust warnings (Gatekeeper / SmartScreen). This is expected for unsigned builds; verify checksum first, then proceed only if you trust the release source.
 

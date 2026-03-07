@@ -64,6 +64,26 @@ jobs:
           name: companion-macos-pkg
           path: dist/installers/trapezohe-companion-macos.pkg
 
+  build-macos-tray:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build macOS tray bundle
+        run: ./scripts/build-tray-macos.sh "${{ needs.check-version.outputs.version }}"
+
+      - name: Upload macOS tray artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-macos-tray
+          path: dist/installers/trapezohe-companion-tray-macos.zip
+
   build-windows-msi:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
@@ -92,11 +112,34 @@ jobs:
           name: companion-windows-msi
           path: dist/installers/trapezohe-companion-windows.msi
 
+  build-windows-tray:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows tray bundle
+        shell: pwsh
+        run: ./scripts/build-tray-windows.ps1 -Version "${{ needs.check-version.outputs.version }}"
+
+      - name: Upload Windows tray artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-windows-tray
+          path: dist/installers/trapezohe-companion-tray-windows.zip
+
   publish-release:
     needs:
       - check-version
       - build-macos-pkg
+      - build-macos-tray
       - build-windows-msi
+      - build-windows-tray
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -115,11 +158,25 @@ jobs:
           name: companion-windows-msi
           path: dist/release
 
+      - name: Download macOS tray artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: companion-macos-tray
+          path: dist/release
+
+      - name: Download Windows tray artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: companion-windows-tray
+          path: dist/release
+
       - name: Generate SHA256SUMS
         run: |
           cd dist/release
           sha256sum trapezohe-companion-macos.pkg > SHA256SUMS.txt
           sha256sum trapezohe-companion-windows.msi >> SHA256SUMS.txt
+          sha256sum trapezohe-companion-tray-macos.zip >> SHA256SUMS.txt
+          sha256sum trapezohe-companion-tray-windows.zip >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create Git tag
@@ -138,20 +195,24 @@ jobs:
           files: |
             dist/release/trapezohe-companion-macos.pkg
             dist/release/trapezohe-companion-windows.msi
+            dist/release/trapezohe-companion-tray-macos.zip
+            dist/release/trapezohe-companion-tray-windows.zip
             dist/release/SHA256SUMS.txt
           body: |
             ## Trapezohe Companion v${{ needs.check-version.outputs.version }}
 
-            Local companion daemon for the Trapezohe AI browser extension — MCP server host & command runtime.
+            Local companion daemon for the Trapezohe AI browser extension — plus the tray shell that surfaces runtime state for ordinary users.
 
             ---
 
             ## Download & Install
 
-            | Platform | File | One-line Install |
-            |----------|------|-----------------|
-            | macOS | `trapezohe-companion-macos.pkg` | `curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh \| bash` |
-            | Windows | `trapezohe-companion-windows.msi` | `irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 \| iex` |
+            | Platform | File | Type |
+            |----------|------|------|
+            | macOS | `trapezohe-companion-macos.pkg` | Daemon installer |
+            | Windows | `trapezohe-companion-windows.msi` | Daemon installer |
+            | macOS | `trapezohe-companion-tray-macos.zip` | Tray shell portable app bundle |
+            | Windows | `trapezohe-companion-tray-windows.zip` | Tray shell portable executable |
 
             ---
 
@@ -167,7 +228,7 @@ jobs:
             Get-FileHash .\trapezohe-companion-windows.msi -Algorithm SHA256
             ```
 
-            Compare the output against [`SHA256SUMS.txt`](https://github.com/Trapezohe/companion_service/releases/download/v${{ needs.check-version.outputs.version }}/SHA256SUMS.txt) before running installers.
+            Compare the output against [`SHA256SUMS.txt`](https://github.com/trapezohe/companion/releases/download/v${{ needs.check-version.outputs.version }}/SHA256SUMS.txt) before running installers.
 
             ---
 
@@ -205,11 +266,13 @@ jobs:
 
             The companion daemon starts automatically and pairs with the Trapezohe browser extension. No manual configuration needed.
 
+            The tray shell bundle is optional. It gives users a visible status panel, lifecycle controls, and local diagnostics without opening Chrome.
+
             To verify it's running:
             ```bash
             # macOS / Linux
-            curl -s http://127.0.0.1:41591/api/health | jq .
+            curl -s -H "Authorization: Bearer <token>" http://127.0.0.1:41591/healthz | jq .
 
             # Windows (PowerShell)
-            Invoke-RestMethod http://127.0.0.1:41591/api/health
+            Invoke-RestMethod -Headers @{ Authorization = "Bearer <token>" } http://127.0.0.1:41591/healthz
             ```
