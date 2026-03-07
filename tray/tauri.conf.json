@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Trapezohe Companion",
+  "version": "0.1.0",
+  "identifier": "ai.trapezohe.companion.tray",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "status",
+        "title": "Trapezohe Companion",
+        "width": 420,
+        "height": 560,
+        "visible": false,
+        "resizable": false,
+        "create": false
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/tray-red.png",
+      "iconAsTemplate": false,
+      "tooltip": "Trapezohe Companion"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

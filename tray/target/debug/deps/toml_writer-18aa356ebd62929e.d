@@ -1,0 +1,10 @@
+/Users/songsu/Desktop/trapezohe-companion/tray/target/debug/deps/toml_writer-18aa356ebd62929e.d: /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/lib.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/integer.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/key.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/string.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/value.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/write.rs
+
+/Users/songsu/Desktop/trapezohe-companion/tray/target/debug/deps/libtoml_writer-18aa356ebd62929e.rmeta: /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/lib.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/integer.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/key.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/string.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/value.rs /Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/write.rs
+
+/Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/lib.rs:
+/Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/integer.rs:
+/Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/key.rs:
+/Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/string.rs:
+/Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/value.rs:
+/Users/songsu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/toml_writer-1.0.6+spec-1.1.0/src/write.rs:
