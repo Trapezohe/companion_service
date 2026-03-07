@@ -98,6 +98,70 @@ export class McpManager {
     this.#parseConfigs(serverConfigs)
   }
 
+  #clearScheduledRestart(entry) {
+    if (!entry) return
+    if (entry.restartTimer) {
+      clearTimeout(entry.restartTimer)
+      entry.restartTimer = null
+    }
+    entry.restartPending = false
+  }
+
+  #setNextRetry(entry, now = Date.now()) {
+    entry.failureCount = Number(entry.failureCount || 0) + 1
+    entry.lastFailureAt = now
+    entry.nextRetryAt = now + Math.min(
+      MCP_RESTART_MAX_BACKOFF_MS,
+      MCP_RESTART_BASE_BACKOFF_MS * (2 ** Math.max(0, entry.failureCount - 1)),
+    )
+    return entry.nextRetryAt
+  }
+
+  #scheduleRestart(name, entry, opts = {}) {
+    if (!entry || entry.config?.restartable === false || entry.status === 'stopped') {
+      if (entry) {
+        this.#clearScheduledRestart(entry)
+        entry.nextRetryAt = null
+      }
+      return
+    }
+    if (entry.restartTimer) return
+
+    const now = opts.now ?? Date.now()
+    const nextRetryAt = typeof opts.nextRetryAt === 'number'
+      ? opts.nextRetryAt
+      : (typeof entry.nextRetryAt === 'number' && entry.nextRetryAt > now
+          ? entry.nextRetryAt
+          : this.#setNextRetry(entry, now))
+    const delayMs = Math.max(0, nextRetryAt - now)
+    entry.nextRetryAt = nextRetryAt
+    entry.restartPending = true
+    entry.restartTimer = setTimeout(async () => {
+      entry.restartTimer = null
+      entry.restartPending = false
+
+      const current = this.#servers.get(name)
+      if (!current || current.status === 'stopped' || current.config?.restartable === false) {
+        return
+      }
+
+      try {
+        await this.startServer(name)
+      } catch (err) {
+        const latest = this.#servers.get(name)
+        if (!latest || latest.status === 'stopped' || latest.config?.restartable === false) {
+          return
+        }
+        if (!(typeof latest.nextRetryAt === 'number' && latest.nextRetryAt > Date.now())) {
+          this.#setNextRetry(latest)
+        }
+        latest.error = err.message || String(err)
+        this.#scheduleRestart(name, latest)
+      }
+    }, delayMs)
+    if (entry.restartTimer.unref) entry.restartTimer.unref()
+  }
+
   #parseConfigs(configs) {
     if (!configs || typeof configs !== 'object') return
 
@@ -118,6 +182,8 @@ export class McpManager {
         failureCount: 0,
         lastFailureAt: null,
         nextRetryAt: null,
+        restartPending: false,
+        restartTimer: null,
         writeCapable: resolveWriteCapable(config),
       })
     }
@@ -169,9 +235,11 @@ export class McpManager {
         await this.stopServer(name)
       }
 
+      this.#clearScheduledRestart(entry)
       entry.status = 'starting'
       entry.error = null
       entry.tools = []
+      entry.startedAt = null
 
       const { command, args = [], env = {}, cwd } = entry.config
       const childEnv = { ...process.env, ...env }
@@ -202,9 +270,12 @@ export class McpManager {
       proc.on('close', (code) => {
         if (entry.status !== 'stopped') {
           entry.status = 'disconnected'
+          entry.transport = null
           entry.tools = [] // Clear tools when server disconnects
           entry.error = `Process exited with code ${code}`
+          entry.startedAt = null
           console.warn(`[MCP] "${name}" exited with code ${code}`)
+          this.#scheduleRestart(name, entry)
         }
       })
 
@@ -212,9 +283,12 @@ export class McpManager {
       proc.on('error', (err) => {
         if (entry.status !== 'stopped') {
           entry.status = 'error'
+          entry.transport = null
           entry.tools = []
           entry.error = `Process error: ${err.message}`
+          entry.startedAt = null
           console.error(`[MCP] "${name}" error:`, err.message)
+          this.#scheduleRestart(name, entry)
         }
       })
 
@@ -259,18 +333,14 @@ export class McpManager {
       entry.failureCount = 0
       entry.lastFailureAt = null
       entry.nextRetryAt = null
+      entry.restartPending = false
       console.log(`[MCP] "${name}" connected — ${entry.tools.length} tool(s)`)
       return { name, tools: entry.tools.length }
     } catch (err) {
       entry.status = 'error'
       entry.error = err.message
       entry.tools = []
-      entry.failureCount = Number(entry.failureCount || 0) + 1
-      entry.lastFailureAt = now
-      entry.nextRetryAt = now + Math.min(
-        MCP_RESTART_MAX_BACKOFF_MS,
-        MCP_RESTART_BASE_BACKOFF_MS * (2 ** Math.max(0, entry.failureCount - 1)),
-      )
+      this.#setNextRetry(entry, now)
       // Cleanup transport if it was created
       if (entry.transport) {
         entry.transport.close()
@@ -286,15 +356,18 @@ export class McpManager {
     const entry = this.#servers.get(name)
     if (!entry) return
 
+    this.#clearScheduledRestart(entry)
+    entry.status = 'stopped'
+
     if (entry.transport) {
       entry.transport.close()
       entry.transport = null
     }
 
-    entry.status = 'stopped'
     entry.tools = []
     entry.error = null
     entry.startedAt = null
+    entry.nextRetryAt = null
   }
 
   async restartServer(name) {
@@ -316,6 +389,8 @@ export class McpManager {
         failureCount: entry.failureCount || 0,
         lastFailureAt: entry.lastFailureAt,
         nextRetryAt: entry.nextRetryAt,
+        restartable: entry.config.restartable !== false,
+        restartPending: Boolean(entry.restartPending),
         writeCapable: Boolean(entry.writeCapable),
       })
     }
@@ -429,6 +504,7 @@ export class McpManager {
         ? config.env
         : {},
       cwd: typeof config.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : undefined,
+      ...(typeof config.restartable === 'boolean' ? { restartable: config.restartable } : {}),
       ...(typeof config.writeCapable === 'boolean' ? { writeCapable: config.writeCapable } : {}),
     }
 
@@ -451,6 +527,8 @@ export class McpManager {
         failureCount: 0,
         lastFailureAt: null,
         nextRetryAt: null,
+        restartPending: false,
+        restartTimer: null,
         writeCapable: resolveWriteCapable(normalizedConfig),
       })
     }

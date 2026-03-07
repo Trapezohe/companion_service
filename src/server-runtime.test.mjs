@@ -4,7 +4,12 @@ import assert from 'node:assert/strict'
 import { createCompanionServer } from './server.mjs'
 import { cleanupAllSessions } from './runtime.mjs'
 import { clearRunStoreForTests, listRuns } from './run-store.mjs'
-import { clearApprovalStoreForTests } from './approval-store.mjs'
+import {
+  clearApprovalStoreForTests,
+  createApproval,
+  flushApprovalStore,
+  getApprovalById,
+} from './approval-store.mjs'
 
 function createMcpManagerStub() {
   return {
@@ -113,6 +118,9 @@ test('diagnostics and self-check endpoints return structured companion health de
         toolCount: 1,
         command: 'node',
         args: ['server.js'],
+        restartable: true,
+        restartPending: false,
+        nextRetryAt: null,
       }],
       callTool: async () => ({ ok: true }),
       restartServer: async () => {},
@@ -129,9 +137,13 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.equal(typeof diagnostics.payload.version, 'string')
   assert.equal(typeof diagnostics.payload.mcp.connectedServers, 'number')
   assert.ok(Array.isArray(diagnostics.payload.mcp.servers))
+  assert.equal(diagnostics.payload.mcp.servers[0]?.restartable, true)
+  assert.equal(diagnostics.payload.mcp.servers[0]?.restartPending, false)
   assert.ok(Array.isArray(diagnostics.payload.runs.recentFailed))
   assert.ok(Array.isArray(diagnostics.payload.approvals.pending))
   assert.equal(typeof diagnostics.payload.acp.totalSessions, 'number')
+  assert.equal(typeof diagnostics.payload.nativeHostRegistration, 'object')
+  assert.ok(Array.isArray(diagnostics.payload.nativeHostRegistration?.hostNames))
 
   const selfCheck = await requestJson(ctx, '/api/system/self-check')
   assert.equal(selfCheck.status, 200)
@@ -641,6 +653,319 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
   assert.equal(approvalRun.state, 'done')
   assert.equal(approvalRun.meta?.approvalStatus, 'approved')
   assert.equal(approvalRun.meta?.resolvedBy, 'sidepanel')
+})
+
+test('repeated approval POSTs reuse the canonical run and resolve that same run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const body = {
+    requestId: 'approval-dedupe-1',
+    conversationId: 'conv-dedupe-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 5 USDT to 0xdef',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      correlationId: 'corr-dedupe-1',
+      toolCallId: 'tool-call-dedupe-1',
+    },
+  }
+
+  const created = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body,
+  })
+  assert.equal(created.status, 201)
+  assert.equal(typeof created.payload.meta?.runId, 'string')
+
+  const retried = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      ...body,
+      toolPreview: 'Transfer 5 USDT retry',
+      meta: {
+        correlationId: 'corr-dedupe-retry',
+      },
+    },
+  })
+  assert.ok([200, 201].includes(retried.status))
+  assert.equal(retried.payload.requestId, 'approval-dedupe-1')
+  assert.equal(retried.payload.meta?.runId, created.payload.meta?.runId)
+
+  let approvalRuns = []
+  const pendingDeadline = Date.now() + 5_000
+  while (Date.now() < pendingDeadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRuns = runs.runs.filter((run) => run.meta?.requestId === 'approval-dedupe-1')
+    if (approvalRuns.length >= 1) break
+    await delay(25)
+  }
+
+  assert.equal(approvalRuns.length, 1)
+  assert.equal(approvalRuns[0].runId, created.payload.meta.runId)
+  assert.equal(approvalRuns[0].state, 'waiting_approval')
+
+  const resolved = await requestJson(ctx, '/api/runtime/approvals/approval-dedupe-1/resolve', {
+    method: 'POST',
+    body: {
+      resolution: 'approved',
+      resolvedBy: 'retry-test',
+    },
+  })
+  assert.equal(resolved.status, 200)
+  assert.equal(resolved.payload.meta?.runId, created.payload.meta.runId)
+
+  const doneDeadline = Date.now() + 5_000
+  while (Date.now() < doneDeadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRuns = runs.runs.filter((run) => run.meta?.requestId === 'approval-dedupe-1')
+    if (approvalRuns.length === 1 && approvalRuns[0].state === 'done') break
+    await delay(25)
+  }
+
+  assert.equal(approvalRuns.length, 1)
+  assert.equal(approvalRuns[0].state, 'done')
+  assert.equal(approvalRuns[0].meta?.approvalStatus, 'approved')
+  assert.equal(approvalRuns[0].meta?.resolvedBy, 'retry-test')
+})
+
+test('repeating POST after approval resolution does not reopen the canonical run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const body = {
+    requestId: 'approval-resolved-retry-1',
+    conversationId: 'conv-resolved-retry-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 9 USDT to 0x999',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      correlationId: 'corr-resolved-retry-1',
+      toolCallId: 'tool-call-resolved-retry-1',
+    },
+  }
+
+  const created = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body,
+  })
+  assert.equal(created.status, 201)
+  assert.equal(typeof created.payload.meta?.runId, 'string')
+  const runId = created.payload.meta.runId
+
+  const resolved = await requestJson(ctx, '/api/runtime/approvals/approval-resolved-retry-1/resolve', {
+    method: 'POST',
+    body: {
+      resolution: 'approved',
+      resolvedBy: 'initial-resolution',
+    },
+  })
+  assert.equal(resolved.status, 200)
+  assert.equal(resolved.payload.status, 'approved')
+
+  let firstDone = null
+  const firstDoneDeadline = Date.now() + 5_000
+  while (Date.now() < firstDoneDeadline) {
+    const result = await requestJson(ctx, `/api/runtime/runs/${runId}`)
+    if (result.status === 200) {
+      firstDone = result.payload.run || null
+      if (firstDone?.state === 'done') break
+    }
+    await delay(25)
+  }
+  assert.ok(firstDone)
+  assert.equal(firstDone.state, 'done')
+
+  const retried = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      ...body,
+      toolPreview: 'Transfer 9 USDT retry after resolve',
+    },
+  })
+  assert.equal(retried.status, 200)
+  assert.equal(retried.payload.status, 'approved')
+  assert.equal(retried.payload.meta?.runId, runId)
+
+  const runAfterRetry = await requestJson(ctx, `/api/runtime/runs/${runId}`)
+  assert.equal(runAfterRetry.status, 200)
+  assert.equal(runAfterRetry.payload.run.state, 'done')
+  assert.equal(runAfterRetry.payload.run.meta?.approvalStatus, 'approved')
+  assert.equal(runAfterRetry.payload.run.meta?.resolvedBy, 'initial-resolution')
+})
+
+test('repeated POST repairs stale approval run links when the stored run is missing', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await createApproval({
+    requestId: 'approval-stale-run-1',
+    conversationId: 'conv-stale-run-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 1 USDT to 0xabc',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      runId: 'missing-run',
+      correlationId: 'corr-stale-run-1',
+    },
+  })
+  await flushApprovalStore()
+
+  const ctx = await startTestServer({ preserveStores: true })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const retried = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      requestId: 'approval-stale-run-1',
+      conversationId: 'conv-stale-run-1',
+      toolName: 'execute_transaction',
+      toolPreview: 'Transfer 1 USDT retry',
+      riskLevel: 'high',
+      channels: ['sidepanel'],
+      meta: {
+        correlationId: 'corr-stale-run-retry-1',
+      },
+    },
+  })
+
+  assert.equal(retried.status, 200)
+  assert.equal(typeof retried.payload.meta?.runId, 'string')
+  assert.notEqual(retried.payload.meta.runId, 'missing-run')
+
+  const repairedApproval = await getApprovalById('approval-stale-run-1')
+  assert.ok(repairedApproval)
+  assert.equal(repairedApproval.meta?.runId, retried.payload.meta.runId)
+  assert.equal(repairedApproval.meta?.correlationId, 'corr-stale-run-1')
+
+  const repairedRun = await requestJson(ctx, `/api/runtime/runs/${retried.payload.meta.runId}`)
+  assert.equal(repairedRun.status, 200)
+  assert.equal(repairedRun.payload.run.meta?.requestId, 'approval-stale-run-1')
+})
+
+test('concurrent duplicate approval POSTs leave only one waiting approval run in the ledger', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const body = {
+    requestId: 'approval-concurrent-1',
+    conversationId: 'conv-concurrent-1',
+    toolName: 'execute_transaction',
+    toolPreview: 'Transfer 7 USDT to 0x777',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      correlationId: 'corr-concurrent-1',
+    },
+  }
+
+  const [first, second] = await Promise.all([
+    requestJson(ctx, '/api/runtime/approvals', { method: 'POST', body }),
+    requestJson(ctx, '/api/runtime/approvals', { method: 'POST', body }),
+  ])
+
+  assert.deepEqual(
+    new Set([first.status, second.status]),
+    new Set([201, 200]),
+  )
+  assert.equal(first.payload.meta?.runId, second.payload.meta?.runId)
+
+  let approvalRuns = []
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRuns = runs.runs.filter((run) => run.meta?.requestId === 'approval-concurrent-1')
+    if (approvalRuns.length === 1) break
+    await delay(25)
+  }
+
+  assert.equal(approvalRuns.length, 1)
+  assert.equal(approvalRuns[0].runId, first.payload.meta.runId)
+  assert.equal(approvalRuns[0].state, 'waiting_approval')
+})
+
+test('ACP permission waits create approval records tied to the existing ACP run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const created = await requestJson(ctx, '/api/acp/sessions', {
+    method: 'POST',
+    body: {
+      agentType: 'raw',
+      cwd: process.cwd(),
+      command: [
+        'node',
+        '-e',
+        'process.stderr.write("Requested permissions were not granted yet.\\n"); setInterval(() => {}, 1000)',
+      ],
+      timeoutMs: 5_000,
+    },
+  })
+  assert.equal(created.status, 200)
+  assert.ok(created.payload.sessionId)
+  assert.ok(created.payload.runId)
+
+  const promptRes = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/prompt`, {
+    method: 'POST',
+    body: { prompt: 'inspect the workspace' },
+  })
+  assert.equal(promptRes.status, 200)
+
+  let pendingApproval = null
+  const approvalDeadline = Date.now() + 5_000
+  while (Date.now() < approvalDeadline) {
+    const pending = await requestJson(ctx, '/api/runtime/approvals/pending')
+    assert.equal(pending.status, 200)
+    pendingApproval = (pending.payload.approvals || []).find((item) => item.meta?.runId === created.payload.runId) || null
+    if (pendingApproval) break
+    await delay(25)
+  }
+
+  assert.ok(pendingApproval)
+  assert.equal(pendingApproval.status, 'pending')
+  assert.equal(pendingApproval.meta?.runId, created.payload.runId)
+  assert.equal(pendingApproval.meta?.sessionId, created.payload.sessionId)
+
+  let acpRun = null
+  const runDeadline = Date.now() + 5_000
+  while (Date.now() < runDeadline) {
+    const run = await listRuns({ limit: 100, offset: 0 })
+    acpRun = run.runs.find((item) => item.runId === created.payload.runId) || null
+    if (acpRun?.state === 'waiting_approval') break
+    await delay(25)
+  }
+
+  assert.ok(acpRun)
+  assert.equal(acpRun.state, 'waiting_approval')
+  assert.equal(acpRun.meta?.requestId, pendingApproval.requestId)
+  assert.equal(acpRun.meta?.approvalStatus, 'pending')
+
+  const cancelled = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/cancel`, {
+    method: 'POST',
+    body: {},
+  })
+  assert.equal(cancelled.status, 200)
 })
 
 test('startup recovery marks orphaned session and ACP runs as failed after companion restart', async (t) => {
