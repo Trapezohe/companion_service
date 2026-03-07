@@ -140,6 +140,27 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.ok(Array.isArray(selfCheck.payload.checks.mcpExecutables))
 })
 
+test('repair endpoint returns updated self-check payload for supported repair actions', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const repaired = await requestJson(ctx, '/api/system/repair', {
+    method: 'POST',
+    body: {
+      action: 'repair_config',
+    },
+  })
+
+  assert.equal(repaired.status, 200)
+  assert.equal(repaired.payload.ok, true)
+  assert.equal(repaired.payload.action, 'repair_config')
+  assert.equal(typeof repaired.payload.selfCheck?.ok, 'boolean')
+  assert.ok(Array.isArray(repaired.payload.selfCheck?.repairActions))
+})
+
 async function waitForSessionExit(ctx, sessionId, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

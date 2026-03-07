@@ -150,6 +150,22 @@ export async function runCompanionSelfCheck(params) {
     && checks.workspacePolicy.ok
     && checks.mcpExecutables.every((item) => item.ok)
 
+  const repairActions = []
+  if (!checks.configReadable.ok || !checks.tokenPresent.ok || !checks.workspacePolicy.ok) {
+    repairActions.push({
+      id: 'repair_config',
+      title: 'Repair config defaults',
+      description: 'Rewrite missing config defaults while preserving MCP servers and extension ids where possible.',
+    })
+  }
+  if (!checks.nativeHostRegistration.ok) {
+    repairActions.push({
+      id: 'register_native_host',
+      title: 'Re-register native host',
+      description: 'Restore Chrome native messaging registration for the configured extension ids.',
+    })
+  }
+
   logEvent(ok ? 'info' : 'warn', 'diagnostics', 'Companion self-check finished', {
     ok,
     missingExecutables: checks.mcpExecutables.filter((item) => !item.ok).map((item) => item.name),
@@ -159,5 +175,6 @@ export async function runCompanionSelfCheck(params) {
   return {
     ok,
     checks,
+    repairActions,
   }
 }

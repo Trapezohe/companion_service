@@ -79,3 +79,37 @@ test('updateMcpServerConfig rewrites legacy bnbchain package name to canonical p
     assert.deepEqual(server.args, ['-y', '@bnb-chain/mcp@latest'])
   })
 })
+
+test('repairConfigDefaults restores token while preserving MCP servers and extension ids', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.saveConfig({
+      port: 41591,
+      token: '',
+      mcpServers: {
+        'bnbchain-mcp': {
+          command: 'npx',
+          args: ['-y', '@bnb-chain/mcp@latest'],
+        },
+      },
+      permissionPolicy: { mode: 'workspace', workspaceRoots: ['/tmp/ws'] },
+      extensionIds: ['ext-1'],
+    })
+
+    const repaired = await mod.repairConfigDefaults()
+    expectLikeToken(repaired.token)
+    assert.equal(repaired.generatedToken, true)
+    assert.equal(repaired.mcpServerCount, 1)
+    assert.deepEqual(repaired.extensionIds, ['ext-1'])
+
+    const loaded = await mod.loadConfig()
+    expectLikeToken(loaded.token)
+    assert.ok(loaded.mcpServers['bnbchain-mcp'])
+    assert.deepEqual(loaded.extensionIds, ['ext-1'])
+    assert.equal(loaded.permissionPolicy.mode, 'workspace')
+  })
+})
+
+function expectLikeToken(value) {
+  assert.equal(typeof value, 'string')
+  assert.ok(value.length >= 32)
+}

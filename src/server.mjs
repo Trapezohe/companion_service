@@ -7,7 +7,11 @@
 
 import { createServer } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { COMPANION_PROTOCOL_VERSION, COMPANION_SUPPORTED_FEATURES } from './config.mjs'
+import {
+  COMPANION_PROTOCOL_VERSION,
+  COMPANION_SUPPORTED_FEATURES,
+  repairConfigDefaults,
+} from './config.mjs'
 import {
   runCommand,
   resolveCwd,
@@ -101,6 +105,56 @@ function buildCompanionCapabilitiesPayload() {
       ...COMPANION_SUPPORTED_FEATURES,
     },
   }
+}
+
+async function runCompanionRepairAction(input, context) {
+  const action = String(input?.action || '').trim()
+  if (action === 'repair_config') {
+    const result = await repairConfigDefaults()
+    const selfCheck = await runCompanionSelfCheck({
+      getPermissionPolicy: context.getPermissionPolicy,
+    })
+    return {
+      ok: true,
+      action: 'repair_config',
+      message: 'Config defaults repaired.',
+      result,
+      selfCheck,
+    }
+  }
+
+  if (action === 'register_native_host') {
+    const extensionIds = Array.isArray(input?.extensionIds)
+      ? input.extensionIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+    const cliEntry = String(process.argv[1] || '').trim()
+    if (!cliEntry) {
+      throw new Error('Companion CLI entrypoint unavailable for native host repair.')
+    }
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+    const args = [cliEntry, 'repair', 'register_native_host']
+    for (const extensionId of extensionIds) {
+      args.push('--ext-id', extensionId)
+    }
+    const result = await execFileAsync(process.execPath, args)
+    const selfCheck = await runCompanionSelfCheck({
+      getPermissionPolicy: context.getPermissionPolicy,
+    })
+    return {
+      ok: true,
+      action: 'register_native_host',
+      message: 'Native host registration repaired.',
+      result: {
+        stdout: String(result.stdout || '').trim(),
+        stderr: String(result.stderr || '').trim(),
+      },
+      selfCheck,
+    }
+  }
+
+  throw new Error('Unsupported repair action.')
 }
 
 function isLoopback(addr) {
@@ -587,6 +641,18 @@ export function createCompanionServer({
         getPermissionPolicy,
       })
       return sendJson(res, 200, result)
+    }
+
+    if (req.method === 'POST' && pathname === '/api/system/repair') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const result = await runCompanionRepairAction(body, { getPermissionPolicy })
+        return sendJson(res, 200, result)
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
     }
 
     // ── Command Runtime endpoints ──

@@ -10,6 +10,8 @@
  *   trapezohe-companion init                Create default config
  *   trapezohe-companion config              Print config file path
  *   trapezohe-companion token               Show current access token
+ *   trapezohe-companion self-check          Run diagnostics and show repair suggestions
+ *   trapezohe-companion repair <action>     Repair common local setup issues
  *   trapezohe-companion register [ext-id]  Register Chrome Native Messaging host
  *   trapezohe-companion unregister         Remove Native Messaging host registration
  *   trapezohe-companion bootstrap          One-shot setup for non-technical users
@@ -26,6 +28,7 @@ import {
   loadConfig,
   saveConfig,
   initConfig,
+  repairConfigDefaults,
   updateMcpServerConfig,
   removeMcpServerConfig,
   resolveToken,
@@ -36,6 +39,7 @@ import {
 } from '../src/config.mjs'
 import { createCompanionServer } from '../src/server.mjs'
 import { McpManager } from '../src/mcp-manager.mjs'
+import { runCompanionSelfCheck } from '../src/diagnostics.mjs'
 import {
   normalizePermissionPolicy,
   PERMISSION_MODE_WORKSPACE,
@@ -103,6 +107,10 @@ async function main() {
       return handleUnregister()
     case 'bootstrap':
       return handleBootstrap()
+    case 'self-check':
+      return handleSelfCheck()
+    case 'repair':
+      return handleRepair()
     default:
       printHelp()
       process.exit(command === '--help' || command === '-h' ? 0 : 1)
@@ -561,6 +569,69 @@ async function handlePolicy() {
   }
 }
 
+async function handleSelfCheck() {
+  const jsonMode = hasFlag('--json')
+  const config = await loadConfig()
+  const payload = await runCompanionSelfCheck({
+    getPermissionPolicy: () => config.permissionPolicy,
+  })
+
+  if (jsonMode) {
+    console.log(JSON.stringify(payload))
+    return
+  }
+
+  console.log(`[trapezohe-companion] Self-check: ${payload.ok ? 'ok' : 'needs attention'}`)
+  console.log(`  Config:      ${payload.checks.configReadable.ok ? 'ok' : 'missing'} (${payload.checks.configReadable.path || 'n/a'})`)
+  console.log(`  Token:       ${payload.checks.tokenPresent.ok ? 'present' : 'missing'}`)
+  console.log(`  Policy:      ${payload.checks.workspacePolicy.ok ? 'ok' : 'invalid'} (${payload.checks.workspacePolicy.mode})`)
+  console.log(`  Native host: ${payload.checks.nativeHostRegistration.ok ? 'registered' : 'missing'}`)
+  if (payload.repairActions?.length) {
+    console.log('  Repairs:')
+    for (const action of payload.repairActions) {
+      console.log(`    - ${action.id}: ${action.description}`)
+    }
+  }
+}
+
+async function handleRepair() {
+  const jsonMode = hasFlag('--json')
+  const action = String(flags.find((item) => !item.startsWith('--')) || 'repair_config').trim()
+
+  if (action === 'repair_config') {
+    const result = await repairConfigDefaults()
+    if (jsonMode) {
+      console.log(JSON.stringify({ ok: true, action, result }))
+      return
+    }
+    console.log('[trapezohe-companion] Config defaults repaired.')
+    console.log(`  Path:        ${result.path}`)
+    console.log(`  MCP servers: ${result.mcpServerCount}`)
+    console.log(`  Token:       ${result.generatedToken ? 'generated' : 'preserved'}`)
+    return
+  }
+
+  if (action === 'register_native_host') {
+    const extIds = getMultiFlagValues('--ext-id')
+    const result = await registerNativeHost(extIds, {
+      allowConfigIds: true,
+      failIfMissing: false,
+      quiet: jsonMode,
+    })
+    if (jsonMode) {
+      console.log(JSON.stringify({ ok: true, action, result }))
+      return
+    }
+    console.log('[trapezohe-companion] Native host registration repaired.')
+    console.log(`  Hosts:       ${result.hostNames.join(', ')}`)
+    console.log(`  Origins:     ${result.allowedOrigins.join(', ')}`)
+    return
+  }
+
+  console.error('[trapezohe-companion] Unsupported repair action. Use: repair_config | register_native_host')
+  process.exit(1)
+}
+
 // ── Native Messaging Host Registration ──
 
 const NATIVE_HOST_NAMES = ['com.ghast.companion', 'com.trapezohe.companion']
@@ -1006,6 +1077,8 @@ Commands:
   config                Print config file path
   token                 Print access token
   policy                Show or update permission policy
+  self-check            Run diagnostics and list suggested repairs
+  repair <action>       Repair config or native host registration
   bootstrap            One-shot setup + start (non-interactive friendly)
   register <ext-id>    Register Chrome Native Messaging host for auto-pairing
   unregister           Remove Native Messaging host registration
@@ -1019,6 +1092,9 @@ Examples:
   trapezohe-companion policy        # Print current policy JSON
   trapezohe-companion policy full
   trapezohe-companion policy workspace ~/trapezohe-workspace
+  trapezohe-companion self-check --json
+  trapezohe-companion repair repair_config
+  trapezohe-companion repair register_native_host --ext-id abc123
   trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/trapezohe-workspace
   trapezohe-companion register abc123  # Register native host for extension ID
 

@@ -70,6 +70,13 @@ export async function loadConfig() {
         ? parsed.mcpServers
         : {},
       permissionPolicy: normalizePermissionPolicy(parsed.permissionPolicy),
+      ...(Array.isArray(parsed.extensionIds) && parsed.extensionIds.length > 0
+        ? {
+            extensionIds: parsed.extensionIds
+              .filter((id) => typeof id === 'string' && id.trim())
+              .map((id) => id.trim()),
+          }
+        : {}),
     }
   } catch (err) {
     if (err.code === 'ENOENT') {
@@ -206,6 +213,42 @@ export async function initConfig() {
   const config = { ...DEFAULT_CONFIG, token }
   await saveConfig(config)
   return { created: true, path: CONFIG_FILE, token }
+}
+
+export async function repairConfigDefaults() {
+  await ensureConfigDir()
+  let existing
+  try {
+    existing = await loadConfig()
+  } catch {
+    existing = {
+      ...DEFAULT_CONFIG,
+      permissionPolicy: normalizePermissionPolicy(DEFAULT_PERMISSION_POLICY),
+    }
+  }
+
+  const nextToken = existing.token || randomBytes(24).toString('hex')
+  const nextConfig = {
+    port: Number(existing?.port) || DEFAULT_CONFIG.port,
+    token: nextToken,
+    mcpServers: existing?.mcpServers && typeof existing.mcpServers === 'object'
+      ? existing.mcpServers
+      : {},
+    permissionPolicy: normalizePermissionPolicy(existing?.permissionPolicy),
+    ...(Array.isArray(existing?.extensionIds) && existing.extensionIds.length > 0
+      ? { extensionIds: existing.extensionIds.filter((id) => typeof id === 'string' && id.trim()) }
+      : {}),
+  }
+
+  await saveConfig(nextConfig)
+  return {
+    ok: true,
+    path: CONFIG_FILE,
+    token: nextToken,
+    generatedToken: !existing?.token,
+    mcpServerCount: Object.keys(nextConfig.mcpServers).length,
+    extensionIds: Array.isArray(nextConfig.extensionIds) ? nextConfig.extensionIds : [],
+  }
 }
 
 export function resolveToken(config) {
