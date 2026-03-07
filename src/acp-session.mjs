@@ -5,10 +5,9 @@
  * actor-queue serialization, and cancel-bypass for AI agent sessions.
  */
 
-import { spawn } from 'node:child_process'
-import { createInterface } from 'node:readline'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { applyAcpSessionState, setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
+import { spawnAgentChild as spawnAgentChildFromProcess } from './acp-process.mjs'
 import {
   parseAgentLine as parseAgentLineFromEvents,
   synthesizeTerminalEvent as synthesizeTerminalEventFromEvents,
@@ -21,7 +20,6 @@ import {
 import {
   buildAgentPath as buildAgentPathFromAuth,
   normalizeClaudeAuthEnv as normalizeClaudeAuthEnvFromAuth,
-  prepareAgentSpawnEnvironment,
   resolveAgentAuthCheck as resolveAgentAuthCheckFromAuth,
   resolveAgentDefaultCommand,
 } from './acp-auth.mjs'
@@ -81,13 +79,6 @@ function normalizeNoOutputCheckIntervalMs(value, heartbeatMs) {
   return Math.min(derived, DEFAULT_NO_OUTPUT_CHECK_INTERVAL_MS)
 }
 
-function normalizeStatusText(text, maxChars = 800) {
-  const raw = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!raw) return ''
-  if (raw.length <= maxChars) return raw
-  return `${raw.slice(0, maxChars)}…`
-}
-
 function hasNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -115,40 +106,6 @@ export function normalizeClaudeAuthEnv(env = {}) {
 
 export function resolveAgentAuthCheck(agentType, env = {}) {
   return resolveAgentAuthCheckFromAuth(agentType, env)
-}
-
-function isPermissionRelatedText(text) {
-  if (!text) return false
-  return (
-    /\bpermission\b/i.test(text) ||
-    /\bapprove\b/i.test(text) ||
-    /\bapproval\b/i.test(text) ||
-    /\btrust\b/i.test(text) ||
-    /\bnon-interactive\b/i.test(text) ||
-    /\bnot granted\b/i.test(text) ||
-    /\bgrant(ed)?\b/i.test(text)
-  )
-}
-
-function classifyCodexStderr(text) {
-  const line = String(text || '')
-  if (!line) return null
-  if (/failed to refresh available models: timeout waiting for child process to exit/i.test(line)) {
-    return {
-      statusCode: 'codex_models_refresh_warning',
-      message: '[codex] model refresh timed out; continuing with existing model metadata.',
-    }
-  }
-  if (
-    /failed to open state db .*migration .*missing/i.test(line)
-    || /state db record_discrepancy/i.test(line)
-  ) {
-    return {
-      statusCode: 'codex_state_db_warning',
-      message: '[codex] local state DB mismatch detected; continuing in fallback mode.',
-    }
-  }
-  return null
 }
 
 function getRecentSessionEvents(sessionId, limit = NO_OUTPUT_DIAGNOSTIC_EVENT_SCAN_LIMIT) {
@@ -315,196 +272,6 @@ function enqueueOperation(session, op) {
     })
 
   return callerPromise
-}
-
-// ── Child process management ──
-
-function spawnAgentChild(session, opts) {
-  const { command, cwd, env, timeoutMs, prompt } = opts
-  const startedAt = now()
-  session.startedAt = startedAt
-  applyAcpSessionState(session, 'running', { reason: 'spawn', cwd: cwd || process.cwd() })
-
-  let args
-  let bin
-  if (Array.isArray(command)) {
-    bin = command[0]
-    args = command.slice(1)
-  } else {
-    // Shell command string
-    const shell = process.platform === 'win32'
-      ? { bin: 'cmd.exe', args: ['/d', '/s', '/c', command] }
-      : { bin: process.env.SHELL?.trim() || '/bin/bash', args: ['-lc', command] }
-    bin = shell.bin
-    args = shell.args
-  }
-
-  const explicitEnv =
-    env && typeof env === 'object' && Object.keys(env).length > 0
-      ? { ...env }
-      : null
-
-  const agentType = (session.agentType || '').toLowerCase()
-
-  const { env: mergedEnv, authCheck } = prepareAgentSpawnEnvironment({
-    baseEnv: process.env,
-    agentType,
-    explicitEnv,
-    alwaysStripRuntimeMarkers: true,
-  })
-  session.authDiagnosticMissingKeys = authCheck.missingKeys
-
-  // Use 'ignore' for stdin when no prompt will be written (e.g. CLI args carry the prompt)
-  const stdinMode = prompt ? 'pipe' : 'ignore'
-
-  if (authCheck.blocking) {
-    pushAcpEvent(session.sessionId, {
-      type: 'error',
-      turnId: session.currentTurnId,
-      code: 'missing_auth_env',
-      message: authCheck.message || 'Missing auth env for agent process.',
-    })
-    session.terminalEmitted = true
-    applyAcpSessionState(session, 'error', { reason: 'missing_auth_env' })
-    session.finishedAt = now()
-    return
-  }
-
-  let child
-  try {
-    child = spawn(bin, args, {
-      cwd: cwd || process.cwd(),
-      env: mergedEnv,
-      stdio: [stdinMode, 'pipe', 'pipe'],
-    })
-  } catch (err) {
-    const termEvent = synthesizeTerminalEvent(session, {
-      type: 'spawn_failed',
-      message: err.message,
-    })
-    if (termEvent) pushAcpEvent(session.sessionId, termEvent)
-    applyAcpSessionState(session, 'error', { reason: 'spawn_failed' })
-    session.finishedAt = now()
-    return
-  }
-
-  session.child = child
-  markOutputActivity(session)
-  startNoOutputWatchdog(session)
-
-  // readline for line-by-line stdout parsing
-  const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
-  rl.on('line', (line) => {
-    markOutputActivity(session)
-    const events = parseAgentLine(line, session)
-    for (const event of events) {
-      pushAcpEvent(session.sessionId, event)
-    }
-  })
-
-  // Capture stderr as status events
-  child.stderr.on('data', (chunk) => {
-    markOutputActivity(session)
-    const lines = String(chunk)
-      .split(/\r?\n/g)
-      .map((line) => normalizeStatusText(line))
-      .filter(Boolean)
-    for (const text of lines) {
-      if (agentType === 'codex') {
-        const codexWarning = classifyCodexStderr(text)
-        if (codexWarning) {
-          if (!session.codexWarningCodes) {
-            session.codexWarningCodes = new Set()
-          }
-          if (!session.codexWarningCodes.has(codexWarning.statusCode)) {
-            session.codexWarningCodes.add(codexWarning.statusCode)
-            pushAcpEvent(session.sessionId, {
-              type: 'status',
-              turnId: session.currentTurnId,
-              text: codexWarning.message,
-              statusCode: codexWarning.statusCode,
-            })
-          }
-          continue
-        }
-      }
-      const permissionRelated = isPermissionRelatedText(text)
-      pushAcpEvent(session.sessionId, {
-        type: 'status',
-        turnId: session.currentTurnId,
-        text: permissionRelated
-          ? `[claude-code][awaiting_approval] ${text}`
-          : `[stderr] ${text}`,
-        statusCode: permissionRelated ? 'awaiting_approval' : 'stderr',
-      })
-    }
-  })
-
-  // Timeout handling.
-  // timeoutMs <= 0 means "no hard timeout" for long-running agent jobs.
-  const rawTimeout = Number.isFinite(timeoutMs) ? Number(timeoutMs) : DEFAULT_TIMEOUT_MS
-  const timeoutDisabled = rawTimeout <= 0
-  const effectiveTimeout = timeoutDisabled
-    ? null
-    : Math.min(Math.max(rawTimeout, 1000), MAX_TIMEOUT_MS)
-  if (effectiveTimeout !== null) {
-    session.timeoutRef = setTimeout(() => {
-      if (session.state !== 'running') return
-      const termEvent = synthesizeTerminalEvent(session, {
-        type: 'timeout',
-        timeoutMs: effectiveTimeout,
-      })
-      if (termEvent) pushAcpEvent(session.sessionId, termEvent)
-      applyAcpSessionState(session, 'timeout', { reason: 'timeout', timeoutMs: effectiveTimeout })
-      session.finishedAt = now()
-      clearNoOutputWatchdog(session)
-      try { child.kill('SIGTERM') } catch { /* ignore */ }
-      setTimeout(() => {
-        try { if (!child.killed) child.kill('SIGKILL') } catch { /* ignore */ }
-      }, CANCEL_KILL_DELAY_MS)
-    }, effectiveTimeout)
-    if (session.timeoutRef.unref) session.timeoutRef.unref()
-  }
-
-  // Spawn error
-  child.on('error', (err) => {
-    if (session.timeoutRef) clearTimeout(session.timeoutRef)
-    clearNoOutputWatchdog(session)
-    const termEvent = synthesizeTerminalEvent(session, {
-      type: 'spawn_failed',
-      message: err.message,
-    })
-    if (termEvent) pushAcpEvent(session.sessionId, termEvent)
-    if (session.state === 'running') {
-      applyAcpSessionState(session, 'error', { reason: 'child_error' })
-      session.finishedAt = now()
-    }
-  })
-
-  // Process close
-  child.on('close', (code) => {
-    if (session.timeoutRef) clearTimeout(session.timeoutRef)
-    clearNoOutputWatchdog(session)
-    rl.close()
-    const exitCode = typeof code === 'number' ? code : -1
-    const termEvent = synthesizeTerminalEvent(session, {
-      type: 'process_exit',
-      exitCode,
-    })
-    if (termEvent) pushAcpEvent(session.sessionId, termEvent)
-    if (session.state === 'running') {
-      applyAcpSessionState(session, exitCode === 0 ? 'done' : 'error', {
-        reason: 'process_exit',
-        exitCode,
-      })
-      session.finishedAt = now()
-    }
-  })
-
-  // Write prompt to stdin if provided
-  if (prompt && child.stdin && !child.stdin.destroyed) {
-    child.stdin.write(prompt + '\n')
-  }
 }
 
 // ── Public API ──
@@ -717,12 +484,24 @@ export function enqueuePrompt(sessionId, opts = {}) {
     // For agentType-derived commands that embed the prompt, don't pipe via stdin
     const promptForStdin = (opts.command || session.command) ? opts.prompt : undefined
 
-    spawnAgentChild(session, {
+    spawnAgentChildFromProcess(session, {
       command,
       cwd: opts.cwd || session.cwd,
       env: opts.env || session.env,
       timeoutMs: opts.timeoutMs ?? session.timeoutMs,
       prompt: promptForStdin,
+    }, {
+      now,
+      applySessionState: (target, nextState, meta) => applyAcpSessionState(target, nextState, meta),
+      pushEvent: (sessionId, event) => pushAcpEvent(sessionId, event),
+      markOutputActivity,
+      startNoOutputWatchdog,
+      clearNoOutputWatchdog,
+      parseAgentLine: (line, target) => parseAgentLine(line, target),
+      synthesizeTerminalEvent: (target, reason) => synthesizeTerminalEvent(target, reason),
+      cancelKillDelayMs: CANCEL_KILL_DELAY_MS,
+      defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      maxTimeoutMs: MAX_TIMEOUT_MS,
     })
     return { ok: true, turnId, sessionId }
   })
