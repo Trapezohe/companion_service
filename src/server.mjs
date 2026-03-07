@@ -46,10 +46,14 @@ import { rescheduleJob, unscheduleJob } from './cron-scheduler.mjs'
 import { extractSkillAssets, removeSkillAssets } from './skill-assets.mjs'
 import {
   createRun,
+  clearSessionRunLink,
   getRunById,
   getRunDiagnostics,
+  getSessionRunLink,
   listRuns,
+  listSessionRunLinks,
   loadRunStore,
+  setSessionRunLink,
   updateRun,
   flushRunStore,
 } from './run-store.mjs'
@@ -118,6 +122,7 @@ function getRunSessionId(run) {
 
 async function restoreSessionRunStateOnStartup(sessionRunIndex) {
   const snapshot = await listRuns({ limit: 500, offset: 0 }).catch(() => ({ runs: [] }))
+  const persistedLinks = await listSessionRunLinks().catch(() => ({}))
   const liveRuntimeSessions = new Set(
     listSessions({ status: 'running', limit: 500, offset: 0 }).sessions
       .map((session) => String(session.sessionId || '').trim())
@@ -129,11 +134,18 @@ async function restoreSessionRunStateOnStartup(sessionRunIndex) {
       .filter(Boolean),
   )
 
-  for (const run of snapshot.runs) {
-    if (!RECOVERABLE_SESSION_RUN_TYPES.has(run.type)) continue
-    if (!RECOVERABLE_ACTIVE_STATES.has(run.state)) continue
-    const sessionId = getRunSessionId(run)
-    if (!sessionId) continue
+  const runsById = new Map(snapshot.runs.map((run) => [run.runId, run]))
+
+  for (const [sessionId, link] of Object.entries(persistedLinks)) {
+    const run = runsById.get(link.runId)
+    if (!run) {
+      await clearSessionRunLink(sessionId).catch(() => undefined)
+      continue
+    }
+    if (!RECOVERABLE_SESSION_RUN_TYPES.has(run.type) || !RECOVERABLE_ACTIVE_STATES.has(run.state)) {
+      await clearSessionRunLink(sessionId).catch(() => undefined)
+      continue
+    }
 
     sessionRunIndex.set(sessionId, run.runId)
     const liveSessionExists = run.type === 'acp'
@@ -155,6 +167,37 @@ async function restoreSessionRunStateOnStartup(sessionRunIndex) {
       },
     }).catch(() => undefined)
 
+    await clearSessionRunLink(sessionId).catch(() => undefined)
+    sessionRunIndex.delete(sessionId)
+  }
+
+  // Backfill persisted links for older stores that only had run.meta.sessionId.
+  for (const run of snapshot.runs) {
+    if (!RECOVERABLE_SESSION_RUN_TYPES.has(run.type)) continue
+    if (!RECOVERABLE_ACTIVE_STATES.has(run.state)) continue
+    const sessionId = getRunSessionId(run)
+    if (!sessionId || sessionRunIndex.has(sessionId)) continue
+    await setSessionRunLink(sessionId, run.runId, { type: run.type }).catch(() => undefined)
+    sessionRunIndex.set(sessionId, run.runId)
+    const liveSessionExists = run.type === 'acp'
+      ? liveAcpSessions.has(sessionId)
+      : liveRuntimeSessions.has(sessionId)
+    if (liveSessionExists) continue
+
+    await updateRun(run.runId, {
+      state: 'failed',
+      finishedAt: Date.now(),
+      summary: run.type === 'acp'
+        ? 'ACP session orphaned after companion restart'
+        : 'Session orphaned after companion restart',
+      error: 'companion_restart_recovery',
+      meta: {
+        ...(run.meta && typeof run.meta === 'object' ? run.meta : {}),
+        recoveredAfterRestart: true,
+        recoveryReason: 'missing_session',
+      },
+    }).catch(() => undefined)
+    await clearSessionRunLink(sessionId).catch(() => undefined)
     sessionRunIndex.delete(sessionId)
   }
 }
@@ -519,7 +562,7 @@ export function createCompanionServer({
               : 'failed'
     await updateRun(runId, {
       state: mappedState,
-      ...(mappedState === 'running' || mappedState === 'idle'
+      ...(mappedState === 'running'
         ? { startedAt: Date.now() }
         : { finishedAt: Date.now() }),
       summary: `ACP session ${event.toState}`,
@@ -530,6 +573,10 @@ export function createCompanionServer({
         ...(event.meta && typeof event.meta === 'object' ? event.meta : {}),
       },
     }).catch(() => undefined)
+    if (mappedState === 'done' || mappedState === 'failed' || mappedState === 'cancelled') {
+      await clearSessionRunLink(event.sessionId).catch(() => undefined)
+      sessionRunIndex.delete(event.sessionId)
+    }
   })
   const detachSessionExitListener = addSessionExitListener((session) => {
     const runId = sessionRunIndex.get(session.sessionId || '')
@@ -550,6 +597,7 @@ export function createCompanionServer({
       },
     }).catch(() => undefined)
       .finally(() => {
+        void clearSessionRunLink(session.sessionId || '').catch(() => undefined)
         sessionRunIndex.delete(session.sessionId || '')
       })
   })
@@ -572,6 +620,7 @@ export function createCompanionServer({
         },
       })
       sessionRunIndex.set(session.id, run.runId)
+      await setSessionRunLink(session.id, run.runId, { type: 'session' }).catch(() => undefined)
     } catch {
       // createRun failure is non-fatal — session still runs, just no run record.
     }
@@ -590,6 +639,7 @@ export function createCompanionServer({
         },
       })
       sessionRunIndex.set(session.sessionId, run.runId)
+      await setSessionRunLink(session.sessionId, run.runId, { type: 'acp' }).catch(() => undefined)
       return run
     } catch {
       return null

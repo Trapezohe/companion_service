@@ -146,6 +146,25 @@ test('run store persists runs across module reload', async () => {
   })
 })
 
+test('run store persists session-to-run links across module reload', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.setSessionRunLink('session-1', 'run-1', { type: 'session' })
+    await mod.flushRunStore()
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+
+    const link = await reloaded.getSessionRunLink('session-1')
+    assert.deepEqual(link, {
+      runId: 'run-1',
+      type: 'session',
+      updatedAt: link.updatedAt,
+    })
+    assert.equal(typeof link.updatedAt, 'number')
+  })
+})
+
 test('run store returns null for missing run updates', async () => {
   await withTempHome(async ({ mod }) => {
     const updated = await mod.updateRun('missing-run', {

@@ -41,8 +41,8 @@ function RUNS_BACKUP_FILE() {
  * }} RunEnvelope
  */
 
-/** @type {{ runs: RunEnvelope[] }} */
-let store = { runs: [] }
+/** @type {{ runs: RunEnvelope[], sessionLinks: Record<string, { runId: string, type?: string, updatedAt?: number }> }} */
+let store = { runs: [], sessionLinks: {} }
 let loaded = false
 let persistTimer = null
 let persistPromise = null
@@ -141,7 +141,28 @@ async function readStoreFile(filePath) {
   const raw = await fs.readFile(filePath, 'utf8')
   const parsed = JSON.parse(raw)
   const runs = Array.isArray(parsed.runs) ? parsed.runs.map(normalizeRun).filter(Boolean) : []
-  return { runs }
+  const sessionLinks = parsed.sessionLinks && typeof parsed.sessionLinks === 'object' && !Array.isArray(parsed.sessionLinks)
+    ? Object.fromEntries(
+        Object.entries(parsed.sessionLinks)
+          .filter(([sessionId, value]) =>
+            typeof sessionId === 'string'
+            && sessionId.trim()
+            && value
+            && typeof value === 'object'
+            && typeof value.runId === 'string'
+            && value.runId.trim(),
+          )
+          .map(([sessionId, value]) => [
+            sessionId.trim(),
+            {
+              runId: String(value.runId).trim(),
+              ...(typeof value.type === 'string' && value.type.trim() ? { type: String(value.type).trim() } : {}),
+              ...(normalizeTimestamp(value.updatedAt) !== undefined ? { updatedAt: normalizeTimestamp(value.updatedAt) } : {}),
+            },
+          ]),
+      )
+    : {}
+  return { runs, sessionLinks }
 }
 
 function trimStoreRuns() {
@@ -152,7 +173,7 @@ function trimStoreRuns() {
 async function writeStoreNow() {
   await ensureConfigDir()
   trimStoreRuns()
-  const payload = JSON.stringify({ runs: store.runs }, null, 2) + '\n'
+  const payload = JSON.stringify({ runs: store.runs, sessionLinks: store.sessionLinks }, null, 2) + '\n'
   const target = RUNS_FILE()
   const backup = RUNS_BACKUP_FILE()
   const tmp = `${target}.tmp`
@@ -216,11 +237,14 @@ export async function loadRunStore() {
         console.warn('[run-store] Recovered from backup runs.json.bak')
       } catch (backupErr) {
         console.warn(`[run-store] Backup also unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { runs: [] }
+        store = { runs: [], sessionLinks: {} }
       }
     }
   }
   trimStoreRuns()
+  if (!store.sessionLinks || typeof store.sessionLinks !== 'object') {
+    store.sessionLinks = {}
+  }
   loaded = true
   return clone(store)
 }
@@ -446,7 +470,7 @@ export async function getRunDiagnostics(options = {}) {
 }
 
 export async function clearRunStoreForTests() {
-  store = { runs: [] }
+  store = { runs: [], sessionLinks: {} }
   loaded = true
   if (persistTimer) {
     clearTimeout(persistTimer)
@@ -454,7 +478,44 @@ export async function clearRunStoreForTests() {
   }
   persistPromise = null
   await ensureConfigDir()
-  const payload = JSON.stringify({ runs: [] }, null, 2) + '\n'
+  const payload = JSON.stringify({ runs: [], sessionLinks: {} }, null, 2) + '\n'
   await fs.writeFile(RUNS_FILE(), payload, { encoding: 'utf8', mode: FILE_MODE })
   await safeChmod(RUNS_FILE(), FILE_MODE)
+}
+
+export async function setSessionRunLink(sessionId, runId, meta = {}) {
+  await ensureLoaded()
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
+  const normalizedRunId = typeof runId === 'string' ? runId.trim() : ''
+  if (!normalizedSessionId || !normalizedRunId) return null
+  store.sessionLinks[normalizedSessionId] = {
+    runId: normalizedRunId,
+    ...(typeof meta.type === 'string' && meta.type.trim() ? { type: meta.type.trim() } : {}),
+    updatedAt: now(),
+  }
+  schedulePersist()
+  return clone(store.sessionLinks[normalizedSessionId])
+}
+
+export async function getSessionRunLink(sessionId) {
+  await ensureLoaded()
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (!normalizedSessionId) return null
+  const link = store.sessionLinks[normalizedSessionId]
+  return link ? clone(link) : null
+}
+
+export async function listSessionRunLinks() {
+  await ensureLoaded()
+  return clone(store.sessionLinks)
+}
+
+export async function clearSessionRunLink(sessionId) {
+  await ensureLoaded()
+  const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (!normalizedSessionId) return false
+  if (!Object.prototype.hasOwnProperty.call(store.sessionLinks, normalizedSessionId)) return false
+  delete store.sessionLinks[normalizedSessionId]
+  schedulePersist()
+  return true
 }
