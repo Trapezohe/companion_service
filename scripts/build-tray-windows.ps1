@@ -12,10 +12,15 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 $outDir = Join-Path $root "dist/installers"
-$buildDir = Join-Path $root "tray/target/release"
-$exeName = "trapezohe-companion-tray.exe"
 $stageDir = Join-Path $outDir "tray-windows-stage"
 $zipPath = Join-Path $outDir "trapezohe-companion-tray-windows.zip"
+$planJson = & node (Join-Path $root "scripts/windows-build-plan.mjs") --json
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to resolve Windows tray build plan."
+}
+$plan = $planJson | ConvertFrom-Json
+$exeName = [string]$plan.exeName
+$exeSource = Join-Path $root ([string]$plan.exeRelativePath -replace '/', [IO.Path]::DirectorySeparatorChar)
 
 if (Test-Path $stageDir) {
     Remove-Item $stageDir -Recurse -Force
@@ -26,9 +31,12 @@ if (Test-Path $zipPath) {
 
 New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
 
-cargo build --manifest-path (Join-Path $root "tray/Cargo.toml") --release
+& $plan.cargoCommand @($plan.cargoArgs)
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows tray build failed."
+}
 
-Copy-Item (Join-Path $buildDir $exeName) (Join-Path $stageDir $exeName)
+Copy-Item $exeSource (Join-Path $stageDir $exeName)
 Copy-Item (Join-Path $root "tray/icons/icon.png") (Join-Path $stageDir "icon.png")
 @"
 Trapezohe Companion Tray

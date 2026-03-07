@@ -11,23 +11,23 @@
     <MediaTemplate />
 
     <StandardDirectory Id="ProgramFilesFolder">
-      <Directory Id="INSTALLFOLDER" Name="Trapezohe Companion" />
+      <Directory Id="INSTALLFOLDER" Name="TrapezoheCompanion" />
     </StandardDirectory>
 
     <Component Id="RunInstallCmdComponent" Directory="INSTALLFOLDER" Guid="*">
-      <File Id="RunInstallCmd" Source="$(var.InstallerSourceDir)\run-install.cmd" KeyPath="yes" />
+      <File Id="RunInstallCmd" Source="$(var.InstallerSourceDir)/run-install.cmd" KeyPath="yes" />
     </Component>
 
     <Component Id="InstallCompanionPs1Component" Directory="INSTALLFOLDER" Guid="*">
-      <File Id="InstallCompanionPs1" Source="$(var.InstallerSourceDir)\install-companion.ps1" KeyPath="yes" />
+      <File Id="InstallCompanionPs1" Source="$(var.InstallerSourceDir)/install-companion.ps1" KeyPath="yes" />
     </Component>
 
     <Component Id="TrayExeComponent" Directory="INSTALLFOLDER" Guid="*">
-      <File Id="TrayExe" Source="$(var.InstallerSourceDir)\trapezohe-companion-tray.exe" KeyPath="yes" />
+      <File Id="TrayExe" Source="$(var.InstallerSourceDir)/trapezohe-companion-tray.exe" KeyPath="yes" />
     </Component>
 
     <Component Id="TrayReadmeComponent" Directory="INSTALLFOLDER" Guid="*">
-      <File Id="TrayReadme" Source="$(var.InstallerSourceDir)\tray.README.txt" KeyPath="yes" />
+      <File Id="TrayReadme" Source="$(var.InstallerSourceDir)/tray.README.txt" KeyPath="yes" />
     </Component>
 
     <Feature Id="MainFeature" Title="Companion Installer" Level="1">

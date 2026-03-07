@@ -12,11 +12,19 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 $outDir = Join-Path $root "dist/installers"
-$workDir = Join-Path $env:TEMP ("trapezohe-companion-msi-" + [guid]::NewGuid().ToString("N"))
+$tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
+  $env:TEMP
+} elseif (-not [string]::IsNullOrWhiteSpace($env:TMPDIR)) {
+  $env:TMPDIR
+} else {
+  [System.IO.Path]::GetTempPath()
+}
+$workDir = Join-Path $tempRoot ("trapezohe-companion-msi-" + [guid]::NewGuid().ToString("N"))
 $sourceDir = Join-Path $workDir "source"
 $trayStageDir = Join-Path $root "dist/installers/tray-windows-stage"
-$wxsPath = Join-Path $root "packaging/windows/installer.wxs"
+$msiPlanScript = Join-Path $root "scripts/windows-msi-plan.mjs"
 $msiPath = Join-Path $outDir "trapezohe-companion-windows.msi"
+$generatedWxsPath = Join-Path $workDir "installer.generated.wxs"
 
 New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -30,16 +38,43 @@ Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRende
 Copy-Item (Join-Path $trayStageDir "trapezohe-companion-tray.exe") (Join-Path $sourceDir "trapezohe-companion-tray.exe")
 Copy-Item (Join-Path $trayStageDir "README.txt") (Join-Path $sourceDir "tray.README.txt")
 
-$wix = Get-Command wix -ErrorAction SilentlyContinue
-if (-not $wix) {
-  dotnet tool install --global wix --version 4.0.5 | Out-Null
-  $env:PATH += ";$env:USERPROFILE\\.dotnet\\tools"
+$planJson = & node $msiPlanScript --json
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to resolve Windows MSI build plan."
+}
+$plan = $planJson | ConvertFrom-Json
+
+$renderedWxs = & node $msiPlanScript --render --schema-version $plan.schemaVersion --product-version $Version --installer-source-dir $sourceDir
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to render Windows MSI source."
+}
+Set-Content -Path $generatedWxsPath -Value $renderedWxs -Encoding UTF8
+
+if ($plan.builder -eq "wix") {
+  $wix = Get-Command wix -ErrorAction SilentlyContinue
+  if (-not $wix) {
+    dotnet tool install --global wix --version 4.0.5 | Out-Null
+    $env:PATH += ";$env:USERPROFILE\\.dotnet\\tools"
+  }
+
+  wix build `
+    -define ProductVersion=$Version `
+    -define InstallerSourceDir=$sourceDir `
+    -o $msiPath `
+    $generatedWxsPath
+} elseif ($plan.builder -eq "wixl") {
+  $wixl = Get-Command wixl -ErrorAction SilentlyContinue
+  if (-not $wixl) {
+    throw "wixl is required on non-Windows hosts. Install msitools (for example: brew install msitools)."
+  }
+
+  wixl -o $msiPath $generatedWxsPath
+} else {
+  throw "Unsupported Windows MSI builder: $($plan.builder)"
 }
 
-wix build `
-  -define ProductVersion=$Version `
-  -define InstallerSourceDir=$sourceDir `
-  -o $msiPath `
-  $wxsPath
+if (-not (Test-Path $msiPath)) {
+  throw "Windows MSI build did not produce an output file at $msiPath"
+}
 
 Write-Host "Built $msiPath"
