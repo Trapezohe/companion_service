@@ -50,6 +50,7 @@ import {
 } from './run-store.mjs'
 import {
   createApproval,
+  expireOverdueApprovals,
   resolveApproval,
   getApprovalById,
   listPendingApprovals,
@@ -316,8 +317,15 @@ function handleSessionEvents(url, res) {
 function parseRunType(rawType) {
   if (typeof rawType !== 'string' || !rawType.trim()) return undefined
   const normalized = rawType.trim().toLowerCase()
-  if (normalized !== 'exec' && normalized !== 'session' && normalized !== 'cron' && normalized !== 'heartbeat' && normalized !== 'acp') {
-    throw new Error('type must be one of: exec, session, cron, heartbeat, acp')
+  if (
+    normalized !== 'exec'
+    && normalized !== 'session'
+    && normalized !== 'cron'
+    && normalized !== 'heartbeat'
+    && normalized !== 'acp'
+    && normalized !== 'approval'
+  ) {
+    throw new Error('type must be one of: exec, session, cron, heartbeat, acp, approval')
   }
   return normalized
 }
@@ -327,13 +335,15 @@ function parseRunState(rawState) {
   const normalized = rawState.trim().toLowerCase()
   if (
     normalized !== 'queued'
+    && normalized !== 'idle'
     && normalized !== 'running'
     && normalized !== 'waiting_approval'
     && normalized !== 'retrying'
     && normalized !== 'done'
     && normalized !== 'failed'
+    && normalized !== 'cancelled'
   ) {
-    throw new Error('state must be one of: queued, running, waiting_approval, retrying, done, failed')
+    throw new Error('state must be one of: queued, idle, running, waiting_approval, retrying, done, failed, cancelled')
   }
   return normalized
 }
@@ -731,7 +741,28 @@ export function createCompanionServer({
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       try {
         const body = await readJsonBody(req)
-        const record = await createApproval(body)
+        const run = await createRun({
+          type: 'approval',
+          state: 'waiting_approval',
+          startedAt: Date.now(),
+          summary: 'Awaiting approval',
+          meta: {
+            requestId: String(body.requestId || ''),
+            conversationId: String(body.conversationId || ''),
+            toolName: String(body.toolName || ''),
+            toolPreview: String(body.toolPreview || '').slice(0, 500),
+            riskLevel: String(body.riskLevel || 'medium'),
+            channels: Array.isArray(body.channels) ? body.channels.map(String) : [],
+            ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+          },
+        }).catch(() => null)
+        const record = await createApproval({
+          ...body,
+          meta: {
+            ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+            ...(run?.runId ? { runId: run.runId } : {}),
+          },
+        })
         return sendJson(res, 201, record)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
@@ -743,6 +774,20 @@ export function createCompanionServer({
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       try {
+        const expired = await expireOverdueApprovals()
+        for (const record of expired) {
+          const runId = String(record.meta?.runId || '').trim()
+          if (!runId) continue
+          await updateRun(runId, {
+            state: 'cancelled',
+            finishedAt: Date.now(),
+            summary: 'Approval expired',
+            meta: {
+              ...(record.meta && typeof record.meta === 'object' ? record.meta : {}),
+              approvalStatus: 'expired',
+            },
+          }).catch(() => undefined)
+        }
         const pending = await listPendingApprovals()
         return sendJson(res, 200, { approvals: pending })
       } catch (err) {
@@ -762,6 +807,32 @@ export function createCompanionServer({
         const resolvedBy = body.resolvedBy || undefined
         const record = await resolveApproval(requestId, resolution, resolvedBy)
         if (!record) return sendJson(res, 404, { error: 'Approval not found.' })
+        const runId = String(record.meta?.runId || '').trim()
+        if (runId) {
+          const state = record.status === 'approved'
+            ? 'done'
+            : record.status === 'pending'
+              ? 'waiting_approval'
+              : 'cancelled'
+          await updateRun(runId, {
+            state,
+            ...(state === 'waiting_approval'
+              ? {}
+              : { finishedAt: Date.now() }),
+            summary: record.status === 'approved'
+              ? 'Approval approved'
+              : record.status === 'expired'
+                ? 'Approval expired'
+                : 'Approval rejected',
+            meta: {
+              ...(record.meta && typeof record.meta === 'object' ? record.meta : {}),
+              requestId: record.requestId,
+              conversationId: record.conversationId,
+              approvalStatus: record.status,
+              ...(record.resolvedBy ? { resolvedBy: record.resolvedBy } : {}),
+            },
+          }).catch(() => undefined)
+        }
         return sendJson(res, 200, record)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
@@ -774,6 +845,20 @@ export function createCompanionServer({
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       try {
+        const expired = await expireOverdueApprovals()
+        for (const item of expired) {
+          const runId = String(item.meta?.runId || '').trim()
+          if (!runId) continue
+          await updateRun(runId, {
+            state: 'cancelled',
+            finishedAt: Date.now(),
+            summary: 'Approval expired',
+            meta: {
+              ...(item.meta && typeof item.meta === 'object' ? item.meta : {}),
+              approvalStatus: 'expired',
+            },
+          }).catch(() => undefined)
+        }
         const requestId = decodeURIComponent(approvalByIdMatch[1])
         const record = await getApprovalById(requestId)
         if (!record) return sendJson(res, 404, { error: 'Approval not found.' })

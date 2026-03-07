@@ -14,7 +14,7 @@ const FILE_MODE = 0o600
 const MAX_RUNS = Math.max(1, Number(process.env.TRAPEZOHE_MAX_RUNS || 200) || 200)
 const WRITE_DEBOUNCE_MS = Number(process.env.TRAPEZOHE_RUNS_WRITE_DEBOUNCE_MS || 300)
 
-const RUN_TYPES = new Set(['exec', 'session', 'cron', 'heartbeat', 'acp'])
+const RUN_TYPES = new Set(['exec', 'session', 'cron', 'heartbeat', 'acp', 'approval'])
 const RUN_STATES = new Set(['queued', 'idle', 'running', 'waiting_approval', 'retrying', 'done', 'failed', 'cancelled'])
 
 function RUNS_FILE() {
@@ -28,7 +28,7 @@ function RUNS_BACKUP_FILE() {
 /**
  * @typedef {{
  *   runId: string,
- *   type: 'exec'|'session'|'cron'|'heartbeat',
+ *   type: 'exec'|'session'|'cron'|'heartbeat'|'acp'|'approval',
  *   state: 'queued'|'idle'|'running'|'waiting_approval'|'retrying'|'done'|'failed'|'cancelled',
  *   createdAt: number,
  *   updatedAt: number,
@@ -453,5 +453,8 @@ export async function clearRunStoreForTests() {
     persistTimer = null
   }
   persistPromise = null
-  await flushRunStore()
+  await ensureConfigDir()
+  const payload = JSON.stringify({ runs: [] }, null, 2) + '\n'
+  await fs.writeFile(RUNS_FILE(), payload, { encoding: 'utf8', mode: FILE_MODE })
+  await safeChmod(RUNS_FILE(), FILE_MODE)
 }

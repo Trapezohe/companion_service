@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 
 import { createCompanionServer } from './server.mjs'
 import { cleanupAllSessions } from './runtime.mjs'
-import { listRuns } from './run-store.mjs'
+import { clearRunStoreForTests, listRuns } from './run-store.mjs'
+import { clearApprovalStoreForTests } from './approval-store.mjs'
 
 function createMcpManagerStub() {
   return {
@@ -20,6 +21,8 @@ function delay(ms) {
 }
 
 async function startTestServer(options = {}) {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
   const token = 'test-token'
   const mcpManager = options.mcpManager || createMcpManagerStub()
   const server = createCompanionServer({
@@ -543,4 +546,76 @@ test('ACP session creation and prompt execution are reflected in runtime runs le
   assert.equal(acpRun.type, 'acp')
   assert.equal(acpRun.meta?.sessionId, created.payload.sessionId)
   assert.equal(acpRun.state, 'done')
+})
+
+test('approval lifecycle is mirrored into the runtime runs ledger with correlation metadata', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const created = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      requestId: 'approval-1',
+      conversationId: 'conv-approval',
+      toolName: 'execute_transaction',
+      toolPreview: 'Transfer 1 USDT to 0xabc',
+      riskLevel: 'high',
+      channels: ['sidepanel'],
+      expiresAt: Date.now() + 60_000,
+      meta: {
+        correlationId: 'corr-approval-1',
+        toolCallId: 'call-tool-1',
+      },
+    },
+  })
+  assert.equal(created.status, 201)
+  assert.equal(created.payload.requestId, 'approval-1')
+  assert.equal(created.payload.status, 'pending')
+  assert.equal(created.payload.meta?.correlationId, 'corr-approval-1')
+  assert.equal(created.payload.meta?.toolCallId, 'call-tool-1')
+  assert.equal(typeof created.payload.meta?.runId, 'string')
+  assert.ok(created.payload.meta.runId)
+
+  let approvalRun = null
+  const approvalRunId = created.payload.meta.runId
+  const pendingDeadline = Date.now() + 5_000
+  while (Date.now() < pendingDeadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRun = runs.runs.find((run) => run.runId === approvalRunId) || null
+    if (approvalRun) break
+    await delay(25)
+  }
+
+  assert.ok(approvalRun)
+  assert.equal(approvalRun.type, 'approval')
+  assert.equal(approvalRun.state, 'waiting_approval')
+  assert.equal(approvalRun.meta?.requestId, 'approval-1')
+  assert.equal(approvalRun.meta?.conversationId, 'conv-approval')
+  assert.equal(approvalRun.meta?.toolCallId, 'call-tool-1')
+
+  const resolved = await requestJson(ctx, '/api/runtime/approvals/approval-1/resolve', {
+    method: 'POST',
+    body: {
+      resolution: 'approved',
+      resolvedBy: 'sidepanel',
+    },
+  })
+  assert.equal(resolved.status, 200)
+  assert.equal(resolved.payload.status, 'approved')
+
+  const doneDeadline = Date.now() + 5_000
+  while (Date.now() < doneDeadline) {
+    const run = await listRuns({ limit: 100, offset: 0 })
+    approvalRun = run.runs.find((item) => item.runId === approvalRunId) || null
+    if (approvalRun?.state === 'done') break
+    await delay(25)
+  }
+
+  assert.ok(approvalRun)
+  assert.equal(approvalRun.state, 'done')
+  assert.equal(approvalRun.meta?.approvalStatus, 'approved')
+  assert.equal(approvalRun.meta?.resolvedBy, 'sidepanel')
 })

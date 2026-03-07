@@ -127,6 +127,28 @@ export async function flushApprovalStore() {
 export async function createApproval(input) {
   await ensureLoaded()
   const requestId = input?.requestId || randomBytes(16).toString('hex')
+  const existingIndex = store.approvals.findIndex((approval) => approval.requestId === requestId)
+  if (existingIndex >= 0) {
+    const current = store.approvals[existingIndex]
+    const next = {
+      ...current,
+      requestId,
+      conversationId: String(input?.conversationId || current.conversationId || ''),
+      toolName: String(input?.toolName || current.toolName || ''),
+      toolPreview: String(input?.toolPreview || current.toolPreview || '').slice(0, 500),
+      riskLevel: String(input?.riskLevel || current.riskLevel || 'medium'),
+      channels: Array.isArray(input?.channels) ? input.channels.map(String) : current.channels,
+      status: 'pending',
+      createdAt: now(),
+      expiresAt: Number(input?.expiresAt) || current.expiresAt || now() + 120_000,
+      resolvedAt: undefined,
+      resolvedBy: undefined,
+      ...(input?.meta && typeof input.meta === 'object' ? { meta: clone(input.meta) } : {}),
+    }
+    store.approvals[existingIndex] = next
+    schedulePersist()
+    return clone(next)
+  }
   const record = {
     requestId,
     conversationId: String(input?.conversationId || ''),
@@ -150,7 +172,14 @@ export async function resolveApproval(requestId, resolution, resolvedBy) {
   const id = String(requestId || '').trim()
   if (!id) return null
 
-  const index = store.approvals.findIndex((a) => a.requestId === id)
+  const index = store.approvals.findLastIndex
+    ? store.approvals.findLastIndex((a) => a.requestId === id)
+    : (() => {
+        for (let i = store.approvals.length - 1; i >= 0; i -= 1) {
+          if (store.approvals[i].requestId === id) return i
+        }
+        return -1
+      })()
   if (index < 0) return null
 
   const current = store.approvals[index]
@@ -173,7 +202,10 @@ export async function getApprovalById(requestId) {
   await ensureLoaded()
   const id = String(requestId || '').trim()
   if (!id) return null
-  const found = store.approvals.find((a) => a.requestId === id)
+  const found = store.approvals
+    .slice()
+    .reverse()
+    .find((a) => a.requestId === id)
   return found ? clone(found) : null
 }
 
@@ -188,14 +220,17 @@ export async function expireOverdueApprovals() {
   await ensureLoaded()
   const cutoff = now()
   let changed = false
+  const expired = []
   for (let i = 0; i < store.approvals.length; i++) {
     const a = store.approvals[i]
     if (a.status === 'pending' && a.expiresAt <= cutoff) {
       store.approvals[i] = { ...a, status: 'expired', resolvedAt: cutoff }
+      expired.push(clone(store.approvals[i]))
       changed = true
     }
   }
   if (changed) schedulePersist()
+  return expired
 }
 
 export async function clearApprovalStoreForTests() {
@@ -205,4 +240,8 @@ export async function clearApprovalStoreForTests() {
     clearTimeout(persistTimer)
     persistTimer = null
   }
+  await ensureConfigDir()
+  const payload = JSON.stringify({ approvals: [] }, null, 2) + '\n'
+  await fs.writeFile(APPROVALS_FILE(), payload, { encoding: 'utf8', mode: FILE_MODE })
+  await safeChmod(APPROVALS_FILE(), FILE_MODE)
 }

@@ -179,6 +179,29 @@ test('session reuse clears prior event buffer and keeps only current turn events
   assert.ok(secondEvents.every((event) => event.turnId !== first.turnId))
 })
 
+test('cancelled ACP sessions cannot be reused without an explicit reset', async (t) => {
+  cleanupAllAcpSessions()
+  t.after(() => cleanupAllAcpSessions())
+
+  const { sessionId } = createAcpSession({
+    agentType: 'raw',
+    cwd: process.cwd(),
+    command: 'node -e "setInterval(() => process.stdout.write(\'\'), 1000)"',
+    timeoutMs: 8_000,
+  })
+
+  await enqueuePrompt(sessionId, { prompt: 'first task' })
+  await delay(100)
+  const cancelled = await cancelAcpSession(sessionId)
+  assert.equal(cancelled.state, 'cancelled')
+  await waitForState(sessionId, 'cancelled')
+
+  await assert.rejects(
+    async () => enqueuePrompt(sessionId, { prompt: 'second task' }),
+    /explicit reset|terminal state|create a new session/i,
+  )
+})
+
 // ── Test 3: Non-JSON stdout → status event ──
 
 test('non-JSON stdout lines become status events', async (t) => {

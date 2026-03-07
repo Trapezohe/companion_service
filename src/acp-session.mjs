@@ -12,6 +12,15 @@ import { readdirSync, existsSync, mkdirSync, copyFileSync, cpSync, statSync } fr
 import { join, dirname, delimiter as PATH_DELIMITER } from 'node:path'
 import { applyAcpSessionState, setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
 import {
+  parseAgentLine as parseAgentLineFromEvents,
+  synthesizeTerminalEvent as synthesizeTerminalEventFromEvents,
+} from './acp-events.mjs'
+import {
+  classifyNoOutputDiagnostic as classifyNoOutputDiagnosticFromModule,
+  emitNoOutputDiagnosticIfNeeded as emitNoOutputDiagnosticIfNeededFromModule,
+  emitSessionProbeIfNeeded as emitSessionProbeIfNeededFromModule,
+} from './acp-diagnostics.mjs'
+import {
   buildAgentPath as buildAgentPathFromAuth,
   normalizeClaudeAuthEnv as normalizeClaudeAuthEnvFromAuth,
   resolveAgentAuthCheck as resolveAgentAuthCheckFromAuth,
@@ -137,81 +146,8 @@ function splitPathEntries(pathValue) {
     .filter(Boolean)
 }
 
-function shouldEmitToolResultDiagnostics() {
-  return parseOptionalBoolean(process.env.TRAPEZOHE_ACP_DIAGNOSTIC_TOOL_RESULTS) !== false
-}
-
 function shouldEmitSessionProbeDiagnostics() {
   return parseOptionalBoolean(process.env.TRAPEZOHE_ACP_DIAGNOSTIC_SESSION_PROBE) !== false
-}
-
-function clipDiagnosticText(value, maxChars = 120) {
-  const raw = normalizeStatusText(value, 400)
-  if (!raw) return ''
-  if (raw.length <= maxChars) return raw
-  return `${raw.slice(0, maxChars)}…`
-}
-
-function summarizeToolInput(toolName, input) {
-  const normalizedTool = String(toolName || '').trim()
-  if (!normalizedTool) return ''
-
-  if (input && typeof input === 'object') {
-    if (normalizedTool === 'Read' && hasNonEmptyString(input.file_path)) {
-      return `file=${clipDiagnosticText(input.file_path, 90)}`
-    }
-    if (normalizedTool === 'Bash' && hasNonEmptyString(input.command)) {
-      return `cmd=${clipDiagnosticText(input.command, 90)}`
-    }
-    if (normalizedTool === 'Glob' && hasNonEmptyString(input.pattern)) {
-      return `pattern=${clipDiagnosticText(input.pattern, 90)}`
-    }
-  }
-
-  try {
-    return `input=${clipDiagnosticText(JSON.stringify(input || {}), 90)}`
-  } catch {
-    return ''
-  }
-}
-
-function extractToolResultText(block) {
-  if (!block || typeof block !== 'object') return ''
-  if (typeof block.content === 'string') return block.content
-  if (!Array.isArray(block.content)) return ''
-  const chunks = []
-  for (const part of block.content) {
-    if (!part || typeof part !== 'object') continue
-    if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
-      chunks.push(part.text)
-    }
-  }
-  return chunks.join('\n')
-}
-
-function summarizeToolResult(block) {
-  const raw = String(extractToolResultText(block) || '').replace(/\r\n/g, '\n')
-  const trimmed = raw.trim()
-  if (!trimmed) {
-    return { empty: true, chars: 0, lines: 0 }
-  }
-  return {
-    empty: false,
-    chars: trimmed.length,
-    lines: trimmed.split('\n').length,
-  }
-}
-
-function isChildProcessAlive(child) {
-  if (!child || typeof child !== 'object') return false
-  const pid = Number(child.pid || 0)
-  if (!pid || child.killed) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
 }
 
 function shouldIsolateCodexHome() {
@@ -438,40 +374,6 @@ function isPermissionRelatedText(text) {
   )
 }
 
-function isAuthRelatedText(text) {
-  if (!text) return false
-  return (
-    /\bunauthorized\b/i.test(text) ||
-    /\bforbidden\b/i.test(text) ||
-    /\binvalid[_\s-]?api[_\s-]?key\b/i.test(text) ||
-    /\binvalid[_\s-]?token\b/i.test(text) ||
-    /\bauth(?:entication|orization)?\b/i.test(text) ||
-    /\bpermission\b/i.test(text) ||
-    /\bapprove\b/i.test(text) ||
-    /\bapproval\b/i.test(text) ||
-    /\bnot granted\b/i.test(text) ||
-    /\bmissing\b.*\b(anthropic|openai|token|api key)\b/i.test(text) ||
-    /\b401\b/.test(text) ||
-    /\b403\b/.test(text)
-  )
-}
-
-function isNetworkRelatedText(text) {
-  if (!text) return false
-  return (
-    /\bfailed to fetch\b/i.test(text) ||
-    /\bnetwork(?:error)?\b/i.test(text) ||
-    /\beconn(?:refused|reset)\b/i.test(text) ||
-    /\betimedout\b/i.test(text) ||
-    /\btimed out\b/i.test(text) ||
-    /\bsocket hang up\b/i.test(text) ||
-    /\benotfound\b/i.test(text) ||
-    /\bdns\b/i.test(text) ||
-    /\b(connection|connect)\b.*\b(reset|refused|timeout)\b/i.test(text) ||
-    /\b(429|500|502|503|504)\b/.test(text)
-  )
-}
-
 function classifyCodexStderr(text) {
   const line = String(text || '')
   if (!line) return null
@@ -501,224 +403,24 @@ function getRecentSessionEvents(sessionId, limit = NO_OUTPUT_DIAGNOSTIC_EVENT_SC
 }
 
 export function classifyNoOutputDiagnostic(input = {}) {
-  const missingKeys = Array.isArray(input.missingKeys) ? input.missingKeys : []
-  const recentEvents = Array.isArray(input.recentEvents) ? input.recentEvents : []
-
-  if (missingKeys.length > 0) {
-    return {
-      kind: 'auth',
-      statusCode: 'no_output_auth',
-      summary: `possible auth/config issue: missing ${missingKeys.join(', ')}`,
-    }
-  }
-
-  let sawNetworkSignal = false
-  let sawAuthSignal = false
-  let sawThinkingSignal = false
-  let sawInitSignal = false
-  let sawToolSignal = false
-  let lastTextSignalIndex = -1
-  let lastThinkingSignalIndex = -1
-  let lastInitSignalIndex = -1
-  let lastToolSignalIndex = -1
-
-  for (const [index, event] of recentEvents.entries()) {
-    if (!event || typeof event !== 'object') continue
-    if (event.type === 'status' && event.statusCode === 'waiting_for_output') continue
-    const text = String(event.text || '')
-    const statusCode = String(event.statusCode || '')
-
-    if (event.type === 'text_delta') {
-      lastTextSignalIndex = index
-    }
-
-    if (statusCode === 'awaiting_approval' || statusCode === 'config_warning' || isAuthRelatedText(text)) {
-      sawAuthSignal = true
-    }
-    if (statusCode === 'stderr' && isNetworkRelatedText(text)) {
-      sawNetworkSignal = true
-    }
-    if (statusCode === 'model_thinking') {
-      sawThinkingSignal = true
-      lastThinkingSignalIndex = index
-    }
-    if (
-      /\[(claude-code|codex)\]/i.test(text) &&
-      /(initialized|thread\.started|turn\.started)/i.test(text)
-    ) {
-      sawInitSignal = true
-      lastInitSignalIndex = index
-    }
-    if (
-      event.type === 'tool_call'
-      || statusCode === 'tool_error'
-      || /\[(claude-code|codex)\]\[tool_error\]/i.test(text)
-    ) {
-      sawToolSignal = true
-      lastToolSignalIndex = index
-    }
-    if (isNetworkRelatedText(text)) {
-      sawNetworkSignal = true
-    }
-  }
-
-  if (sawAuthSignal) {
-    return {
-      kind: 'auth',
-      statusCode: 'no_output_auth',
-      summary: 'possible auth/approval issue while waiting for model output',
-    }
-  }
-
-  if (sawNetworkSignal) {
-    return {
-      kind: 'network',
-      statusCode: 'no_output_network',
-      summary: 'possible network/provider transport issue while waiting for model output',
-    }
-  }
-
-  if (sawToolSignal && lastToolSignalIndex > Math.max(lastTextSignalIndex, lastThinkingSignalIndex, lastInitSignalIndex)) {
-    return {
-      kind: 'tool_wait',
-      statusCode: 'no_output_tool_wait',
-      summary: 'agent appears stalled after tool execution (possible tool/result wait)',
-    }
-  }
-
-  if (sawThinkingSignal || sawInitSignal) {
-    return {
-      kind: 'model_queue',
-      statusCode: 'no_output_model_queue',
-      summary: 'model appears queued or upstream response is delayed',
-    }
-  }
-
-  return {
-    kind: 'cli_blocked',
-    statusCode: 'no_output_cli_blocked',
-    summary: 'agent CLI appears blocked before producing protocol events',
-  }
+  return classifyNoOutputDiagnosticFromModule(input)
 }
 
 function emitNoOutputDiagnosticIfNeeded(session, silenceSeconds) {
-  const heartbeatCount = Number(session.noOutputHeartbeatCount || 0)
-  if (heartbeatCount < Math.max(1, NO_OUTPUT_DIAGNOSTIC_HEARTBEAT_THRESHOLD)) return
-
-  const recentEvents = getRecentSessionEvents(session.sessionId)
-  const diagnostic = classifyNoOutputDiagnostic({
-    agentType: session.agentType,
-    missingKeys: session.authDiagnosticMissingKeys,
-    recentEvents,
+  emitNoOutputDiagnosticIfNeededFromModule(session, silenceSeconds, {
+    getRecentEvents: (sessionId) => getRecentSessionEvents(sessionId),
+    pushEvent: (sessionId, event) => pushAcpEvent(sessionId, event),
+    heartbeatThreshold: NO_OUTPUT_DIAGNOSTIC_HEARTBEAT_THRESHOLD,
+    repeatHeartbeats: NO_OUTPUT_DIAGNOSTIC_REPEAT_HEARTBEATS,
   })
-
-  const lastKind = session.lastNoOutputDiagnosticKind || ''
-  const lastHeartbeat = Number(session.lastNoOutputDiagnosticHeartbeat || 0)
-  const canRepeat = (heartbeatCount - lastHeartbeat) >= Math.max(1, NO_OUTPUT_DIAGNOSTIC_REPEAT_HEARTBEATS)
-  if (lastKind === diagnostic.kind && !canRepeat) return
-
-  pushAcpEvent(session.sessionId, {
-    type: 'status',
-    turnId: session.currentTurnId,
-    text: `[agent][${diagnostic.kind}] ${diagnostic.summary} (${silenceSeconds}s no output)`,
-    statusCode: diagnostic.statusCode,
-  })
-  session.lastNoOutputDiagnosticKind = diagnostic.kind
-  session.lastNoOutputDiagnosticHeartbeat = heartbeatCount
-}
-
-function extractToolResultErrorText(block) {
-  if (!block || typeof block !== 'object') return ''
-  if (typeof block.content === 'string') {
-    return normalizeStatusText(block.content)
-  }
-  if (!Array.isArray(block.content)) return ''
-  const chunks = []
-  for (const part of block.content) {
-    if (!part || typeof part !== 'object') continue
-    if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
-      chunks.push(part.text.trim())
-    }
-  }
-  return normalizeStatusText(chunks.join(' '))
-}
-
-function rememberToolCall(session, toolCallId, toolName, input) {
-  if (!session || !hasNonEmptyString(toolCallId)) return
-  if (!(session.toolCallsById instanceof Map)) {
-    session.toolCallsById = new Map()
-  }
-  const normalizedTool = String(toolName || '').trim() || 'tool'
-  const targetSummary = summarizeToolInput(normalizedTool, input)
-  session.toolCallsById.set(String(toolCallId).trim(), {
-    tool: normalizedTool,
-    targetSummary,
-    at: now(),
-  })
-  session.lastToolCallSummary = targetSummary
-    ? `${normalizedTool} (${targetSummary})`
-    : normalizedTool
-  session.lastToolCallAt = now()
-
-  // Keep memory bounded in long-lived sessions.
-  while (session.toolCallsById.size > 128) {
-    const oldestKey = session.toolCallsById.keys().next().value
-    if (!oldestKey) break
-    session.toolCallsById.delete(oldestKey)
-  }
-}
-
-function rememberToolResult(session, payload = {}) {
-  if (!session) return
-  const { tool = 'tool', targetSummary = '', resultSummary = '' } = payload
-  const label = targetSummary
-    ? `${tool} (${targetSummary})`
-    : String(tool || 'tool')
-  session.lastToolResultSummary = resultSummary
-    ? `${label} -> ${resultSummary}`
-    : label
-  session.lastToolResultAt = now()
 }
 
 function emitSessionProbeIfNeeded(session, silenceSeconds) {
-  if (!shouldEmitSessionProbeDiagnostics()) return
-  const heartbeatCount = Number(session.noOutputHeartbeatCount || 0)
-  const interval = Math.max(1, Number.isFinite(DEFAULT_SESSION_PROBE_HEARTBEATS)
-    ? Math.floor(DEFAULT_SESSION_PROBE_HEARTBEATS)
-    : 2)
-  const lastProbeHeartbeat = Number(session.lastSessionProbeHeartbeat || 0)
-  if ((heartbeatCount - lastProbeHeartbeat) < interval) return
-
-  const child = session.child
-  const pid = child && Number(child.pid || 0) > 0 ? Number(child.pid) : null
-  const alive = isChildProcessAlive(child)
-  const lastToolCallAgeSec = session.lastToolCallAt
-    ? Math.max(0, Math.floor((now() - Number(session.lastToolCallAt)) / 1000))
-    : null
-  const lastToolResultAgeSec = session.lastToolResultAt
-    ? Math.max(0, Math.floor((now() - Number(session.lastToolResultAt)) / 1000))
-    : null
-  const lastTool = session.lastToolCallSummary || 'none'
-  const lastResult = session.lastToolResultSummary || 'none'
-
-  pushAcpEvent(session.sessionId, {
-    type: 'status',
-    turnId: session.currentTurnId,
-    statusCode: 'session_probe',
-    text: [
-      '[agent][session_probe]',
-      `state=${session.state}`,
-      `pid=${pid ?? 'none'}`,
-      `alive=${alive}`,
-      `child_killed=${Boolean(child?.killed)}`,
-      `silence=${silenceSeconds}s`,
-      `last_tool="${clipDiagnosticText(lastTool, 100) || 'none'}"`,
-      `last_tool_age=${lastToolCallAgeSec ?? 'na'}s`,
-      `last_result="${clipDiagnosticText(lastResult, 100) || 'none'}"`,
-      `last_result_age=${lastToolResultAgeSec ?? 'na'}s`,
-    ].join(' '),
+  emitSessionProbeIfNeededFromModule(session, silenceSeconds, {
+    pushEvent: (sessionId, event) => pushAcpEvent(sessionId, event),
+    shouldEmitSessionProbeDiagnostics: shouldEmitSessionProbeDiagnostics(),
+    sessionProbeHeartbeats: DEFAULT_SESSION_PROBE_HEARTBEATS,
   })
-  session.lastSessionProbeHeartbeat = heartbeatCount
 }
 
 function markOutputActivity(session) {
@@ -812,425 +514,10 @@ function pushAcpEvent(sessionId, event) {
  * Non-JSON lines ALWAYS degrade to status (P0.1: never discard).
  */
 export function parseAgentLine(line, session) {
-  const trimmed = line.trim()
-  if (!trimmed) return []
-
-  let parsed
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    // Non-JSON line → degrade to status event (P0.1: never discard)
-    return [{
-      type: 'status',
-      turnId: session.currentTurnId,
-      text: trimmed,
-    }]
-  }
-
-  const agentType = (session.agentType || 'raw').toLowerCase()
-
-  if (agentType === 'claude-code') {
-    return parseClaudeCodeLine(parsed, session)
-  }
-  if (agentType === 'codex') {
-    return parseCodexLine(parsed, session)
-  }
-
-  // 'claude-api', 'raw', or any other → try Claude API format
-  return parseClaudeApiLine(parsed, session, trimmed)
+  return parseAgentLineFromEvents(line, session)
 }
 
-// ── Claude Code CLI stream-json format ──
-// Events: system, assistant, result
-function parseClaudeCodeLine(parsed, session) {
-  const events = []
-  const type = parsed.type || ''
-
-  // system events (hooks, init) → status
-  if (type === 'system') {
-    const subtype = parsed.subtype || ''
-    // Skip verbose hook payloads, just emit a short status
-    if (subtype === 'init') {
-      events.push({
-        type: 'status',
-        turnId: session.currentTurnId,
-        text: `[claude-code] initialized (model=${parsed.model || 'unknown'})`,
-      })
-      if (hasNonEmptyString(parsed.session_id)) {
-        const runtimeSessionId = String(parsed.session_id).trim()
-        session.runtimeSessionId = runtimeSessionId
-        events.push({
-          type: 'status',
-          turnId: session.currentTurnId,
-          statusCode: 'runtime_session_id',
-          text: `[claude-code] session_id=${runtimeSessionId}`,
-        })
-      }
-    } else if (subtype === 'hook_started' || subtype === 'hook_response') {
-      // Suppress hook noise — they add no user value
-    } else {
-      events.push({
-        type: 'status',
-        turnId: session.currentTurnId,
-        text: `[claude-code] ${subtype || 'system'}`,
-      })
-    }
-    return events
-  }
-
-  // assistant message → extract content blocks
-  if (type === 'assistant' && parsed.message?.content) {
-    const content = parsed.message.content
-    let sawThinking = false
-    for (const block of Array.isArray(content) ? content : []) {
-      if (block.type === 'text' && block.text) {
-        events.push({
-          type: 'text_delta',
-          turnId: session.currentTurnId,
-          text: block.text,
-        })
-      } else if (block.type === 'tool_use') {
-        rememberToolCall(session, block.id || '', block.name || '', block.input || {})
-        events.push({
-          type: 'tool_call',
-          turnId: session.currentTurnId,
-          toolCallId: block.id || '',
-          tool: block.name || '',
-          input: typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {}),
-        })
-      } else if (block.type === 'thinking') {
-        sawThinking = true
-      }
-    }
-    if (events.length === 0 && sawThinking) {
-      const nowTs = now()
-      const lastThinkingAt = Number(session.lastThinkingStatusAt || 0)
-      if (!lastThinkingAt || (nowTs - lastThinkingAt) >= 10_000) {
-        events.push({
-          type: 'status',
-          turnId: session.currentTurnId,
-          text: '[claude-code] thinking...',
-          statusCode: 'model_thinking',
-        })
-        session.lastThinkingStatusAt = nowTs
-      }
-    }
-    return events
-  }
-
-  // result → done or error (terminal event)
-  if (type === 'result') {
-    if (parsed.is_error || parsed.subtype === 'error') {
-      events.push({
-        type: 'error',
-        turnId: session.currentTurnId,
-        code: 'agent_error',
-        message: parsed.error || parsed.result || 'Claude Code returned error',
-      })
-      session.terminalEmitted = true
-    } else {
-      events.push({
-        type: 'done',
-        turnId: session.currentTurnId,
-        stopReason: parsed.stop_reason || 'end_turn',
-        result: parsed.result || undefined,
-      })
-      session.terminalEmitted = true
-    }
-    return events
-  }
-
-  // user messages (tool results) → suppress protocol noise
-  if (type === 'user') {
-    // Keep protocol noise filtered, but surface tool_result error text so
-    // permission/approval failures are visible in the UI.
-    const blocks = Array.isArray(parsed.message?.content) ? parsed.message.content : []
-    for (const block of blocks) {
-      if (!block || typeof block !== 'object') continue
-      if (block.type !== 'tool_result') continue
-      const toolUseId = hasNonEmptyString(block.tool_use_id)
-        ? String(block.tool_use_id).trim()
-        : ''
-      const meta = (session.toolCallsById instanceof Map)
-        ? session.toolCallsById.get(toolUseId)
-        : null
-      const toolName = String(meta?.tool || 'tool')
-      const targetSummary = String(meta?.targetSummary || '')
-
-      if (block.is_error) {
-        const detail = extractToolResultErrorText(block)
-        if (!detail) continue
-        rememberToolResult(session, {
-          tool: toolName,
-          targetSummary,
-          resultSummary: `error ${clipDiagnosticText(detail, 80)}`,
-        })
-        const permissionRelated = isPermissionRelatedText(detail)
-        events.push({
-          type: 'status',
-          turnId: session.currentTurnId,
-          text: permissionRelated
-            ? `[claude-code][awaiting_approval] ${detail}`
-            : `[claude-code][tool_error] ${detail}`,
-          statusCode: permissionRelated ? 'awaiting_approval' : 'tool_error',
-        })
-        continue
-      }
-
-      if (!shouldEmitToolResultDiagnostics()) continue
-      const result = summarizeToolResult(block)
-      const resultSummary = result.empty
-        ? 'ok empty_result'
-        : `ok chars=${result.chars} lines=${result.lines}`
-      rememberToolResult(session, {
-        tool: toolName,
-        targetSummary,
-        resultSummary,
-      })
-      const suffix = targetSummary
-        ? ` ${targetSummary}`
-        : ''
-      events.push({
-        type: 'status',
-        turnId: session.currentTurnId,
-        statusCode: 'tool_result_ok',
-        text: `[claude-code][tool_result] ${toolName}${suffix} ${resultSummary}`.trim(),
-      })
-    }
-    return events
-  }
-
-  // Any other JSON → short status (never dump raw protocol JSON)
-  const summary = parsed.subtype || parsed.event || type || 'update'
-  events.push({
-    type: 'status',
-    turnId: session.currentTurnId,
-    text: `[claude-code] ${summary}`,
-  })
-  return events
-}
-
-// ── Codex CLI --json JSONL format ──
-// Actual Codex events observed:
-//   thread.started, turn.started → status
-//   item.completed + item.type=agent_message → text_delta
-//   item.completed + item.type=reasoning → status
-//   item.completed + item.type=function_call → tool_call
-//   turn.completed → done
-//   error → error
-function parseCodexLine(parsed, session) {
-  const events = []
-  const type = parsed.type || ''
-
-  // item.completed — the main content carrier in Codex
-  if (type === 'item.completed' && parsed.item) {
-    const itemType = parsed.item.type || ''
-
-    // Agent text message
-    if (itemType === 'agent_message' || itemType === 'message') {
-      events.push({
-        type: 'text_delta',
-        turnId: session.currentTurnId,
-        text: parsed.item.text || parsed.item.content || '',
-      })
-      return events
-    }
-
-    // Tool/function call
-    if (itemType === 'function_call' || itemType === 'tool_call') {
-      events.push({
-        type: 'tool_call',
-        turnId: session.currentTurnId,
-        toolCallId: parsed.item.id || parsed.item.call_id || '',
-        tool: parsed.item.name || '',
-        input: (() => { const raw = parsed.item.arguments || parsed.item.input; return typeof raw === 'string' ? raw : JSON.stringify(raw || {}); })(),
-      })
-      return events
-    }
-
-    // Reasoning → short status (thinking indicator, not raw content)
-    if (itemType === 'reasoning') {
-      events.push({
-        type: 'status',
-        turnId: session.currentTurnId,
-        text: '[codex] thinking...',
-      })
-      return events
-    }
-
-    // Function call output / tool result → suppress (too noisy)
-    if (itemType === 'function_call_output' || itemType === 'tool_result') {
-      return events
-    }
-
-    // Unknown item type → short status
-    events.push({
-      type: 'status',
-      turnId: session.currentTurnId,
-      text: `[codex] ${itemType || 'update'}`,
-    })
-    return events
-  }
-
-  // turn.completed → done (terminal event)
-  if (type === 'turn.completed') {
-    events.push({
-      type: 'done',
-      turnId: session.currentTurnId,
-      stopReason: 'end_turn',
-      usage: parsed.usage || undefined,
-    })
-    session.terminalEmitted = true
-    return events
-  }
-
-  // Codex error
-  if (type === 'error') {
-    events.push({
-      type: 'error',
-      turnId: session.currentTurnId,
-      code: 'agent_error',
-      message: parsed.message || parsed.error || JSON.stringify(parsed),
-    })
-    session.terminalEmitted = true
-    return events
-  }
-
-  // thread.started, turn.started, and other lifecycle → short status
-  const lifecycle = type || 'update'
-  events.push({
-    type: 'status',
-    turnId: session.currentTurnId,
-    text: `[codex] ${lifecycle}`,
-  })
-  return events
-}
-
-// ── Claude API raw streaming format ──
-function parseClaudeApiLine(parsed, session, rawLine) {
-  const events = []
-  const type = parsed.type || ''
-
-  // content_block_delta with text_delta
-  if (type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
-    events.push({
-      type: 'text_delta',
-      turnId: session.currentTurnId,
-      text: parsed.delta.text || '',
-    })
-    return events
-  }
-
-  // content_block_start with tool_use → begin accumulating
-  if (type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
-    session.toolCallAccumulator = {
-      toolCallId: parsed.content_block.id || '',
-      tool: parsed.content_block.name || '',
-      inputJson: '',
-    }
-    return events
-  }
-
-  // input_json_delta → accumulate
-  if (type === 'content_block_delta' && parsed.delta?.type === 'input_json_delta') {
-    if (session.toolCallAccumulator) {
-      session.toolCallAccumulator.inputJson += parsed.delta.partial_json || ''
-    }
-    return events
-  }
-
-  // content_block_stop → flush tool_call
-  if (type === 'content_block_stop') {
-    if (session.toolCallAccumulator) {
-      let input
-      try {
-        input = JSON.parse(session.toolCallAccumulator.inputJson)
-      } catch {
-        input = session.toolCallAccumulator.inputJson || null
-      }
-      events.push({
-        type: 'tool_call',
-        turnId: session.currentTurnId,
-        toolCallId: session.toolCallAccumulator.toolCallId,
-        tool: session.toolCallAccumulator.tool,
-        input,
-      })
-      session.toolCallAccumulator = null
-    }
-    return events
-  }
-
-  // message_stop → done
-  if (type === 'message_stop') {
-    const stopReason = parsed.message?.stop_reason || 'end_turn'
-    events.push({
-      type: 'done',
-      turnId: session.currentTurnId,
-      stopReason,
-    })
-    session.terminalEmitted = true
-    return events
-  }
-
-  // error
-  if (type === 'error') {
-    events.push({
-      type: 'error',
-      turnId: session.currentTurnId,
-      code: 'agent_error',
-      message: parsed.error?.message || parsed.message || JSON.stringify(parsed),
-    })
-    session.terminalEmitted = true
-    return events
-  }
-
-  // Claude Code CLI events in 'raw' mode — auto-detect
-  if (type === 'result') {
-    if (parsed.is_error || parsed.subtype === 'error') {
-      events.push({
-        type: 'error',
-        turnId: session.currentTurnId,
-        code: 'agent_error',
-        message: parsed.error || parsed.result || 'Agent returned error',
-      })
-      session.terminalEmitted = true
-    } else {
-      events.push({
-        type: 'done',
-        turnId: session.currentTurnId,
-        stopReason: parsed.stop_reason || 'end_turn',
-        result: parsed.result || undefined,
-      })
-      session.terminalEmitted = true
-    }
-    return events
-  }
-
-  if (type === 'assistant' && parsed.message?.content) {
-    for (const block of Array.isArray(parsed.message.content) ? parsed.message.content : []) {
-      if (block.type === 'text' && block.text) {
-        events.push({ type: 'text_delta', turnId: session.currentTurnId, text: block.text })
-      } else if (block.type === 'tool_use') {
-        events.push({
-          type: 'tool_call',
-          turnId: session.currentTurnId,
-          toolCallId: block.id || '',
-          tool: block.name || '',
-          input: typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {}),
-        })
-      }
-    }
-    if (events.length > 0) return events
-  }
-
-  // Any other JSON → status
-  events.push({
-    type: 'status',
-    turnId: session.currentTurnId,
-    text: rawLine,
-  })
-  return events
-}
+// ACP event normalization now lives in acp-events.mjs.
 
 // ── Forced terminal state (P0.2) ──
 
@@ -1239,54 +526,7 @@ function parseClaudeApiLine(parsed, session, rawLine) {
  * Called when the child process exits, times out, or fails to spawn.
  */
 export function synthesizeTerminalEvent(session, reason) {
-  if (session.terminalEmitted) return null
-
-  session.terminalEmitted = true
-  const turnId = session.currentTurnId
-
-  switch (reason.type) {
-    case 'timeout':
-      return {
-        type: 'error',
-        turnId,
-        code: 'timeout',
-        message: `Session timed out after ${reason.timeoutMs || 0}ms`,
-      }
-
-    case 'spawn_failed':
-      return {
-        type: 'error',
-        turnId,
-        code: 'spawn_failed',
-        message: reason.message || 'Failed to spawn agent process',
-      }
-
-    case 'process_exit': {
-      const exitCode = reason.exitCode
-      if (exitCode === 0) {
-        return {
-          type: 'done',
-          turnId,
-          stopReason: 'process_exit',
-        }
-      }
-      return {
-        type: 'error',
-        turnId,
-        code: 'process_exit',
-        exitCode,
-        message: `Agent process exited with code ${exitCode}`,
-      }
-    }
-
-    default:
-      return {
-        type: 'error',
-        turnId,
-        code: 'unknown',
-        message: reason.message || 'Unknown terminal reason',
-      }
-  }
+  return synthesizeTerminalEventFromEvents(session, reason)
 }
 
 // ── Actor queue (serialization) ──
@@ -1693,8 +933,15 @@ export function enqueuePrompt(sessionId, opts = {}) {
   const session = acpSessions.get(sessionId)
   if (!session) throw new Error(`ACP session not found: ${sessionId}`)
 
-  const restartableTerminalStates = new Set(['done', 'error', 'timeout', 'cancelled'])
+  const restartableTerminalStates = new Set(['done'])
+  const blockedTerminalStates = new Set(['error', 'timeout', 'cancelled'])
   const previousState = session.state
+  if (blockedTerminalStates.has(session.state)) {
+    throw new Error(
+      `ACP session "${sessionId}" is in terminal state "${session.state}". ` +
+      'Create a new session or reset explicitly before sending another prompt.',
+    )
+  }
   if (restartableTerminalStates.has(session.state)) {
     // Re-open the same session envelope for a follow-up turn.
     // This keeps sessionId stable for long-lived assistant workflows.
