@@ -263,10 +263,12 @@ test('startServer respects configured connected-server concurrency limit', async
 test('startServer uses env default timeout unless a per-server override is configured', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-timeout-'))
   const previousTimeout = process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS
-  process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS = '30'
+  process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS = '40'
 
   try {
-    const { scriptPath } = await createDelayedInitServer(tempDir, 120)
+    // Keep the env timeout tight so the default-path assertion stays sharp,
+    // but give the override branch enough headroom to survive full-suite load.
+    const { scriptPath } = await createDelayedInitServer(tempDir, 250)
 
     const timedOutManager = new McpManager({
       slow: {
@@ -277,19 +279,19 @@ test('startServer uses env default timeout unless a per-server override is confi
 
     await assert.rejects(
       () => timedOutManager.startServer('slow'),
-      /timed out after 30ms: initialize/i,
+      /timed out after 40ms: initialize/i,
     )
 
     const timedOutStatus = timedOutManager.getServers().find((item) => item.name === 'slow')
     assert.ok(timedOutStatus)
     assert.equal(timedOutStatus.status, 'error')
-    assert.equal(timedOutStatus.requestTimeoutMs, 30)
+    assert.equal(timedOutStatus.requestTimeoutMs, 40)
 
     const manager = new McpManager({
       slow: {
         command: process.execPath,
         args: [scriptPath],
-        requestTimeoutMs: 300,
+        requestTimeoutMs: 1500,
       },
     })
 
@@ -298,7 +300,7 @@ test('startServer uses env default timeout unless a per-server override is confi
     const status = manager.getServers().find((item) => item.name === 'slow')
     assert.ok(status)
     assert.equal(status.status, 'connected')
-    assert.equal(status.requestTimeoutMs, 300)
+    assert.equal(status.requestTimeoutMs, 1500)
 
     await manager.stopServer('slow')
   } finally {

@@ -42,8 +42,45 @@ jobs:
             fi
           fi
 
-  build-macos-pkg:
+  test-node:
     needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run companion Node test suite
+        run: npm test
+
+  test-tray:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tray Rust test suite
+        run: cargo test --manifest-path tray/Cargo.toml --locked
+
+  build-macos-pkg:
+    needs:
+      - check-version
+      - test-node
+      - test-tray
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: macos-latest
     steps:
@@ -68,7 +105,10 @@ jobs:
           path: dist/installers/trapezohe-companion-macos.pkg
 
   build-windows-msi:
-    needs: check-version
+    needs:
+      - check-version
+      - test-node
+      - test-tray
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
