@@ -3916,7 +3916,7 @@ dependencies = [
 
 [[package]]
 name = "trapezohe-companion-tray"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "dirs",

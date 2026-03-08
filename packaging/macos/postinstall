@@ -236,7 +236,7 @@ EOS
 
 sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${TMP_SCRIPT}"
 sed -i '' "s/__NODE_VERSION__/${NODE_VERSION}/g" "${TMP_SCRIPT}"
-chmod +x "${TMP_SCRIPT}"
+chmod 755 "${TMP_SCRIPT}"
 
 if ! su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then
   RC="$?"
