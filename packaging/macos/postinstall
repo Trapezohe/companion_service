@@ -217,6 +217,42 @@ MANIFEST
   log "Registered native messaging host for extension ${ext_id}"
 }
 
+deploy_companion_service() {
+  if ! ensure_node; then
+    log "Node.js not available; skipping companion service deployment"
+    return 0
+  fi
+
+  local installer_dir="/usr/local/lib/trapezohe-companion-installer"
+  local src_cli="${installer_dir}/cli.mjs"
+  local src_service_dir="${installer_dir}/src"
+
+  if [[ ! -f "${src_cli}" ]]; then
+    log "Bundled CLI not found at ${src_cli}; skipping service deployment"
+    return 0
+  fi
+
+  local service_dir="${TRAPEZOHE_DIR}/service"
+  mkdir -p "${service_dir}/bin" "${service_dir}/src"
+  cp "${src_cli}" "${service_dir}/bin/cli.mjs"
+  chmod 755 "${service_dir}/bin/cli.mjs"
+  if [[ -d "${src_service_dir}" ]]; then
+    cp "${src_service_dir}"/*.mjs "${service_dir}/src/"
+  fi
+
+  local node_bin
+  node_bin="$(command -v node)"
+  local wrapper="${LOCAL_NODE_DIR}/bin/trapezohe-companion"
+  mkdir -p "$(dirname "${wrapper}")"
+  cat > "${wrapper}" <<WRAPPER
+#!/bin/sh
+exec "${node_bin}" "${service_dir}/bin/cli.mjs" "\$@"
+WRAPPER
+  chmod 755 "${wrapper}"
+
+  log "Deployed companion service to ${service_dir}, wrapper at ${wrapper}"
+}
+
 launch_tray_once() {
   if [[ ! -x "${TRAY_BIN_PATH}" ]]; then
     log "Tray executable not found at ${TRAY_BIN_PATH}; skipping first launch"
@@ -228,6 +264,7 @@ launch_tray_once() {
 
 ensure_companion_config
 register_native_host || true
+deploy_companion_service || true
 write_startup_policy
 remove_legacy_daemon_login_item
 register_tray_login_item
