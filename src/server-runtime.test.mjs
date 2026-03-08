@@ -418,7 +418,7 @@ test('runtime session send-keys endpoint can interrupt running process', async (
   assert.equal(sendKeys.status, 200)
   assert.equal(sendKeys.payload.ok, true)
 
-  await waitForSessionExit(ctx, sessionId)
+  await waitForSessionExit(ctx, sessionId, 10_000)
 })
 
 test('runtime session-events endpoint returns exited events with cursor paging', async (t) => {
