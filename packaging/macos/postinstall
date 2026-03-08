@@ -236,6 +236,9 @@ deploy_companion_service() {
   mkdir -p "${service_dir}/bin" "${service_dir}/src"
   cp "${src_cli}" "${service_dir}/bin/cli.mjs"
   chmod 755 "${service_dir}/bin/cli.mjs"
+  if [[ -f "${installer_dir}/package.json" ]]; then
+    cp "${installer_dir}/package.json" "${service_dir}/package.json"
+  fi
   if [[ -d "${src_service_dir}" ]]; then
     cp "${src_service_dir}"/*.mjs "${service_dir}/src/"
   fi
