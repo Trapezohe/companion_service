@@ -9,7 +9,7 @@ header=$(dd bs=4 count=1 2>/dev/null | xxd -p)
 echo "[$(date)] header=$header" >> /tmp/native-host-test.log
 
 # Build response
-RESP='{"url":"http://127.0.0.1:41591","token":"test","version":"0.1.0-debug"}'
+RESP='{"url":"http://127.0.0.1:41591","token":"test","version":"0.1.1-debug"}'
 LEN=${#RESP}
 
 # Write 4-byte little-endian length + JSON body

@@ -161,7 +161,7 @@ mod tests {
     fn returns_expected_tooltip_for_healthy_state() {
         let snapshot = StatusViewModel {
             state: CompanionShellState::Healthy {
-                version: "0.1.0".into(),
+                version: "0.1.1".into(),
                 protocol_version: None,
                 pid: 123,
                 mcp_servers: 2,
@@ -171,7 +171,7 @@ mod tests {
             ..StatusViewModel::default()
         };
         assert!(tooltip_for_state(&snapshot).contains("Healthy"));
-        assert!(tooltip_for_state(&snapshot).contains("0.1.0"));
+        assert!(tooltip_for_state(&snapshot).contains("0.1.1"));
     }
 
     #[test]
