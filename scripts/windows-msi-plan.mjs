@@ -76,7 +76,7 @@ function renderWix3Source({ productVersion, installerSourceDir }) {
   <Product Id="*" Name="${PRODUCT_NAME}" Language="1033" Version="${escapeXmlAttr(productVersion)}" Manufacturer="${MANUFACTURER}" UpgradeCode="${UPGRADE_CODE}">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
     <MajorUpgrade DowngradeErrorMessage="A newer ${PRODUCT_NAME} is already installed." />
-    <MediaTemplate />
+    <MediaTemplate EmbedCab="yes" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFilesFolder">
         <Directory Id="INSTALLFOLDER" Name="${INSTALL_FOLDER_NAME}">

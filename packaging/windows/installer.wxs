@@ -8,7 +8,7 @@
     UpgradeCode="{4AF4D4EF-2C1D-4FB9-99EB-387DABEE6D20}">
 
     <MajorUpgrade DowngradeErrorMessage="A newer Trapezohe Companion Installer is already installed." />
-    <MediaTemplate />
+    <MediaTemplate EmbedCab="yes" />
 
     <StandardDirectory Id="ProgramFilesFolder">
       <Directory Id="INSTALLFOLDER" Name="TrapezoheCompanion" />

@@ -1,6 +1,6 @@
 {
   "name": "trapezohe-companion",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Local companion daemon for Trapezohe AI — MCP server host & command runtime",
   "type": "module",
   "bin": {
