@@ -2,14 +2,50 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { rmSync } from 'node:fs'
+import { mkdir, mkdtemp, unlink } from 'node:fs/promises'
+
+let sharedModulesPromise = null
+
+async function getSharedModules() {
+  if (!sharedModulesPromise) {
+    sharedModulesPromise = (async () => {
+      const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-cron-scheduler-test-'))
+      process.once('exit', () => {
+        rmSync(tempHome, { recursive: true, force: true })
+      })
+
+      process.env.HOME = tempHome
+      process.env.USERPROFILE = tempHome
+
+      const configMod = await import('./config.mjs')
+      const configDir = configMod.getConfigDir()
+      const cronStore = await import('./cron-store.mjs')
+      const runStore = await import('./run-store.mjs')
+      const cacheBust = `${Date.now()}-${Math.random()}`
+      const cronScheduler = await import(`./cron-scheduler.mjs?bust=${cacheBust}`)
+
+      return {
+        tempHome,
+        configDir,
+        cronStore,
+        runStore,
+        cronScheduler,
+      }
+    })()
+  }
+
+  return sharedModulesPromise
+}
 
 async function withTempHome(run) {
-  const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-cron-scheduler-test-'))
-  const prevHome = process.env.HOME
-  const prevUserProfile = process.env.USERPROFILE
-  process.env.HOME = tempHome
-  process.env.USERPROFILE = tempHome
+  const {
+    tempHome,
+    configDir,
+    cronStore,
+    runStore,
+    cronScheduler,
+  } = await getSharedModules()
 
   const originalSetTimeout = globalThis.setTimeout
   const originalClearTimeout = globalThis.clearTimeout
@@ -31,19 +67,25 @@ async function withTempHome(run) {
   })
 
   try {
-    const cronStore = await import('./cron-store.mjs')
+    await mkdir(configDir, { recursive: true })
+    await Promise.all([
+      unlink(path.join(configDir, 'cron-jobs.json')).catch(() => undefined),
+      unlink(path.join(configDir, 'cron-jobs.json.bak')).catch(() => undefined),
+      unlink(path.join(configDir, 'cron-jobs.json.tmp')).catch(() => undefined),
+      unlink(path.join(configDir, 'runs.json')).catch(() => undefined),
+      unlink(path.join(configDir, 'runs.json.bak')).catch(() => undefined),
+      unlink(path.join(configDir, 'runs.json.tmp')).catch(() => undefined),
+    ])
+
     await cronStore.loadCronStore()
-    const cacheBust = `${Date.now()}-${Math.random()}`
-    const cronScheduler = await import(`./cron-scheduler.mjs?bust=${cacheBust}`)
-    await run({ tempHome, cronStore, cronScheduler, scheduled, cleared })
+    await cronStore.clearCronStoreForTests()
+    await runStore.clearRunStoreForTests()
+    cronScheduler.stopCronScheduler()
+    await run({ tempHome, cronStore, cronScheduler, runStore, scheduled, cleared })
   } finally {
     globalThis.setTimeout = originalSetTimeout
     globalThis.clearTimeout = originalClearTimeout
-    if (prevHome === undefined) delete process.env.HOME
-    else process.env.HOME = prevHome
-    if (prevUserProfile === undefined) delete process.env.USERPROFILE
-    else process.env.USERPROFILE = prevUserProfile
-    await rm(tempHome, { recursive: true, force: true })
+    cronScheduler.stopCronScheduler()
   }
 }
 
@@ -89,6 +131,43 @@ test('rescheduleJob clears existing timer before scheduling a new one', async ()
     assert.equal(cleared.length >= 1, true)
     assert.equal(scheduled.length, 2)
     assert.equal(scheduled[1].delay, 2 * 60_000)
+
+    cronScheduler.stopCronScheduler()
+  })
+})
+
+test('timer firings retain occurrence-level pendingIds and record them in cron runs', async () => {
+  await withTempHome(async ({ cronStore, cronScheduler, runStore, scheduled }) => {
+    await cronStore.upsertJob({
+      id: 'job-occurrence',
+      name: 'Occurrence Job',
+      enabled: true,
+      schedule: { kind: 'interval', minutes: 1 },
+    })
+
+    cronScheduler.startCronScheduler()
+    assert.equal(scheduled.length, 1)
+
+    const firstCronTimer = scheduled[0]
+    await firstCronTimer.fn()
+
+    const secondCronTimer = scheduled
+      .filter((timer) => timer.delay === 60_000)
+      .at(-1)
+    assert.ok(secondCronTimer)
+    await secondCronTimer.fn()
+
+    const pending = cronStore.getPendingRuns()
+    assert.equal(pending.length, 2)
+    assert.deepEqual(pending.map((item) => item.taskId), ['job-occurrence', 'job-occurrence'])
+    assert.equal(new Set(pending.map((item) => item.pendingId)).size, 2)
+
+    const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
+    assert.equal(runs.runs.length, 2)
+    assert.deepEqual(
+      runs.runs.map((run) => run.meta?.pendingId).sort(),
+      pending.map((item) => item.pendingId).sort(),
+    )
 
     cronScheduler.stopCronScheduler()
   })

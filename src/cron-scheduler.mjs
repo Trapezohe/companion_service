@@ -80,12 +80,17 @@ function scheduleJob(job) {
     }).catch(() => null)
 
     try {
-      await addPendingRun(job.id)
+      const pending = await addPendingRun(job.id)
       if (run?.runId) {
         await updateRun(run.runId, {
           state: 'done',
           finishedAt: Date.now(),
           summary: `Marked pending for extension catch-up: ${job.name}`,
+          meta: {
+            ...(run.meta && typeof run.meta === 'object' ? run.meta : {}),
+            pendingId: pending.pendingId,
+            missedAt: pending.missedAt,
+          },
         }).catch(() => undefined)
       }
     } catch (err) {

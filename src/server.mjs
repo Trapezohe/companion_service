@@ -1385,9 +1385,8 @@ export function createCompanionServer({
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       try {
         const body = await readJsonBody(req)
-        const taskIds = Array.isArray(body.taskIds) ? body.taskIds : []
-        await ackPendingRuns(taskIds)
-        return sendJson(res, 200, { ok: true, acked: taskIds.length })
+        const acked = await ackPendingRuns(body)
+        return sendJson(res, 200, { ok: true, acked })
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }

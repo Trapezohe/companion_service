@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createCompanionServer } from './server.mjs'
+import { addPendingRun, clearCronStoreForTests } from './cron-store.mjs'
 import { cleanupAllSessions } from './runtime.mjs'
 import { clearRunStoreForTests, listRuns } from './run-store.mjs'
 import {
@@ -29,6 +30,7 @@ async function startTestServer(options = {}) {
   if (!options.preserveStores) {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
+    await clearCronStoreForTests()
   }
   const token = 'test-token'
   const mcpManager = options.mcpManager || createMcpManagerStub()
@@ -173,6 +175,68 @@ test('repair endpoint returns updated self-check payload for supported repair ac
   assert.equal(repaired.payload.action, 'repair_config')
   assert.equal(typeof repaired.payload.selfCheck?.ok, 'boolean')
   assert.ok(Array.isArray(repaired.payload.selfCheck?.repairActions))
+})
+
+test('cron pending endpoints expose occurrence pendingIds and ack them independently', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const first = await addPendingRun('task-occurrence')
+  const second = await addPendingRun('task-occurrence')
+  const third = await addPendingRun('task-other')
+
+  const listed = await requestJson(ctx, '/api/cron/pending')
+  assert.equal(listed.status, 200)
+  assert.equal(listed.payload.pending.length, 3)
+  assert.equal(
+    listed.payload.pending.every((item) => typeof item.pendingId === 'string' && item.pendingId.length > 0),
+    true,
+  )
+
+  const acked = await requestJson(ctx, '/api/cron/pending/ack', {
+    method: 'POST',
+    body: { pendingIds: [first.pendingId, third.pendingId] },
+  })
+  assert.equal(acked.status, 200)
+  assert.equal(acked.payload.ok, true)
+  assert.equal(acked.payload.acked, 2)
+
+  const remaining = await requestJson(ctx, '/api/cron/pending')
+  assert.equal(remaining.status, 200)
+  assert.deepEqual(
+    remaining.payload.pending.map((item) => item.pendingId),
+    [second.pendingId],
+  )
+})
+
+test('cron pending ack remains backward compatible with taskIds', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  await addPendingRun('task-legacy')
+  await addPendingRun('task-legacy')
+  const other = await addPendingRun('task-still-pending')
+
+  const acked = await requestJson(ctx, '/api/cron/pending/ack', {
+    method: 'POST',
+    body: { taskIds: ['task-legacy'] },
+  })
+  assert.equal(acked.status, 200)
+  assert.equal(acked.payload.ok, true)
+  assert.equal(acked.payload.acked, 2)
+
+  const remaining = await requestJson(ctx, '/api/cron/pending')
+  assert.equal(remaining.status, 200)
+  assert.deepEqual(
+    remaining.payload.pending.map((item) => item.pendingId),
+    [other.pendingId],
+  )
 })
 
 async function waitForSessionExit(ctx, sessionId, timeoutMs = 5000) {
