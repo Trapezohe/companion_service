@@ -43,3 +43,11 @@ test('public docs and release copy describe tray as bundled installer UX, not op
   assert.doesNotMatch(releaseWorkflow, /tray shell bundle is optional/i)
   assert.match(releaseWorkflow, /desktop tray panel is installed together/i)
 })
+
+test('tray shell exposes the global Tauri bridge required by the static panel UI', () => {
+  const trayConfig = JSON.parse(read('tray/tauri.conf.json'))
+  const trayHtml = read('tray/ui/index.html')
+
+  assert.match(trayHtml, /window\.__TAURI__/)
+  assert.equal(trayConfig.app?.withGlobalTauri, true)
+})

@@ -243,7 +243,7 @@ mod tests {
         let model = map_health_payload(HealthPayload {
             ok: true,
             pid: 123,
-            version: "0.1.1".into(),
+            version: "0.1.2".into(),
             protocol_version: Some("trapezohe-companion/2026-03-07".into()),
             mcp_servers: 2,
             mcp_tools: 5,

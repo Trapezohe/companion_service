@@ -22,7 +22,7 @@ test('host macOS uses wixl build plan', () => {
 test('wix4 source keeps WiX 4 authoring with bind variables', () => {
   const wxs = renderWindowsMsiSource({
     schemaVersion: 'wix4',
-    productVersion: '0.1.1',
+    productVersion: '0.1.2',
     installerSourceDir: 'C:\\temp\\source',
   })
   assert.match(wxs, /http:\/\/wixtoolset\.org\/schemas\/v4\/wxs/)
@@ -34,7 +34,7 @@ test('wix4 source keeps WiX 4 authoring with bind variables', () => {
 test('wix3 source renders absolute posix file paths for wixl', () => {
   const wxs = renderWindowsMsiSource({
     schemaVersion: 'wix3',
-    productVersion: '0.1.1',
+    productVersion: '0.1.2',
     installerSourceDir: 'C:\\temp\\stage\\source',
   })
   assert.match(wxs, /http:\/\/schemas\.microsoft\.com\/wix\/2006\/wi/)

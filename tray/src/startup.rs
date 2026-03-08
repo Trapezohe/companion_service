@@ -143,7 +143,7 @@ mod tests {
             Some(&startup_policy_enabled()),
             true,
             &snapshot(CompanionShellState::Healthy {
-                version: "0.1.1".into(),
+                version: "0.1.2".into(),
                 protocol_version: None,
                 pid: 123,
                 mcp_servers: 2,

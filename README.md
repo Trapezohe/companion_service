@@ -201,7 +201,7 @@ All endpoints require `Authorization: Bearer <token>` header and only accept con
 
 ```
 GET /healthz
-→ { "ok": true, "pid": 12345, "version": "0.1.1", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
+→ { "ok": true, "pid": 12345, "version": "0.1.2", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
 ```
 
 ### Diagnostics / Repair
@@ -280,7 +280,7 @@ Find more at [MCP Servers Directory](https://github.com/modelcontextprotocol/ser
 ## Requirements
 
 - Node.js 18+
-- Trapezohe Chrome Extension v0.1.1+
+- Trapezohe Chrome Extension v0.1.2+
 
 ## License
 

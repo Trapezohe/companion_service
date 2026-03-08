@@ -377,7 +377,7 @@ mod tests {
     fn sample_health() -> HealthSnapshot {
         HealthSnapshot {
             pid: 4242,
-            version: "0.1.1".into(),
+            version: "0.1.2".into(),
             protocol_version: Some("trapezohe-companion/2026-03-07".into()),
             mcp_servers: 2,
             mcp_tools: 9,
