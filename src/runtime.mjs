@@ -126,6 +126,36 @@ function shellCommandForPlatform(command) {
   return { bin: shell, args: ['-lc', command] }
 }
 
+function shouldUseDetachedShellGroup() {
+  return process.platform !== 'win32'
+}
+
+function spawnShellProcess(shell, options) {
+  return spawn(shell.bin, shell.args, {
+    ...options,
+    ...(shouldUseDetachedShellGroup() ? { detached: true } : {}),
+  })
+}
+
+export function signalChildProcessTree(child, signal) {
+  if (!child) return false
+
+  const pid = Number(child.pid)
+  if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(-pid, signal)
+      return true
+    } catch {
+      // Fall back to the direct child signal when process-group signaling is unavailable.
+    }
+  }
+
+  if (typeof child.kill === 'function') {
+    return child.kill(signal)
+  }
+  return false
+}
+
 export async function resolveCwd(inputCwd, permissionPolicy) {
   const policy = normalizePermissionPolicy(permissionPolicy)
   let cwd
@@ -280,7 +310,7 @@ export async function runCommand({ command, cwd, timeoutMs, env }) {
     : process.env
 
   return new Promise((resolve) => {
-    const child = spawn(shell.bin, shell.args, {
+    const child = spawnShellProcess(shell, {
       cwd,
       env: mergedEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -300,9 +330,9 @@ export async function runCommand({ command, cwd, timeoutMs, env }) {
 
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGTERM')
+      signalChildProcessTree(child, 'SIGTERM')
       setTimeout(() => {
-        if (!child.killed) child.kill('SIGKILL')
+        if (!child.killed) signalChildProcessTree(child, 'SIGKILL')
       }, 3000)
     }, timeoutMs)
 
@@ -463,7 +493,7 @@ export function startCommandSession({ id, command, cwd, timeoutMs, env }) {
   const mergedEnv = env && typeof env === 'object' && Object.keys(env).length > 0
     ? { ...process.env, ...env }
     : process.env
-  const child = spawn(shell.bin, shell.args, {
+  const child = spawnShellProcess(shell, {
     cwd,
     env: mergedEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -496,9 +526,9 @@ export function startCommandSession({ id, command, cwd, timeoutMs, env }) {
   session.timeoutRef = setTimeout(() => {
     if (session.status !== 'running') return
     session.timedOut = true
-    child.kill('SIGTERM')
+    signalChildProcessTree(child, 'SIGTERM')
     setTimeout(() => {
-      if (session.status === 'running') child.kill('SIGKILL')
+      if (session.status === 'running') signalChildProcessTree(child, 'SIGKILL')
     }, 3000)
   }, timeoutMs)
 
@@ -548,7 +578,7 @@ export function pruneSessions() {
     sessions.delete(target.id)
     if (target.status === 'running') {
       if (target.timeoutRef) clearTimeout(target.timeoutRef)
-      try { target.child.kill('SIGTERM') } catch { /* ignore */ }
+      try { signalChildProcessTree(target.child, 'SIGTERM') } catch { /* ignore */ }
     }
   }
 }
@@ -574,11 +604,11 @@ export function stopSession(sessionId, force = false) {
 
   if (session.status === 'running') {
     try {
-      session.child.kill(force ? 'SIGKILL' : 'SIGTERM')
+      signalChildProcessTree(session.child, force ? 'SIGKILL' : 'SIGTERM')
       if (!force) {
         setTimeout(() => {
           if (session.status === 'running') {
-            try { session.child.kill('SIGKILL') } catch { /* ignore */ }
+            try { signalChildProcessTree(session.child, 'SIGKILL') } catch { /* ignore */ }
           }
         }, 3000)
       }
@@ -618,10 +648,10 @@ export function sendKeysToSession(sessionId, keys) {
   const normalized = String(keys || '').trim().toLowerCase()
   switch (normalized) {
     case 'ctrl-c':
-      session.child.kill('SIGINT')
+      signalChildProcessTree(session.child, 'SIGINT')
       return { ok: true, action: 'signal', key: normalized }
     case 'ctrl-z':
-      session.child.kill('SIGTSTP')
+      signalChildProcessTree(session.child, 'SIGTSTP')
       return { ok: true, action: 'signal', key: normalized }
     case 'ctrl-d':
       if (!session.child?.stdin || session.child.stdin.destroyed || session.child.stdin.writableEnded) {
@@ -673,7 +703,7 @@ export function listSessionEvents(options = {}) {
 export function cleanupAllSessions() {
   for (const [, session] of sessions) {
     if (session.status === 'running') {
-      try { session.child.kill('SIGTERM') } catch { /* ignore */ }
+      try { signalChildProcessTree(session.child, 'SIGTERM') } catch { /* ignore */ }
     }
   }
   sessions.clear()

@@ -26,6 +26,16 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function interruptibleLongRunningCommand() {
+  const nodeScript = "process.on('SIGINT', () => process.exit(130)); setInterval(() => {}, 1000)"
+  if (process.platform === 'win32') {
+    return `node -e "${nodeScript}"`
+  }
+  // Force the shell wrapper to ignore SIGINT so the endpoint must signal
+  // the whole session tree instead of only the shell process.
+  return `trap "" INT; node -e "${nodeScript}"`
+}
+
 async function startTestServer(options = {}) {
   if (!options.preserveStores) {
     await clearRunStoreForTests()
@@ -393,7 +403,7 @@ test('runtime session send-keys endpoint can interrupt running process', async (
   const started = await requestJson(ctx, '/api/runtime/session/start', {
     method: 'POST',
     body: {
-      command: 'node -e "setInterval(() => {}, 1000)"',
+      command: interruptibleLongRunningCommand(),
       timeoutMs: 15_000,
     },
   })

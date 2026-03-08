@@ -6,6 +6,7 @@ import {
   getSessionById,
   listSessions,
   getSessionLog,
+  signalChildProcessTree,
   writeToSession,
   sendKeysToSession,
   listSessionEvents,
@@ -14,6 +15,16 @@ import {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function interruptibleLongRunningCommand() {
+  const nodeScript = "process.on('SIGINT', () => process.exit(130)); setInterval(() => {}, 1000)"
+  if (process.platform === 'win32') {
+    return `node -e "${nodeScript}"`
+  }
+  // Make the shell ignore SIGINT so tests only pass when the runtime
+  // forwards ctrl-c to the whole spawned session tree, not just the shell.
+  return `trap "" INT; node -e "${nodeScript}"`
 }
 
 async function waitForSessionExit(sessionId, timeoutMs = 5000) {
@@ -136,7 +147,7 @@ test('sendKeysToSession ctrl-c exits running process', async (t) => {
   const sessionId = `runtime-test-keys-${Date.now()}`
   startCommandSession({
     id: sessionId,
-    command: 'node -e "setInterval(() => {}, 1000)"',
+    command: interruptibleLongRunningCommand(),
     cwd: process.cwd(),
     timeoutMs: 20_000,
   })
@@ -146,6 +157,31 @@ test('sendKeysToSession ctrl-c exits running process', async (t) => {
 
   const exited = await waitForSessionExit(sessionId)
   assert.equal(exited.status, 'exited')
+})
+
+test('signalChildProcessTree targets the detached process group on POSIX', () => {
+  if (process.platform === 'win32') return
+
+  const originalKill = process.kill
+  const calls = []
+  process.kill = ((pid, signal) => {
+    calls.push({ pid, signal })
+    return true
+  })
+
+  try {
+    const child = {
+      pid: 43210,
+      kill() {
+        throw new Error('fallback kill should not be used when process group signaling works')
+      },
+    }
+    const ok = signalChildProcessTree(child, 'SIGINT')
+    assert.equal(ok, true)
+    assert.deepEqual(calls, [{ pid: -43210, signal: 'SIGINT' }])
+  } finally {
+    process.kill = originalKill
+  }
 })
 
 test('listSessionEvents returns session_exited event with cursor', async (t) => {
