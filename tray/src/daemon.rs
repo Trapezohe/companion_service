@@ -331,12 +331,10 @@ mod tests {
     #[test]
     fn falls_back_to_local_node_global_binary_when_present() {
         let temp = tempdir().expect("temp dir");
-        let candidate = temp
-            .path()
-            .join(".trapezohe")
-            .join("node")
-            .join("bin")
-            .join("trapezohe-companion");
+        let candidate = installed_cli_candidates(temp.path())
+            .into_iter()
+            .next()
+            .expect("at least one candidate");
         std::fs::create_dir_all(candidate.parent().expect("bin dir")).expect("create bin dir");
         std::fs::write(&candidate, "#!/bin/sh\n").expect("write candidate");
 

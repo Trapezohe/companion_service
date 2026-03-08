@@ -537,6 +537,10 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn normalize_test_path(path: &str) -> String {
+        path.replace('\\', "/")
+    }
+
     #[test]
     fn migrates_legacy_tray_preferences_to_unified_startup_policy() {
         let temp = tempdir().expect("temp dir");
@@ -571,15 +575,13 @@ mod tests {
         let macos_targets = legacy_cleanup_targets_for_platform("darwin", "/Users/test");
         assert_eq!(macos_targets.len(), 1);
         assert_eq!(macos_targets[0].strategy, "launchd");
-        assert!(macos_targets[0]
-            .target
+        assert!(normalize_test_path(&macos_targets[0].target)
             .ends_with("Library/LaunchAgents/ai.trapezohe.companion.plist"));
 
         let linux_targets = legacy_cleanup_targets_for_platform("linux", "/home/test");
         assert_eq!(linux_targets.len(), 1);
         assert_eq!(linux_targets[0].strategy, "systemd-user");
-        assert!(linux_targets[0]
-            .target
+        assert!(normalize_test_path(&linux_targets[0].target)
             .ends_with(".config/systemd/user/trapezohe-companion.service"));
 
         let windows_targets = legacy_cleanup_targets_for_platform("windows", "C:/Users/test");
@@ -612,8 +614,7 @@ mod tests {
             "/Applications/Trapezohe Companion.app/Contents/MacOS/trapezohe-companion-tray",
             "/Users/test",
         );
-        assert!(target
-            .target
+        assert!(normalize_test_path(&target.target)
             .ends_with("Library/LaunchAgents/ai.trapezohe.companion.tray.plist"));
         assert!(target.contents.contains("trapezohe-companion-tray"));
     }
@@ -625,8 +626,7 @@ mod tests {
             "/opt/trapezohe-companion/trapezohe-companion-tray",
             "/home/test",
         );
-        assert!(target
-            .target
+        assert!(normalize_test_path(&target.target)
             .ends_with(".config/autostart/trapezohe-companion-tray.desktop"));
         assert!(target.contents.contains("X-GNOME-Autostart-enabled=true"));
     }

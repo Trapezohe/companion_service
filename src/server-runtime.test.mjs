@@ -149,10 +149,13 @@ test('diagnostics and self-check endpoints return structured companion health de
 
   const selfCheck = await requestJson(ctx, '/api/system/self-check')
   assert.equal(selfCheck.status, 200)
-  assert.equal(selfCheck.payload.ok, true)
+  // This endpoint test validates shape, not host-specific health state.
+  // A clean CI runner may have no native host/config pre-registered yet.
+  assert.equal(typeof selfCheck.payload.ok, 'boolean')
   assert.equal(typeof selfCheck.payload.checks.configReadable.ok, 'boolean')
   assert.equal(typeof selfCheck.payload.checks.tokenPresent.ok, 'boolean')
   assert.equal(typeof selfCheck.payload.checks.workspacePolicy.ok, 'boolean')
+  assert.equal(typeof selfCheck.payload.checks.nativeHostRegistration.ok, 'boolean')
   assert.ok(Array.isArray(selfCheck.payload.checks.mcpExecutables))
 })
 
