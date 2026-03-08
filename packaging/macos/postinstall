@@ -132,23 +132,89 @@ PLIST
   log "Registered tray login item via ${TRAY_AGENT_PATH}"
 }
 
-bootstrap_companion() {
+ensure_companion_config() {
+  local config_file="${TRAPEZOHE_DIR}/companion.json"
+  if [[ -f "${config_file}" ]]; then
+    log "Config already exists: ${config_file}"
+    return 0
+  fi
+
+  mkdir -p "${TRAPEZOHE_DIR}"
+  local token
+  token="$(openssl rand -hex 24)"
+  cat > "${config_file}" <<JSON
+{
+  "port": 41591,
+  "token": "${token}",
+  "mcpServers": {},
+  "permissionPolicy": {
+    "mode": "workspace",
+    "workspaceRoots": ["$HOME/trapezohe-workspace"]
+  }
+}
+JSON
+  chmod 600 "${config_file}"
+  mkdir -p "$HOME/trapezohe-workspace"
+  log "Created config with auto-generated token: ${config_file}"
+}
+
+register_native_host() {
   if ! ensure_node; then
-    return 1
+    log "Node.js not available; skipping native host registration"
+    return 0
   fi
 
-  if ! npm install -g "trapezohe-companion@__COMPANION_VERSION__"; then
-    log "npm install failed; Companion bootstrap skipped"
-    return 1
+  local node_bin
+  node_bin="$(command -v node)"
+  local src_script="/usr/local/lib/trapezohe-companion-installer/native-host.mjs"
+
+  # If the bundled script isn't available, skip
+  if [[ ! -f "${src_script}" ]]; then
+    log "Native host script not found at ${src_script}; skipping"
+    return 0
   fi
 
-  if ! trapezohe-companion bootstrap --mode workspace --workspace "$HOME/trapezohe-workspace"; then
-    log "Companion bootstrap command failed; tray will still be available"
-    return 1
-  fi
+  # Deploy native-host.mjs + launcher
+  local deployed_script="${TRAPEZOHE_DIR}/native-host.mjs"
+  cp "${src_script}" "${deployed_script}"
+  chmod 755 "${deployed_script}"
 
-  log "Companion bootstrap finished successfully"
-  return 0
+  local launcher="${TRAPEZOHE_DIR}/native-host-launcher.sh"
+  cat > "${launcher}" <<LAUNCHER
+#!/bin/sh
+exec "${node_bin}" "${deployed_script}" "\$@"
+LAUNCHER
+  chmod 755 "${launcher}"
+
+  # Write Chrome NativeMessagingHosts manifests
+  local ext_id="olngglipkifpkolknipcbdcifbkcfhkk"
+  local origin="chrome-extension://${ext_id}/"
+  local host_names=("com.ghast.companion" "com.trapezohe.companion")
+  local browser_dirs=(
+    "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+    "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+    "$HOME/Library/Application Support/Chromium/NativeMessagingHosts"
+    "$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
+  )
+
+  for host_name in "${host_names[@]}"; do
+    for dir in "${browser_dirs[@]}"; do
+      mkdir -p "${dir}"
+      cat > "${dir}/${host_name}.json" <<MANIFEST
+{
+  "name": "${host_name}",
+  "description": "Ghast Companion — local runtime bridge for the Ghast browser extension",
+  "path": "${launcher}",
+  "type": "stdio",
+  "allowed_origins": [
+    "${origin}"
+  ]
+}
+MANIFEST
+    done
+  done
+
+  log "Registered native messaging host for extension ${ext_id}"
 }
 
 launch_tray_once() {
@@ -160,10 +226,11 @@ launch_tray_once() {
   log "Launched tray panel once for current user"
 }
 
+ensure_companion_config
+register_native_host || true
 write_startup_policy
 remove_legacy_daemon_login_item
 register_tray_login_item
-bootstrap_companion || true
 launch_tray_once
 EOS
 

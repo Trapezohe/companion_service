@@ -109,6 +109,17 @@ pub struct StartupContextView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateInfo {
+    pub available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub release_url: String,
+    pub download_url: Option<String>,
+    pub release_notes: Option<String>,
+    pub checked_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StatusActions {
     pub can_start: bool,
     pub can_stop: bool,
@@ -170,6 +181,7 @@ pub struct StatusViewModel {
     pub self_check: Option<SelfCheckSnapshot>,
     pub autostart: Option<AutoStartStatus>,
     pub startup: Option<StartupContextView>,
+    pub update: Option<UpdateInfo>,
     pub actions: StatusActions,
 }
 
@@ -206,6 +218,7 @@ impl StatusViewModel {
             self_check,
             autostart: None,
             startup: None,
+            update: None,
             actions,
         }
     }

@@ -17,7 +17,19 @@ import { fork } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { COMPANION_VERSION } from '../src/version.mjs'
+import { createRequire } from 'node:module'
+
+// Inline version resolution — this file is copied to ~/.trapezohe/ at install
+// time, so relative imports like '../src/version.mjs' will break.
+const COMPANION_VERSION = (() => {
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json')
+    return typeof pkg?.version === 'string' && pkg.version.trim() ? pkg.version.trim() : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 
 const CONFIG_FILE = path.join(os.homedir(), '.trapezohe', 'companion.json')
 const DEFAULT_PORT = 41591

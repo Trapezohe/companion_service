@@ -5,9 +5,10 @@ mod health;
 mod models;
 mod startup;
 mod tray;
+mod update;
 mod window;
 
-use models::{CompanionConfig, StartupContextView, StatusViewModel};
+use models::{CompanionConfig, StartupContextView, StatusViewModel, UpdateInfo};
 use startup::{
     context_from_decision, decide_post_ensure_action, decide_startup_action, startup_context,
     StartupAction,
@@ -25,6 +26,7 @@ struct ShellResources {
     config: Mutex<Option<CompanionConfig>>,
     snapshot: Mutex<StatusViewModel>,
     startup_context: Mutex<Option<StartupContextView>>,
+    update_info: Mutex<Option<UpdateInfo>>,
 }
 
 fn current_config(app: &AppHandle<Wry>) -> Option<CompanionConfig> {
@@ -55,6 +57,18 @@ fn replace_startup_context(app: &AppHandle<Wry>, context: Option<StartupContextV
     };
 }
 
+fn current_update_info(app: &AppHandle<Wry>) -> Option<UpdateInfo> {
+    let state = app.state::<ShellResources>();
+    state.update_info.lock().ok().and_then(|guard| guard.clone())
+}
+
+fn replace_update_info(app: &AppHandle<Wry>, info: Option<UpdateInfo>) {
+    let state = app.state::<ShellResources>();
+    if let Ok(mut guard) = state.update_info.lock() {
+        *guard = info;
+    };
+}
+
 fn current_snapshot(app: &AppHandle<Wry>) -> StatusViewModel {
     let mut snapshot = app
         .state::<ShellResources>()
@@ -64,12 +78,14 @@ fn current_snapshot(app: &AppHandle<Wry>) -> StatusViewModel {
         .map(|guard| guard.clone())
         .unwrap_or_default();
     snapshot.startup = current_startup_context(app);
+    snapshot.update = current_update_info(app);
     snapshot
 }
 
 fn publish_snapshot(app: &AppHandle<Wry>, snapshot: StatusViewModel) {
     let mut snapshot = snapshot;
     snapshot.startup = current_startup_context(app);
+    snapshot.update = current_update_info(app);
     let state = app.state::<ShellResources>();
     if let Ok(mut guard) = state.snapshot.lock() {
         *guard = snapshot.clone();
@@ -283,6 +299,72 @@ fn open_logs(app: AppHandle<Wry>) -> Result<(), String> {
     daemon::open_logs_dir(&config.logs_dir).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn check_update(app: AppHandle<Wry>) -> Result<StatusViewModel, String> {
+    match update::check_for_update(update::CURRENT_VERSION).await {
+        Ok(info) => {
+            replace_update_info(&app, Some(info));
+            let snapshot = current_snapshot(&app);
+            publish_snapshot(&app, snapshot.clone());
+            Ok(snapshot)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn open_release_page(app: AppHandle<Wry>) -> Result<(), String> {
+    let info = current_update_info(&app);
+    let url = info
+        .as_ref()
+        .and_then(|u| {
+            if u.available {
+                u.download_url.as_deref().or(Some(u.release_url.as_str()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or("https://github.com/Trapezohe/companion_service/releases");
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn quit_tray(app: AppHandle<Wry>) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
+fn spawn_update_checker(app: AppHandle<Wry>) {
+    tauri::async_runtime::spawn(async move {
+        // Wait 30 seconds after launch before first check
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        loop {
+            if let Ok(info) = update::check_for_update(update::CURRENT_VERSION).await {
+                replace_update_info(&app, Some(info));
+                let snapshot = current_snapshot(&app);
+                publish_snapshot(&app, snapshot);
+            }
+            // Check every hour
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -295,6 +377,9 @@ pub fn run() {
             restart_service,
             run_repair,
             open_logs,
+            check_update,
+            open_release_page,
+            quit_tray,
         ])
         .setup(|app| {
             let config_result = config::load_config();
@@ -317,11 +402,13 @@ pub fn run() {
                 config: Mutex::new(loaded_config),
                 snapshot: Mutex::new(initial_snapshot.clone()),
                 startup_context: Mutex::new(startup_note),
+                update_info: Mutex::new(None),
             });
 
             window::ensure_status_window(&app.handle())?;
             tray::build_tray(&app.handle(), &initial_snapshot)?;
             spawn_status_poller(app.handle().clone());
+            spawn_update_checker(app.handle().clone());
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -374,6 +461,9 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let _ = restart_service(handle).await;
                 });
+            }
+            tray::MENU_UPDATE => {
+                let _ = open_release_page(app.clone());
             }
             tray::MENU_DIAGNOSTICS => {
                 let _ = window::open_or_focus_status_window(app);

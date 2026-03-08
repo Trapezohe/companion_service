@@ -10,6 +10,7 @@ pub const MENU_RESTART: &str = "restart_service";
 pub const MENU_DIAGNOSTICS: &str = "run_diagnostics";
 pub const MENU_OPEN_LOGS: &str = "open_logs";
 pub const MENU_TOGGLE_AUTOSTART: &str = "toggle_autostart";
+pub const MENU_UPDATE: &str = "open_update";
 pub const MENU_QUIT: &str = "quit_tray";
 
 fn icon_bytes_for_state(state: &CompanionShellState) -> &'static [u8] {
@@ -70,6 +71,13 @@ fn status_detail(snapshot: &StatusViewModel) -> String {
 }
 
 pub fn tooltip_for_state(snapshot: &StatusViewModel) -> String {
+    let update_suffix = snapshot
+        .update
+        .as_ref()
+        .filter(|u| u.available)
+        .map(|u| format!(" · Update v{}", u.latest_version))
+        .unwrap_or_default();
+
     match &snapshot.state {
         CompanionShellState::Healthy {
             version,
@@ -77,17 +85,22 @@ pub fn tooltip_for_state(snapshot: &StatusViewModel) -> String {
             mcp_tools,
             ..
         } => {
-            format!("Trapezohe Companion · Healthy · v{version} · MCP {mcp_servers}/{mcp_tools}")
+            format!("Trapezohe Companion · Healthy · v{version} · MCP {mcp_servers}/{mcp_tools}{update_suffix}")
         }
-        CompanionShellState::Checking => "Trapezohe Companion · Checking".into(),
-        CompanionShellState::Stopped => "Trapezohe Companion · Stopped".into(),
+        CompanionShellState::Checking => format!("Trapezohe Companion · Checking{update_suffix}"),
+        CompanionShellState::Stopped => format!("Trapezohe Companion · Stopped{update_suffix}"),
         CompanionShellState::Degraded { reason } => {
-            format!("Trapezohe Companion · Degraded · {}", truncate(reason, 48))
+            format!(
+                "Trapezohe Companion · Degraded · {}{}",
+                truncate(reason, 48),
+                update_suffix
+            )
         }
         CompanionShellState::Misconfigured { reason } => {
             format!(
-                "Trapezohe Companion · Misconfigured · {}",
-                truncate(reason, 48)
+                "Trapezohe Companion · Misconfigured · {}{}",
+                truncate(reason, 48),
+                update_suffix
             )
         }
     }
@@ -112,7 +125,21 @@ fn build_menu(
     } else {
         "Enable Desktop Startup"
     };
-    MenuBuilder::new(app)
+    let mut builder = MenuBuilder::new(app);
+
+    // Show update item at the top if available
+    if let Some(update) = &snapshot.update {
+        if update.available {
+            builder = builder
+                .text(
+                    MENU_UPDATE,
+                    format!("Update Available: v{}", update.latest_version),
+                )
+                .separator();
+        }
+    }
+
+    builder
         .text("status_headline", snapshot.headline())
         .text("status_detail", status_detail(snapshot))
         .text("autostart_status", autostart_summary)

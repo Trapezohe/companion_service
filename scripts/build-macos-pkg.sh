@@ -24,6 +24,7 @@ mkdir -p "${PAYLOAD_DIR}" "${PKG_SCRIPTS}" "${OUT_DIR}" "${APPLICATIONS_DIR}"
 "${ROOT_DIR}/scripts/build-tray-macos.sh" "${VERSION}" --stage-only
 
 cp "${ROOT_DIR}/README.md" "${PAYLOAD_DIR}/README.md"
+cp "${ROOT_DIR}/bin/native-host.mjs" "${PAYLOAD_DIR}/native-host.mjs"
 cp "${ROOT_DIR}/packaging/macos/postinstall" "${PKG_SCRIPTS}/postinstall"
 chmod +x "${PKG_SCRIPTS}/postinstall"
 sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${PKG_SCRIPTS}/postinstall"
