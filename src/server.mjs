@@ -75,6 +75,7 @@ import {
   setAcpSessionTransitionHook,
 } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
+import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 
 // ── Auth rate limiter ──
@@ -624,6 +625,8 @@ export function createCompanionServer({
   },
   shutdownFn = null,
   cleanupFn = null,
+  normalizeMediaImage = normalizeImagePayload,
+  getMediaSupport = getMediaNormalizationSupport,
 }) {
   const sessionRunIndex = new Map()
   let lastKnownOriginPolicy = {
@@ -922,6 +925,16 @@ export function createCompanionServer({
         getPermissionPolicy,
       })
       return sendJson(res, 200, result)
+    }
+
+    if (req.method === 'POST' && pathname === '/api/media/normalize') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const body = await readJsonBody(req)
+      const payload = await normalizeMediaImage(body, {
+        support: await getMediaSupport(),
+      })
+      return sendJson(res, 200, payload)
     }
 
     if (req.method === 'POST' && pathname === '/api/system/repair') {

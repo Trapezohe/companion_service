@@ -53,6 +53,12 @@ async function startTestServer(options = {}) {
     ...(typeof options.removeMcpServerConfig === 'function'
       ? { removeMcpServerConfig: options.removeMcpServerConfig }
       : {}),
+    ...(typeof options.normalizeMediaImage === 'function'
+      ? { normalizeMediaImage: options.normalizeMediaImage }
+      : {}),
+    ...(typeof options.getMediaSupport === 'function'
+      ? { getMediaSupport: options.getMediaSupport }
+      : {}),
   })
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -95,6 +101,43 @@ async function requestJson(ctx, endpoint, options = {}) {
     payload,
   }
 }
+
+test('media normalization endpoint converts HEIC payloads through the injected normalizer', async (t) => {
+  const ctx = await startTestServer({
+    getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),
+    normalizeMediaImage: async (body) => ({
+      changed: true,
+      name: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      bytesBase64: Buffer.from('jpeg-binary').toString('base64'),
+      normalization: {
+        status: 'normalized',
+        sourceMimeType: body.mimeType,
+        outputMimeType: 'image/jpeg',
+        via: 'companion',
+        engine: 'test-engine',
+      },
+    }),
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const response = await requestJson(ctx, '/api/media/normalize', {
+    method: 'POST',
+    body: {
+      name: 'photo.heic',
+      mimeType: 'image/heic',
+      bytesBase64: Buffer.from('heic-binary').toString('base64'),
+    },
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.changed, true)
+  assert.equal(response.payload.mimeType, 'image/jpeg')
+  assert.equal(response.payload.normalization.engine, 'test-engine')
+})
 
 test('health and capabilities endpoints expose protocol contract fields', async (t) => {
   const ctx = await startTestServer()

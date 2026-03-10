@@ -22,6 +22,7 @@ export const COMPANION_SUPPORTED_FEATURES = {
   diagnostics: true,
   approvalStore: true,
   runLedger: true,
+  mediaNormalization: true,
 }
 
 const DEFAULT_CONFIG = {
