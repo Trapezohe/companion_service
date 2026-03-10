@@ -137,6 +137,11 @@ test('media normalization endpoint converts HEIC payloads through the injected n
   assert.equal(response.payload.changed, true)
   assert.equal(response.payload.mimeType, 'image/jpeg')
   assert.equal(response.payload.normalization.engine, 'test-engine')
+  assert.deepEqual(response.payload.pipelineHints, {
+    source: 'image',
+    summary: 'Image normalized from image/heic to image/jpeg via test-engine. OCR hook not enabled yet.',
+    ocrReady: false,
+  })
 })
 
 test('health and capabilities endpoints expose protocol contract fields', async (t) => {

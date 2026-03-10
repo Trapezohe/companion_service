@@ -70,6 +70,16 @@ async function convertWithMagick({ inputPath, outputPath }) {
   return { engine: "magick" }
 }
 
+function buildImagePipelineHints({ sourceMimeType, outputMimeType, engine, normalized }) {
+  return {
+    source: 'image',
+    summary: normalized
+      ? `Image normalized from ${sourceMimeType} to ${outputMimeType} via ${engine}. OCR hook not enabled yet.`
+      : `Image retained as ${outputMimeType}. OCR hook not enabled yet.`,
+    ocrReady: false,
+  }
+}
+
 function buildUnchangedResult(input, normalization) {
   return {
     changed: false,
@@ -77,6 +87,12 @@ function buildUnchangedResult(input, normalization) {
     mimeType: input.mimeType,
     bytesBase64: input.bytesBase64,
     normalization,
+    pipelineHints: buildImagePipelineHints({
+      sourceMimeType: normalization.sourceMimeType,
+      outputMimeType: normalization.outputMimeType,
+      engine: normalization.engine || normalization.via || 'none',
+      normalized: false,
+    }),
   }
 }
 
@@ -139,6 +155,12 @@ export async function normalizeImagePayload(input, options = {}) {
         via: "companion",
         engine,
       },
+      pipelineHints: buildImagePipelineHints({
+        sourceMimeType: mimeType,
+        outputMimeType,
+        engine,
+        normalized: true,
+      }),
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {})

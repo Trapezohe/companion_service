@@ -34,6 +34,11 @@ test("normalizeImagePayload rewrites heic/heif payloads to jpeg via converter", 
     via: "companion",
     engine: "test-engine",
   })
+  assert.deepEqual(payload.pipelineHints, {
+    source: 'image',
+    summary: 'Image normalized from image/heic to image/jpeg via test-engine. OCR hook not enabled yet.',
+    ocrReady: false,
+  })
 })
 
 test("normalizeImagePayload leaves non-heic payloads unchanged", async () => {
@@ -52,5 +57,10 @@ test("normalizeImagePayload leaves non-heic payloads unchanged", async () => {
     sourceMimeType: "image/png",
     outputMimeType: "image/png",
     via: "none",
+  })
+  assert.deepEqual(payload.pipelineHints, {
+    source: 'image',
+    summary: 'Image retained as image/png. OCR hook not enabled yet.',
+    ocrReady: false,
   })
 })

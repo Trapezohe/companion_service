@@ -141,6 +141,22 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload))
 }
 
+function withMediaPipelineHints(payload) {
+  if (!payload || payload.pipelineHints || !payload.normalization) return payload
+  const normalization = payload.normalization
+  const normalized = normalization.status === 'normalized'
+  return {
+    ...payload,
+    pipelineHints: {
+      source: 'image',
+      summary: normalized
+        ? `Image normalized from ${normalization.sourceMimeType} to ${normalization.outputMimeType} via ${normalization.engine || normalization.via || 'companion'}. OCR hook not enabled yet.`
+        : `Image retained as ${normalization.outputMimeType}. OCR hook not enabled yet.`,
+      ocrReady: false,
+    },
+  }
+}
+
 function buildCompanionCapabilitiesPayload() {
   return {
     protocolVersion: `trapezohe-companion/${COMPANION_PROTOCOL_VERSION}`,
@@ -936,7 +952,7 @@ export function createCompanionServer({
       const payload = await normalizeMediaImage(body, {
         support: await getMediaSupport(),
       })
-      return sendJson(res, 200, payload)
+      return sendJson(res, 200, withMediaPipelineHints(payload))
     }
 
     if (req.method === 'POST' && pathname === '/api/system/repair') {
