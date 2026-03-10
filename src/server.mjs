@@ -661,6 +661,9 @@ export function createCompanionServer({
       meta: mergeRunMeta(currentRun, {
         sessionId: event.sessionId,
         agentType: event.agentType,
+        ...(event.origin ? { origin: event.origin } : {}),
+        ...(event.inputProvenance ? { inputProvenance: event.inputProvenance } : {}),
+        ...(event.inputProvenance?.conversationId ? { conversationId: event.inputProvenance.conversationId } : {}),
         ...(event.meta && typeof event.meta === 'object' ? event.meta : {}),
       }),
     }).catch(() => undefined)
@@ -688,6 +691,9 @@ export function createCompanionServer({
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.agentType ? { agentType: event.agentType } : {}),
+        ...(event.origin ? { origin: event.origin } : {}),
+        ...(event.inputProvenance ? { inputProvenance: event.inputProvenance } : {}),
+        ...(event.inputProvenance?.conversationId ? { conversationId: event.inputProvenance.conversationId } : {}),
         approvalSource: 'acp',
         approvalSignal: 'awaiting_approval',
       }),
@@ -702,6 +708,9 @@ export function createCompanionServer({
         sessionId: event.sessionId,
         approvalStatus: approval.status,
         ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.origin ? { origin: event.origin } : {}),
+        ...(event.inputProvenance ? { inputProvenance: event.inputProvenance } : {}),
+        ...(event.inputProvenance?.conversationId ? { conversationId: event.inputProvenance.conversationId } : {}),
         approvalSource: 'acp',
       }),
     }).catch(() => undefined)
@@ -764,6 +773,9 @@ export function createCompanionServer({
           sessionId: session.sessionId,
           agentType: session.agentType,
           cwd: session.cwd,
+          ...(session.origin ? { origin: session.origin } : {}),
+          ...(session.inputProvenance ? { inputProvenance: session.inputProvenance } : {}),
+          ...(session.inputProvenance?.conversationId ? { conversationId: session.inputProvenance.conversationId } : {}),
         },
       })
       sessionRunIndex.set(session.sessionId, run.runId)
@@ -772,6 +784,24 @@ export function createCompanionServer({
     } catch {
       return null
     }
+  }
+
+  const syncAcpRunIngress = async (session, turnId) => {
+    const sessionId = String(session?.sessionId || '').trim()
+    if (!sessionId) return
+    const runId = String(session?.runId || sessionRunIndex.get(sessionId) || '').trim()
+    if (!runId) return
+    const currentRun = await getRunById(runId).catch(() => null)
+    await updateRun(runId, {
+      meta: mergeRunMeta(currentRun, {
+        sessionId,
+        ...(turnId ? { turnId } : {}),
+        ...(session?.agentType ? { agentType: session.agentType } : {}),
+        ...(session?.origin ? { origin: session.origin } : {}),
+        ...(session?.inputProvenance ? { inputProvenance: session.inputProvenance } : {}),
+        ...(session?.inputProvenance?.conversationId ? { conversationId: session.inputProvenance.conversationId } : {}),
+      }),
+    }).catch(() => undefined)
   }
 
   const server = createServer(async (req, res) => {
@@ -1435,6 +1465,7 @@ export function createCompanionServer({
       sendJson,
       readJsonBody,
       createAcpRun,
+      syncAcpRunIngress,
     })
     if (acpHandled) return
 

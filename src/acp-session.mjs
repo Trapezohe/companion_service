@@ -217,6 +217,8 @@ function pushAcpEvent(sessionId, event) {
       runId: session?.runId || null,
       agentType: session?.agentType,
       state: session?.state,
+      origin: session?.origin || null,
+      inputProvenance: session?.inputProvenance || null,
       runtimeSessionId: session?.runtimeSessionId || null,
     })).catch(() => undefined)
   }
@@ -304,6 +306,8 @@ export function createAcpSession(opts = {}) {
     state: null,
     cwd: opts.cwd || process.cwd(),
     command: opts.command || null, // resolved lazily in enqueuePrompt
+    origin: typeof opts.origin === 'string' && opts.origin.trim() ? opts.origin.trim() : null,
+    inputProvenance: opts.inputProvenance && typeof opts.inputProvenance === 'object' ? JSON.parse(JSON.stringify(opts.inputProvenance)) : null,
     env: opts.env || undefined,
     timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     createdAt: now(),
@@ -355,6 +359,8 @@ export function getAcpSessionById(sessionId) {
     state: session.state,
     cwd: session.cwd,
     command: session.command,
+    origin: session.origin || undefined,
+    inputProvenance: session.inputProvenance || undefined,
     createdAt: session.createdAt,
     startedAt: session.startedAt,
     finishedAt: session.finishedAt,
@@ -400,6 +406,8 @@ export function listAcpSessions(options = {}) {
     finishedAt: s.finishedAt,
     currentTurnId: s.currentTurnId,
     queueDepth: s.queueDepth,
+    origin: s.origin || undefined,
+    inputProvenance: s.inputProvenance || undefined,
   }))
 
   return {
@@ -420,6 +428,13 @@ export function enqueuePrompt(sessionId, opts = {}) {
   if (!session) throw new Error(`ACP session not found: ${sessionId}`)
 
   const restartableTerminalStates = new Set(['done'])
+  if (typeof opts.origin === 'string' && opts.origin.trim()) {
+    session.origin = opts.origin.trim()
+  }
+  if (opts.inputProvenance && typeof opts.inputProvenance === 'object') {
+    session.inputProvenance = JSON.parse(JSON.stringify(opts.inputProvenance))
+  }
+
   const blockedTerminalStates = new Set(['error', 'timeout', 'cancelled'])
   const previousState = session.state
   if (blockedTerminalStates.has(session.state)) {

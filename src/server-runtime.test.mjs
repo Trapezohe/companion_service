@@ -297,6 +297,13 @@ test('runtime session list endpoints support new and legacy paths', async (t) =>
     body: {
       command: 'node -e "setTimeout(() => process.stdout.write(\'still-running\'), 1200)"',
       timeoutMs: 5_000,
+      origin: 'chat',
+      inputProvenance: {
+        kind: 'remote_user',
+        sourceChannel: 'telegram',
+        conversationId: 'conv-acp-approval',
+        remoteActorId: 'tg:77',
+      },
     },
   })
   assert.equal(started.status, 200)
@@ -614,7 +621,7 @@ test('mcp server delete endpoint removes server config', async (t) => {
   assert.equal(servers.length, 0)
 })
 
-test('ACP session creation and prompt execution are reflected in runtime runs ledger', async (t) => {
+test('ACP session creation and prompt execution preserve ingress provenance in the runtime runs ledger', async (t) => {
   const ctx = await startTestServer()
   t.after(async () => {
     await stopTestServer(ctx.server)
@@ -632,17 +639,43 @@ test('ACP session creation and prompt execution are reflected in runtime runs le
         'process.stdin.on("data", () => { console.log(JSON.stringify({ type: "message_stop", message: { stop_reason: "end_turn" } })); process.exit(0); })',
       ],
       timeoutMs: 5_000,
+      origin: 'code_agent',
+      inputProvenance: {
+        kind: 'inter_agent',
+        sourceChannel: 'code_agent',
+        conversationId: 'conv-acp-ledger',
+        originSessionId: 'code-agent-session-1',
+        metaOnly: true,
+      },
     },
   })
   assert.equal(created.status, 200)
   assert.ok(created.payload.sessionId)
   assert.ok(created.payload.runId)
+  assert.equal(created.payload.origin, 'code_agent')
+  assert.deepEqual(created.payload.inputProvenance, {
+    kind: 'inter_agent',
+    sourceChannel: 'code_agent',
+    conversationId: 'conv-acp-ledger',
+    originSessionId: 'code-agent-session-1',
+    metaOnly: true,
+  })
 
   const promptRes = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/prompt`, {
     method: 'POST',
-    body: { prompt: 'hello' },
+    body: {
+      prompt: 'hello',
+      inputProvenance: {
+        kind: 'inter_agent',
+        sourceChannel: 'code_agent',
+        conversationId: 'conv-acp-ledger',
+        originSessionId: 'code-agent-session-1',
+        metaOnly: true,
+      },
+    },
   })
   assert.equal(promptRes.status, 200)
+  assert.equal(typeof promptRes.payload.turnId, 'string')
 
   const deadline = Date.now() + 8_000
   let acpRun = null
@@ -657,6 +690,15 @@ test('ACP session creation and prompt execution are reflected in runtime runs le
   assert.ok(acpRun)
   assert.equal(acpRun.type, 'acp')
   assert.equal(acpRun.meta?.sessionId, created.payload.sessionId)
+  assert.equal(acpRun.meta?.origin, 'code_agent')
+  assert.deepEqual(acpRun.meta?.inputProvenance, {
+    kind: 'inter_agent',
+    sourceChannel: 'code_agent',
+    conversationId: 'conv-acp-ledger',
+    originSessionId: 'code-agent-session-1',
+    metaOnly: true,
+  })
+  assert.equal(acpRun.meta?.conversationId, 'conv-acp-ledger')
   assert.equal(acpRun.state, 'done')
 })
 
@@ -1005,7 +1047,15 @@ test('ACP permission waits create approval records tied to the existing ACP run'
 
   const promptRes = await requestJson(ctx, `/api/acp/sessions/${created.payload.sessionId}/prompt`, {
     method: 'POST',
-    body: { prompt: 'inspect the workspace' },
+    body: {
+      prompt: 'inspect the workspace',
+      inputProvenance: {
+        kind: 'remote_user',
+        sourceChannel: 'telegram',
+        conversationId: 'conv-acp-approval',
+        remoteActorId: 'tg:77',
+      },
+    },
   })
   assert.equal(promptRes.status, 200)
 
@@ -1023,6 +1073,13 @@ test('ACP permission waits create approval records tied to the existing ACP run'
   assert.equal(pendingApproval.status, 'pending')
   assert.equal(pendingApproval.meta?.runId, created.payload.runId)
   assert.equal(pendingApproval.meta?.sessionId, created.payload.sessionId)
+  assert.deepEqual(pendingApproval.meta?.inputProvenance, {
+    kind: 'remote_user',
+    sourceChannel: 'telegram',
+    conversationId: 'conv-acp-approval',
+    remoteActorId: 'tg:77',
+  })
+  assert.equal(pendingApproval.meta?.conversationId, 'conv-acp-approval')
 
   let acpRun = null
   const runDeadline = Date.now() + 5_000

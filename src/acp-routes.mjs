@@ -48,6 +48,8 @@ export async function handleAcpRequest(req, res, url, pathname, ctx) {
         command: body.command,
         env: body.env,
         timeoutMs: body.timeoutMs,
+        origin: body.origin,
+        inputProvenance: body.inputProvenance,
       })
       if (typeof ctx.createAcpRun === 'function') {
         const run = await ctx.createAcpRun(result)
@@ -75,15 +77,21 @@ export async function handleAcpRequest(req, res, url, pathname, ctx) {
     if (req.method === 'POST' && promptMatch) {
       const sessionId = decodeURIComponent(promptMatch[1])
       const body = await readJsonBody(req)
-      await enqueuePrompt(sessionId, {
+      const ack = await enqueuePrompt(sessionId, {
         prompt: body.prompt,
         turnId: body.turnId,
         timeoutMs: body.timeoutMs,
         command: body.command,
         cwd: body.cwd,
         env: body.env,
+        origin: body.origin,
+        inputProvenance: body.inputProvenance,
       })
-      sendJson(res, 200, { ok: true, sessionId })
+      const session = getAcpSessionById(sessionId)
+      if (session && typeof ctx.syncAcpRunIngress === 'function') {
+        await ctx.syncAcpRunIngress(session, ack?.turnId)
+      }
+      sendJson(res, 200, { ok: true, sessionId, turnId: ack?.turnId, runId: session?.runId || null })
       return true
     }
 
@@ -92,12 +100,12 @@ export async function handleAcpRequest(req, res, url, pathname, ctx) {
     if (req.method === 'POST' && steerMatch) {
       const sessionId = decodeURIComponent(steerMatch[1])
       const body = await readJsonBody(req)
-      await enqueueSteer(sessionId, {
+      const ack = await enqueueSteer(sessionId, {
         text: body.text,
         submit: body.submit,
         turnId: body.turnId,
       })
-      sendJson(res, 200, { ok: true, sessionId })
+      sendJson(res, 200, { ok: true, sessionId, turnId: ack?.turnId })
       return true
     }
 

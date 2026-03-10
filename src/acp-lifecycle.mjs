@@ -19,6 +19,8 @@ export function applyAcpSessionState(session, nextState, meta = {}) {
       sessionId: session.sessionId,
       runId: session.runId || null,
       agentType: session.agentType,
+      origin: session.origin || null,
+      inputProvenance: session.inputProvenance || null,
       fromState: previousState,
       toState: nextState,
       meta,

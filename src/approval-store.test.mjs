@@ -53,3 +53,55 @@ test('createApproval is idempotent for the same requestId and preserves the cano
   const pending = await listPendingApprovals()
   assert.equal(pending.filter((item) => item.requestId === 'req-approval-1').length, 1)
 })
+
+
+test('createApproval preserves canonical ACP provenance metadata across retries', async (t) => {
+  await clearApprovalStoreForTests()
+  t.after(async () => {
+    await clearApprovalStoreForTests()
+  })
+
+  const provenance = {
+    kind: 'remote_user',
+    sourceChannel: 'telegram',
+    conversationId: 'conv-acp-approval',
+    remoteActorId: 'tg:77',
+  }
+
+  await createApproval({
+    requestId: 'req-acp-approval-2',
+    conversationId: 'conv-acp-approval',
+    toolName: 'acp_permission',
+    toolPreview: 'Approve filesystem write',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      runId: 'run-acp-approval-2',
+      sessionId: 'session-acp-approval-2',
+      turnId: 'turn-acp-approval-2',
+      inputProvenance: provenance,
+    },
+  })
+
+  const retried = await createApproval({
+    requestId: 'req-acp-approval-2',
+    conversationId: 'conv-ignored-retry',
+    toolName: 'ignored',
+    toolPreview: 'ignored',
+    riskLevel: 'low',
+    channels: ['telegram'],
+    expiresAt: Date.now() + 120_000,
+    meta: {
+      runId: 'run-overwrite-attempt',
+      sessionId: 'session-overwrite-attempt',
+      turnId: 'turn-overwrite-attempt',
+      inputProvenance: { kind: 'internal_system', sourceChannel: 'system', conversationId: 'wrong' },
+    },
+  })
+
+  assert.equal(retried.meta?.runId, 'run-acp-approval-2')
+  assert.equal(retried.meta?.sessionId, 'session-acp-approval-2')
+  assert.equal(retried.meta?.turnId, 'turn-acp-approval-2')
+  assert.deepEqual(retried.meta?.inputProvenance, provenance)
+})

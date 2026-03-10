@@ -88,6 +88,27 @@ test('createAcpSession creates session in idle state', async (t) => {
   assert.equal(session.state, 'idle')
 })
 
+test('createAcpSession preserves origin and input provenance on snapshots', async (t) => {
+  cleanupAllAcpSessions()
+  t.after(() => cleanupAllAcpSessions())
+
+  const provenance = {
+    kind: 'acp_user',
+    sourceChannel: 'acp',
+    conversationId: 'conv-acp-1',
+    originSessionId: 'session-parent-1',
+  }
+  const result = createAcpSession({
+    agentType: 'raw',
+    cwd: process.cwd(),
+    origin: 'acp',
+    inputProvenance: provenance,
+  })
+
+  assert.equal(result.origin, 'acp')
+  assert.deepEqual(result.inputProvenance, provenance)
+})
+
 test('ACP lifecycle hook receives create -> running -> terminal transitions', async (t) => {
   cleanupAllAcpSessions()
   t.after(() => cleanupAllAcpSessions())
