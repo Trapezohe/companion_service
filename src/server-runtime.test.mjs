@@ -164,6 +164,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
 
 test('diagnostics and self-check endpoints return structured companion health details', async (t) => {
   const ctx = await startTestServer({
+    getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),
     mcpManager: {
       getConnectedCount: () => 1,
       getAllTools: () => [{ server: 'bnbchain-mcp', name: 'get_latest_block' }],
@@ -198,6 +199,11 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.ok(Array.isArray(diagnostics.payload.approvals.pending))
   assert.equal(typeof diagnostics.payload.acp.totalSessions, 'number')
   assert.equal(typeof diagnostics.payload.nativeHostRegistration, 'object')
+  assert.equal(typeof diagnostics.payload.capabilitySummary.totalFeatures, 'number')
+  assert.ok(Array.isArray(diagnostics.payload.capabilitySummary.availableFeatures))
+  assert.equal(typeof diagnostics.payload.acpIngressSummary.recentRuns, 'number')
+  assert.equal(diagnostics.payload.mediaNormalizationSummary.available, true)
+  assert.equal(diagnostics.payload.mediaNormalizationSummary.engine, 'test-engine')
   assert.ok(Array.isArray(diagnostics.payload.nativeHostRegistration?.hostNames))
 
   const selfCheck = await requestJson(ctx, '/api/system/self-check')
@@ -576,6 +582,7 @@ test('mcp server upsert endpoint persists config and returns updated server', as
   const servers = []
   let capturedUpsert = null
   const ctx = await startTestServer({
+    getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),
     mcpManager: {
       getConnectedCount: () => servers.length,
       getAllTools: () => [],
@@ -634,6 +641,7 @@ test('mcp server delete endpoint removes server config', async (t) => {
   ]
   const removed = []
   const ctx = await startTestServer({
+    getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),
     mcpManager: {
       getConnectedCount: () => servers.length,
       getAllTools: () => [],

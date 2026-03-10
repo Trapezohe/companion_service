@@ -912,7 +912,9 @@ export function createCompanionServer({
       const diagnostics = await buildDiagnosticsPayload({
         protocolVersion: capabilities.protocolVersion,
         version: capabilities.version,
+        supportedFeatures: capabilities.supportedFeatures,
         getPermissionPolicy,
+        getMediaSupport,
         mcpManager,
       })
       return sendJson(res, 200, diagnostics)

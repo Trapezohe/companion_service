@@ -1,7 +1,12 @@
 import { access } from 'node:fs/promises'
 import path from 'node:path'
 
-import { loadConfig, getConfigPath, getPidPath } from './config.mjs'
+import {
+  COMPANION_SUPPORTED_FEATURES,
+  loadConfig,
+  getConfigPath,
+  getPidPath,
+} from './config.mjs'
 import { listRuns } from './run-store.mjs'
 import { listPendingApprovals } from './approval-store.mjs'
 import { listAcpSessions } from './acp-session.mjs'
@@ -43,6 +48,66 @@ async function resolveExecutable(command) {
   return false
 }
 
+
+
+function buildCapabilitySummary(supportedFeatures = {}) {
+  const featureEntries = Object.entries({
+    ...COMPANION_SUPPORTED_FEATURES,
+    ...(supportedFeatures && typeof supportedFeatures === 'object' ? supportedFeatures : {}),
+  })
+  const availableFeatures = featureEntries
+    .filter(([, enabled]) => enabled === true)
+    .map(([name]) => name)
+  const unavailableFeatures = featureEntries
+    .filter(([, enabled]) => enabled !== true)
+    .map(([name]) => name)
+  return {
+    totalFeatures: featureEntries.length,
+    availableCount: availableFeatures.length,
+    availableFeatures,
+    unavailableFeatures,
+  }
+}
+
+function buildAcpIngressSummary({ runs, approvals, acpSessions }) {
+  const recentAcpRuns = runs.runs.filter((run) => run.type === 'acp')
+  return {
+    totalSessions: acpSessions.total,
+    runningSessions: acpSessions.sessions.filter((session) => session.state === 'running').length,
+    idleSessions: acpSessions.sessions.filter((session) => session.state === 'idle').length,
+    recentRuns: recentAcpRuns.length,
+    failedRuns: recentAcpRuns.filter((run) => run.state === 'failed').length,
+    pendingApprovals: approvals.length,
+  }
+}
+
+async function buildMediaNormalizationSummary(params) {
+  const enabled = params.supportedFeatures?.mediaNormalization === true
+  let support = { available: false, engine: null, reason: enabled ? 'probe_unavailable' : 'feature_disabled' }
+  if (typeof params.getMediaSupport === 'function') {
+    try {
+      const probed = await params.getMediaSupport()
+      support = {
+        available: probed?.available === true,
+        engine: probed?.engine || null,
+        reason: probed?.reason || null,
+      }
+    } catch (error) {
+      support = {
+        available: false,
+        engine: null,
+        reason: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+  return {
+    enabled,
+    available: support.available,
+    engine: support.engine,
+    reason: support.reason,
+  }
+}
+
 async function checkNativeHostRegistration(config) {
   const extensionIds = getConfiguredExtensionIds(config)
   const manifestTargets = getNativeHostManifestTargets()
@@ -75,6 +140,10 @@ export async function buildDiagnosticsPayload(params) {
   const servers = params.mcpManager?.getServers?.() || []
   const nativeHostRegistration = await checkNativeHostRegistration(config)
 
+  const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
+  const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
+  const mediaNormalizationSummary = await buildMediaNormalizationSummary(params)
+
   const payload = {
     protocolVersion: params.protocolVersion,
     version: params.version,
@@ -101,6 +170,9 @@ export async function buildDiagnosticsPayload(params) {
       runningSessions: acpSessions.sessions.filter((session) => session.state === 'running').length,
       idleSessions: acpSessions.sessions.filter((session) => session.state === 'idle').length,
     },
+    capabilitySummary,
+    acpIngressSummary,
+    mediaNormalizationSummary,
   }
 
   logEvent('info', 'diagnostics', 'Companion diagnostics generated', {
@@ -108,6 +180,7 @@ export async function buildDiagnosticsPayload(params) {
     pendingApprovals: payload.approvals.pending.length,
     acpSessions: payload.acp.totalSessions,
     mcpServers: payload.mcp.connectedServers,
+    capabilityFeatures: payload.capabilitySummary.availableFeatures.length,
   })
 
   return payload
