@@ -75,7 +75,7 @@ import {
   setAcpSessionTransitionHook,
 } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
-import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
+import { buildImagePipelineHints, getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 
 // ── Auth rate limiter ──
@@ -144,16 +144,14 @@ function sendJson(res, status, payload) {
 function withMediaPipelineHints(payload) {
   if (!payload || payload.pipelineHints || !payload.normalization) return payload
   const normalization = payload.normalization
-  const normalized = normalization.status === 'normalized'
   return {
     ...payload,
-    pipelineHints: {
-      source: 'image',
-      summary: normalized
-        ? `Image normalized from ${normalization.sourceMimeType} to ${normalization.outputMimeType} via ${normalization.engine || normalization.via || 'companion'}. OCR hook not enabled yet.`
-        : `Image retained as ${normalization.outputMimeType}. OCR hook not enabled yet.`,
-      ocrReady: false,
-    },
+    pipelineHints: buildImagePipelineHints({
+      sourceMimeType: normalization.sourceMimeType,
+      outputMimeType: normalization.outputMimeType,
+      engine: normalization.engine || normalization.via || 'companion',
+      normalized: normalization.status === 'normalized',
+    }),
   }
 }
 
