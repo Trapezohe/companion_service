@@ -150,7 +150,8 @@ function withMediaPipelineHints(payload) {
       sourceMimeType: normalization.sourceMimeType,
       outputMimeType: normalization.outputMimeType,
       engine: normalization.engine || normalization.via || 'companion',
-      normalized: normalization.status === 'normalized',
+      status: normalization.status,
+      note: normalization.note,
     }),
   }
 }
@@ -356,7 +357,11 @@ function isLoopback(addr) {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
 }
 
-async function readJsonBody(req, maxSize = 1024 * 1024) {
+const DEFAULT_JSON_BODY_MAX_BYTES = 1024 * 1024
+const MEDIA_NORMALIZE_MAX_RAW_BYTES = 8 * 1024 * 1024
+const MEDIA_NORMALIZE_JSON_BODY_MAX_BYTES = Math.ceil((MEDIA_NORMALIZE_MAX_RAW_BYTES * 4) / 3) + 64 * 1024
+
+async function readJsonBody(req, maxSize = DEFAULT_JSON_BODY_MAX_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
@@ -946,11 +951,15 @@ export function createCompanionServer({
     if (req.method === 'POST' && pathname === '/api/media/normalize') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      const body = await readJsonBody(req)
-      const payload = await normalizeMediaImage(body, {
-        support: await getMediaSupport(),
-      })
-      return sendJson(res, 200, withMediaPipelineHints(payload))
+      try {
+        const body = await readJsonBody(req, MEDIA_NORMALIZE_JSON_BODY_MAX_BYTES)
+        const payload = await normalizeMediaImage(body, {
+          support: await getMediaSupport(),
+        })
+        return sendJson(res, 200, withMediaPipelineHints(payload))
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
     }
 
     if (req.method === 'POST' && pathname === '/api/system/repair') {

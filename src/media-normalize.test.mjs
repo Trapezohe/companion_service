@@ -99,3 +99,27 @@ test('normalizeImagePayload does not let filename fallback override an explicit 
   assert.equal(payload.mimeType, 'image/jpeg')
   assert.equal(payload.normalization.sourceMimeType, 'image/jpeg')
 })
+
+test('normalizeImagePayload reports failure hints truthfully when HEIC conversion is unavailable', async () => {
+  const payload = await normalizeImagePayload({
+    name: 'photo.heic',
+    mimeType: 'image/heic',
+    bytesBase64: Buffer.from('heic-binary').toString('base64'),
+  }, {
+    support: { available: false, engine: null, reason: 'no_supported_image_converter' },
+  })
+
+  assert.equal(payload.changed, false)
+  assert.deepEqual(payload.normalization, {
+    status: 'failed',
+    sourceMimeType: 'image/heic',
+    outputMimeType: 'image/heic',
+    via: 'companion',
+    note: 'no_supported_image_converter',
+  })
+  assert.deepEqual(payload.pipelineHints, {
+    source: 'image',
+    summary: 'Image normalization failed (no_supported_image_converter); retained as image/heic. OCR hook not enabled yet.',
+    ocrReady: false,
+  })
+})

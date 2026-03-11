@@ -95,12 +95,22 @@ async function convertWithMagick({ inputPath, outputPath }) {
   return { engine: 'magick' }
 }
 
-export function buildImagePipelineHints({ sourceMimeType, outputMimeType, engine, normalized }) {
+export function buildImagePipelineHints({ sourceMimeType, outputMimeType, engine, status, note }) {
+  let summary
+  if (status === 'normalized') {
+    summary = `Image normalized from ${sourceMimeType} to ${outputMimeType} via ${engine}. OCR hook not enabled yet.`
+  } else if (status === 'failed') {
+    const detail = String(note || '').trim()
+    summary = detail
+      ? `Image normalization failed (${detail}); retained as ${outputMimeType}. OCR hook not enabled yet.`
+      : `Image normalization failed; retained as ${outputMimeType}. OCR hook not enabled yet.`
+  } else {
+    summary = `Image retained as ${outputMimeType}. OCR hook not enabled yet.`
+  }
+
   return {
     source: 'image',
-    summary: normalized
-      ? `Image normalized from ${sourceMimeType} to ${outputMimeType} via ${engine}. OCR hook not enabled yet.`
-      : `Image retained as ${outputMimeType}. OCR hook not enabled yet.`,
+    summary,
     ocrReady: false,
   }
 }
@@ -116,7 +126,8 @@ function buildUnchangedResult(input, normalization) {
       sourceMimeType: normalization.sourceMimeType,
       outputMimeType: normalization.outputMimeType,
       engine: normalization.engine || normalization.via || 'none',
-      normalized: false,
+      status: normalization.status,
+      note: normalization.note,
     }),
   }
 }
@@ -185,7 +196,7 @@ export async function normalizeImagePayload(input, options = {}) {
         sourceMimeType,
         outputMimeType,
         engine,
-        normalized: true,
+        status: 'normalized',
       }),
     }
   } finally {

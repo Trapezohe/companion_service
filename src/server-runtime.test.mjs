@@ -144,6 +144,47 @@ test('media normalization endpoint converts HEIC payloads through the injected n
   })
 })
 
+test('media normalization endpoint accepts payloads above the default JSON body cap', async (t) => {
+  const largeBase64 = Buffer.alloc(800 * 1024, 7).toString('base64')
+  const ctx = await startTestServer({
+    getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),
+    normalizeMediaImage: async (body) => ({
+      changed: false,
+      name: body.name,
+      mimeType: body.mimeType,
+      bytesBase64: body.bytesBase64,
+      normalization: {
+        status: 'unchanged',
+        sourceMimeType: body.mimeType,
+        outputMimeType: body.mimeType,
+        via: 'none',
+      },
+      pipelineHints: {
+        source: 'image',
+        summary: `Image retained as ${body.mimeType}. OCR hook not enabled yet.`,
+        ocrReady: false,
+      },
+    }),
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const response = await requestJson(ctx, '/api/media/normalize', {
+    method: 'POST',
+    body: {
+      name: 'camera-roll.heic',
+      mimeType: 'image/heic',
+      bytesBase64: largeBase64,
+    },
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.name, 'camera-roll.heic')
+  assert.equal(response.payload.bytesBase64.length, largeBase64.length)
+})
+
 test('health and capabilities endpoints expose protocol contract fields', async (t) => {
   const ctx = await startTestServer()
   t.after(async () => {
