@@ -117,6 +117,11 @@ test('media normalization endpoint converts HEIC payloads through the injected n
         via: 'companion',
         engine: 'test-engine',
       },
+      pipelineHints: {
+        source: 'image',
+        summary: 'Image normalized from image/heic to image/jpeg via test-engine. OCR hook not enabled yet.',
+        ocrReady: false,
+      },
     }),
   })
   t.after(async () => {

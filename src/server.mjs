@@ -75,7 +75,7 @@ import {
   setAcpSessionTransitionHook,
 } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
-import { buildImagePipelineHints, getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
+import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 
 // ── Auth rate limiter ──
@@ -139,21 +139,6 @@ function sendJson(res, status, payload) {
     'Cache-Control': 'no-store',
   })
   res.end(JSON.stringify(payload))
-}
-
-function withMediaPipelineHints(payload) {
-  if (!payload || payload.pipelineHints || !payload.normalization) return payload
-  const normalization = payload.normalization
-  return {
-    ...payload,
-    pipelineHints: buildImagePipelineHints({
-      sourceMimeType: normalization.sourceMimeType,
-      outputMimeType: normalization.outputMimeType,
-      engine: normalization.engine || normalization.via || 'companion',
-      status: normalization.status,
-      note: normalization.note,
-    }),
-  }
 }
 
 function buildCompanionCapabilitiesPayload() {
@@ -956,7 +941,7 @@ export function createCompanionServer({
         const payload = await normalizeMediaImage(body, {
           support: await getMediaSupport(),
         })
-        return sendJson(res, 200, withMediaPipelineHints(payload))
+        return sendJson(res, 200, payload)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }

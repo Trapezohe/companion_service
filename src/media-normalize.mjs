@@ -6,6 +6,14 @@ import path from 'node:path'
 const HEIC_MIME_TYPES = new Set(['image/heic', 'image/heif'])
 const GENERIC_MIME_TYPES = new Set(['application/octet-stream'])
 const MIME_BY_EXT = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+  '.pdf': 'application/pdf',
   '.heic': 'image/heic',
   '.heif': 'image/heif',
 }

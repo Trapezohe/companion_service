@@ -100,6 +100,23 @@ test('normalizeImagePayload does not let filename fallback override an explicit 
   assert.equal(payload.normalization.sourceMimeType, 'image/jpeg')
 })
 
+test('normalizeImagePayload resolves common image extensions from generic MIME payloads', async () => {
+  const payload = await normalizeImagePayload({
+    name: 'photo.png',
+    mimeType: 'application/octet-stream',
+    bytesBase64: Buffer.from('png-binary').toString('base64'),
+  })
+
+  assert.equal(payload.changed, false)
+  assert.equal(payload.mimeType, 'image/png')
+  assert.equal(payload.normalization.sourceMimeType, 'image/png')
+  assert.deepEqual(payload.pipelineHints, {
+    source: 'image',
+    summary: 'Image retained as image/png. OCR hook not enabled yet.',
+    ocrReady: false,
+  })
+})
+
 test('normalizeImagePayload reports failure hints truthfully when HEIC conversion is unavailable', async () => {
   const payload = await normalizeImagePayload({
     name: 'photo.heic',
