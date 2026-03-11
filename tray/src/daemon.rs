@@ -184,13 +184,6 @@ fn resolve_cli_invocation_from(home: Option<&Path>, repo_cli: Option<&Path>) -> 
         }
     }
 
-    if let Some(repo_cli) = repo_cli.filter(|path| path.exists()) {
-        return Ok(CliInvocation {
-            program: PathBuf::from("node"),
-            prefix_args: vec![repo_cli.display().to_string()],
-        });
-    }
-
     if let Some(home) = home {
         for candidate in installed_cli_candidates(home) {
             if candidate.exists() {
@@ -200,6 +193,13 @@ fn resolve_cli_invocation_from(home: Option<&Path>, repo_cli: Option<&Path>) -> 
                 });
             }
         }
+    }
+
+    if let Some(repo_cli) = repo_cli.filter(|path| path.exists()) {
+        return Ok(CliInvocation {
+            program: PathBuf::from("node"),
+            prefix_args: vec![repo_cli.display().to_string()],
+        });
     }
 
     if let Some(path_cli) = resolve_command_on_path("trapezohe-companion") {
@@ -317,7 +317,27 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn prefers_repo_cli_entry_when_source_tree_exists() {
+    fn prefers_installed_cli_even_when_source_tree_exists() {
+        let temp = tempdir().expect("temp dir");
+        let repo_cli = temp.path().join("bin").join("cli.mjs");
+        std::fs::create_dir_all(repo_cli.parent().expect("bin dir")).expect("create bin dir");
+        std::fs::write(&repo_cli, "#!/usr/bin/env node\n").expect("write repo cli");
+
+        let installed_cli = installed_cli_candidates(temp.path())
+            .into_iter()
+            .next()
+            .expect("at least one candidate");
+        std::fs::create_dir_all(installed_cli.parent().expect("bin dir")).expect("create bin dir");
+        std::fs::write(&installed_cli, "#!/bin/sh\n").expect("write installed cli");
+
+        let invocation =
+            resolve_cli_invocation_from(Some(temp.path()), Some(&repo_cli)).expect("installed cli");
+        assert_eq!(invocation.program, installed_cli);
+        assert!(invocation.prefix_args.is_empty());
+    }
+
+    #[test]
+    fn falls_back_to_repo_cli_when_no_installed_binary_exists() {
         let temp = tempdir().expect("temp dir");
         let repo_cli = temp.path().join("bin").join("cli.mjs");
         std::fs::create_dir_all(repo_cli.parent().expect("bin dir")).expect("create bin dir");

@@ -9,6 +9,7 @@ async function withTempHome(run, options = {}) {
   const prevHome = process.env.HOME
   const prevUserProfile = process.env.USERPROFILE
   const prevMaxRuns = process.env.TRAPEZOHE_MAX_RUNS
+  let mod
   process.env.HOME = tempHome
   process.env.USERPROFILE = tempHome
   if (options.maxRuns) {
@@ -19,10 +20,13 @@ async function withTempHome(run, options = {}) {
 
   try {
     const cacheBust = `${Date.now()}-${Math.random()}`
-    const mod = await import(`./run-store.mjs?bust=${cacheBust}`)
+    mod = await import(`./run-store.mjs?bust=${cacheBust}`)
     await mod.loadRunStore()
     await run({ tempHome, mod })
   } finally {
+    // Flush any debounced writes before removing the temp HOME to avoid
+    // unhandled async ENOENT errors after the test finishes.
+    await mod?.flushRunStore?.().catch(() => undefined)
     if (prevHome === undefined) delete process.env.HOME
     else process.env.HOME = prevHome
     if (prevUserProfile === undefined) delete process.env.USERPROFILE

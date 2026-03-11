@@ -7,12 +7,17 @@ import { promises as fs } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
-import { getNativeHostManifestTargets, resolveBootstrapExtensionIds } from './native-host.mjs'
+import {
+  FIXED_EXTENSION_ID,
+  getNativeHostManifestTargets,
+  resolveBootstrapExtensionIds,
+} from './native-host.mjs'
 
 const execFileAsync = promisify(execFile)
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(TEST_DIR, '..')
 const CLI_PATH = path.join(REPO_ROOT, 'bin', 'cli.mjs')
+const FIXED_ORIGIN = `chrome-extension://${FIXED_EXTENSION_ID}/`
 
 async function withTempHome(run) {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'trapezohe-bootstrap-test-'))
@@ -121,25 +126,16 @@ function assertManifestOrigins(tempHome, manifests, expectedOrigins) {
   }
 }
 
-test('resolveBootstrapExtensionIds prefers explicit CLI ids', () => {
+test('resolveBootstrapExtensionIds always resolves to the fixed production extension id', () => {
   const ids = resolveBootstrapExtensionIds({
     requestedExtensionIds: ['cli-extension-1', 'cli-extension-2'],
     configuredExtensionIds: ['configured-extension'],
   })
 
-  assert.deepEqual(ids, ['cli-extension-1', 'cli-extension-2'])
+  assert.deepEqual(ids, [FIXED_EXTENSION_ID])
 })
 
-test('resolveBootstrapExtensionIds falls back to configured ids when CLI ids are absent', () => {
-  const ids = resolveBootstrapExtensionIds({
-    requestedExtensionIds: [],
-    configuredExtensionIds: ['configured-extension-1', 'configured-extension-2'],
-  })
-
-  assert.deepEqual(ids, ['configured-extension-1', 'configured-extension-2'])
-})
-
-test('bootstrap prefers explicit CLI extension ids over configured extensionIds', async () => {
+test('bootstrap registers the fixed extension id even when CLI ids and config ids disagree', async () => {
   await withTempHome(async (tempHome) => {
     await writeConfig(tempHome, ['configured-extension'])
 
@@ -151,71 +147,48 @@ test('bootstrap prefers explicit CLI extension ids over configured extensionIds'
     ])
 
     assert.equal(output.nativeHostRegistered, true)
-    assert.deepEqual(output.extensionIds, ['cli-extension-1', 'cli-extension-2'])
+    assert.deepEqual(output.extensionIds, [FIXED_EXTENSION_ID])
 
     const savedConfig = await readConfig(tempHome)
-    assert.deepEqual(savedConfig.extensionIds, ['cli-extension-1', 'cli-extension-2'])
+    assert.equal(savedConfig.token, 'test-token')
 
     const manifests = await readManifestPayloads(tempHome)
-    assertManifestOrigins(tempHome, manifests, [
-      'chrome-extension://cli-extension-1/',
-      'chrome-extension://cli-extension-2/',
-    ])
+    assertManifestOrigins(tempHome, manifests, [FIXED_ORIGIN])
   })
 })
 
-test('bootstrap falls back to configured extensionIds when no CLI ids are provided', async () => {
-  await withTempHome(async (tempHome) => {
-    await writeConfig(tempHome, ['configured-extension-1', 'configured-extension-2'])
-
-    const output = await runBootstrap(tempHome)
-
-    assert.equal(output.nativeHostRegistered, true)
-    assert.deepEqual(output.extensionIds, ['configured-extension-1', 'configured-extension-2'])
-
-    const savedConfig = await readConfig(tempHome)
-    assert.deepEqual(savedConfig.extensionIds, ['configured-extension-1', 'configured-extension-2'])
-
-    const manifests = await readManifestPayloads(tempHome)
-    assertManifestOrigins(tempHome, manifests, [
-      'chrome-extension://configured-extension-1/',
-      'chrome-extension://configured-extension-2/',
-    ])
-  })
-})
-
-test('bootstrap skips native-host registration when no extension ids exist', async () => {
+test('bootstrap registers the fixed extension id even when no extension ids exist', async () => {
   await withTempHome(async (tempHome) => {
     const output = await runBootstrap(tempHome)
 
     assert.equal(output.ok, true)
-    assert.equal(output.nativeHostRegistered, false)
-    assert.deepEqual(output.extensionIds, [])
+    assert.equal(output.nativeHostRegistered, true)
+    assert.deepEqual(output.extensionIds, [FIXED_EXTENSION_ID])
     assert.deepEqual(output.nativeHost, {
-      status: 'skipped',
-      reason: 'missing_extension_id',
-      extensionIds: [],
+      status: 'registered',
+      reason: null,
+      extensionIds: [FIXED_EXTENSION_ID],
     })
     assert.equal(output.daemon.message, 'skipped')
 
     const savedConfig = await readConfig(tempHome)
-    assert.equal(savedConfig.extensionIds, undefined)
+    assert.equal(savedConfig.token.length > 0, true)
 
     const manifests = await readManifestPayloads(tempHome)
-    assert.equal(manifests.length, 0)
+    assertManifestOrigins(tempHome, manifests, [FIXED_ORIGIN])
   })
 })
 
-test('bootstrap clears stale native-host manifests when no extension ids exist', async () => {
+test('bootstrap replaces stale native-host manifests with the fixed extension origin', async () => {
   await withTempHome(async (tempHome) => {
     await seedManifestPayloads(tempHome, ['chrome-extension://stale-extension/'])
 
     const output = await runBootstrap(tempHome)
 
-    assert.equal(output.nativeHostRegistered, false)
-    assert.deepEqual(output.extensionIds, [])
+    assert.equal(output.nativeHostRegistered, true)
+    assert.deepEqual(output.extensionIds, [FIXED_EXTENSION_ID])
 
     const manifests = await readManifestPayloads(tempHome)
-    assert.equal(manifests.length, 0)
+    assertManifestOrigins(tempHome, manifests, [FIXED_ORIGIN])
   })
 })

@@ -17,25 +17,25 @@ The Trapezohe Chrome extension has limited capabilities due to browser sandbox r
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash
 ```
 
-Non-interactive (one command, no prompts — replace `<your-extension-id>` with your actual extension ID from `chrome://extensions/`):
+Non-interactive (one command, no prompts):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash -s -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace ~/trapezohe-workspace
+curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash -s -- --non-interactive --mode workspace --workspace ~/trapezohe-workspace
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex
 ```
 
-Non-interactive (replace `<your-extension-id>` with your actual extension ID):
+Non-interactive:
 
 ```powershell
-irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex -- --non-interactive --ext-id <your-extension-id> --mode workspace --workspace "$HOME\\trapezohe-workspace"
+irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex -- --non-interactive --mode workspace --workspace "$HOME\\trapezohe-workspace"
 ```
 
 ### Installer Packages (No Terminal Flow)
@@ -49,7 +49,7 @@ You can also install from GitHub Releases:
 Latest release page:
 
 ```text
-https://github.com/trapezohe/companion/releases/latest
+https://github.com/Trapezohe/companion_service/releases/latest
 ```
 
 Recommended verification before running installers:
@@ -84,10 +84,8 @@ Installers attempt a best-effort bootstrap automatically. If Node.js is missing 
 
 ```bash
 npm install -g trapezohe-companion
-trapezohe-companion bootstrap --ext-id <your-extension-id>
+trapezohe-companion bootstrap --mode workspace --workspace ~/trapezohe-workspace
 ```
-
-> **Where to find your extension ID:** Open `chrome://extensions/`, find "Trapezohe AI" and copy the ID string (e.g. `abcdefghijklmnopqrstuvwxyz123456`). The extension's **Settings → Companion** page also shows a ready-to-copy install command with the ID pre-filled.
 
 The `bootstrap` command handles everything: creates config, registers the Chrome Native Messaging host for auto-pairing, and starts the daemon.
 
@@ -96,13 +94,13 @@ If you prefer step-by-step:
 ```bash
 npm install -g trapezohe-companion
 trapezohe-companion init                           # Create config
-trapezohe-companion register <your-extension-id>   # Register native messaging host
+trapezohe-companion register                      # Register native messaging host
 trapezohe-companion start                          # Start the daemon
 ```
 
 ### Connect to Extension
 
-**Automatic (recommended):** If you used `bootstrap` or `register` with your extension ID, the extension auto-discovers the companion via Chrome Native Messaging — no manual config needed.
+**Automatic (recommended):** `bootstrap` and `register` always pair the companion with the built-in official Ghast extension ID, so the extension auto-discovers the companion via Chrome Native Messaging — no manual config needed.
 
 **Manual fallback:**
 1. Start the companion: `trapezohe-companion start`
@@ -172,8 +170,8 @@ trapezohe-companion policy full
 trapezohe-companion policy workspace ~/trapezohe-workspace
 trapezohe-companion self-check  # Run local diagnostics + suggested repairs
 trapezohe-companion repair repair_config
-trapezohe-companion repair register_native_host --ext-id abc123
-trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/trapezohe-workspace
+trapezohe-companion repair register_native_host
+trapezohe-companion bootstrap --mode workspace --workspace ~/trapezohe-workspace
 ```
 
 ## Diagnostics and Repair
@@ -184,14 +182,14 @@ The Companion now exposes a built-in self-check and a small repair loop for the 
 trapezohe-companion self-check
 trapezohe-companion self-check --json
 trapezohe-companion repair repair_config
-trapezohe-companion repair register_native_host --ext-id <your-extension-id>
+trapezohe-companion repair register_native_host
 ```
 
 What these do:
 
 - `self-check` validates config readability, token presence, workspace policy, native host registration, and configured MCP executable availability.
-- `repair repair_config` rewrites missing config defaults while preserving MCP server config and saved extension IDs where possible.
-- `repair register_native_host` re-registers the Chrome native messaging manifest for the provided extension ID(s) or the IDs already saved in config.
+- `repair repair_config` rewrites missing config defaults while preserving MCP server config and the current access token where possible.
+- `repair register_native_host` re-registers the Chrome native messaging manifest for the built-in official Ghast extension ID.
 
 ## API Endpoints
 
@@ -201,7 +199,7 @@ All endpoints require `Authorization: Bearer <token>` header and only accept con
 
 ```
 GET /healthz
-→ { "ok": true, "pid": 12345, "version": "0.1.2", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
+→ { "ok": true, "pid": 12345, "version": "0.1.8", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
 ```
 
 ### Diagnostics / Repair
@@ -280,7 +278,7 @@ Find more at [MCP Servers Directory](https://github.com/modelcontextprotocol/ser
 ## Requirements
 
 - Node.js 18+
-- Trapezohe Chrome Extension v0.1.2+
+- Ghast Chrome extension (official Chrome Web Store build)
 
 ## License
 

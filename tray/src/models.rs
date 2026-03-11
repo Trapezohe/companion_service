@@ -61,6 +61,14 @@ pub struct McpServerSnapshot {
 pub struct RecentFailure {
     pub run_id: String,
     pub summary: String,
+    #[serde(default)]
+    pub error: String,
+}
+
+impl RecentFailure {
+    fn is_actionable(&self) -> bool {
+        self.error.trim() != "companion_restart_recovery"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -284,12 +292,17 @@ fn derive_state(
             }
         }
         if let Some(diag) = diagnostics {
-            if !diag.recent_failures.is_empty() {
+            let actionable_failure_count = diag
+                .recent_failures
+                .iter()
+                .filter(|failure| failure.is_actionable())
+                .count();
+            if actionable_failure_count > 0 {
                 return CompanionShellState::Degraded {
                     reason: format!(
                         "{} recent runtime {}",
-                        diag.recent_failures.len(),
-                        pluralize(diag.recent_failures.len(), "failure", "failures"),
+                        actionable_failure_count,
+                        pluralize(actionable_failure_count, "failure", "failures"),
                     ),
                 };
             }
@@ -408,6 +421,7 @@ mod tests {
             recent_failures: vec![RecentFailure {
                 run_id: "run_1".into(),
                 summary: "MCP server restart failed".into(),
+                error: "runtime_restart_failed".into(),
             }],
             servers: vec![McpServerSnapshot {
                 name: "bnbchain-mcp".into(),
@@ -471,5 +485,31 @@ mod tests {
         assert!(snapshot.actions.can_start);
         assert!(!snapshot.actions.can_stop);
         assert!(!snapshot.actions.can_restart);
+    }
+
+    #[test]
+    fn ignores_restart_recovery_failures_when_runtime_is_otherwise_healthy() {
+        let mut diagnostics = sample_diagnostics();
+        diagnostics.recent_failures = vec![RecentFailure {
+            run_id: "run_recovery".into(),
+            summary: "Session orphaned after companion restart".into(),
+            error: "companion_restart_recovery".into(),
+        }];
+
+        let snapshot = StatusViewModel::from_probe_results(
+            &sample_config(),
+            Some(sample_health()),
+            Some(diagnostics),
+            Some(SelfCheckSnapshot {
+                ok: true,
+                failing_checks: Vec::new(),
+                repair_actions: Vec::new(),
+            }),
+            None,
+            1_772_431_234_000,
+        );
+
+        assert!(matches!(snapshot.state, CompanionShellState::Healthy { .. }));
+        assert_eq!(snapshot.headline(), "Companion is ready");
     }
 }

@@ -130,6 +130,34 @@ function Bootstrap-Companion {
   return $true
 }
 
+function Restart-CompanionDaemon {
+  $configPath = Join-Path $trapezoheDir "companion.json"
+  if (-not (Test-Path $configPath)) {
+    Write-InstallerLog "Companion config missing at $configPath; skipping runtime handoff"
+    return
+  }
+
+  $cli = Get-Command trapezohe-companion -ErrorAction SilentlyContinue
+  if (-not $cli) {
+    Write-InstallerLog "Installed companion CLI is not on PATH; skipping runtime handoff"
+    return
+  }
+
+  & trapezohe-companion stop --force | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    Write-InstallerLog "Stopped any existing companion daemon before handoff"
+  } else {
+    Write-InstallerLog "Installed CLI stop command exited with $LASTEXITCODE during runtime handoff"
+  }
+
+  & trapezohe-companion start -d | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    Write-InstallerLog "Started installed companion daemon after handoff"
+  } else {
+    Write-InstallerLog "Installed CLI start command exited with $LASTEXITCODE during runtime handoff"
+  }
+}
+
 function Launch-TrayOnce {
   if (-not (Test-Path $trayExePath)) {
     Write-InstallerLog "Tray executable missing at $trayExePath; skipping first launch"
@@ -145,5 +173,6 @@ Write-StartupPolicy
 Remove-LegacyDaemonAutostart
 Register-TrayAutoStart
 Bootstrap-Companion | Out-Null
+Restart-CompanionDaemon
 Launch-TrayOnce
 exit 0

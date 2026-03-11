@@ -213,7 +213,7 @@ jobs:
             Get-FileHash .\trapezohe-companion-windows.msi -Algorithm SHA256
             ```
 
-            Compare the output against [`SHA256SUMS.txt`](https://github.com/trapezohe/companion/releases/download/v${{ needs.check-version.outputs.version }}/SHA256SUMS.txt) before running installers.
+            Compare the output against [`SHA256SUMS.txt`](https://github.com/Trapezohe/companion_service/releases/download/v${{ needs.check-version.outputs.version }}/SHA256SUMS.txt) before running installers.
 
             ---
 

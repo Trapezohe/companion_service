@@ -2,6 +2,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 export const NATIVE_HOST_NAMES = ['com.ghast.companion', 'com.trapezohe.companion']
+export const FIXED_EXTENSION_ID = 'nnhdkkgpoeojjddikcjadgpkbfbjhcal'
+export const FIXED_EXTENSION_IDS = [FIXED_EXTENSION_ID]
 
 export function normalizeExtensionIds(ids = []) {
   return Array.from(
@@ -14,8 +16,8 @@ export function normalizeExtensionIds(ids = []) {
   )
 }
 
-export function getConfiguredExtensionIds(config) {
-  return normalizeExtensionIds(config?.extensionIds)
+export function getConfiguredExtensionIds(_config) {
+  return [...FIXED_EXTENSION_IDS]
 }
 
 export function normalizeExtensionOrigin(origin = '') {
@@ -28,28 +30,12 @@ export function isChromeExtensionOrigin(origin = '') {
   return /^chrome-extension:\/\/[a-p]{32}$/.test(normalized)
 }
 
-export function resolveBootstrapExtensionIds({
-  requestedExtensionIds = [],
-  configuredExtensionIds = [],
-} = {}) {
-  const requested = normalizeExtensionIds(requestedExtensionIds)
-  if (requested.length > 0) return requested
-  return normalizeExtensionIds(configuredExtensionIds)
+export function resolveBootstrapExtensionIds(_options = {}) {
+  return [...FIXED_EXTENSION_IDS]
 }
 
-export function resolveNativeHostExtensionIds(
-  config,
-  cliExtensionIds = [],
-  { allowConfigIds = true, failIfMissing = false } = {},
-) {
-  const configIds = allowConfigIds ? getConfiguredExtensionIds(config) : []
-  const allIds = normalizeExtensionIds([...configIds, ...cliExtensionIds])
-  if (allIds.length === 0 && failIfMissing) {
-    throw new Error(
-      'At least one extension ID is required. Use "trapezohe-companion register <extension-id>" or set extensionIds in companion config.',
-    )
-  }
-  return allIds
+export function resolveNativeHostExtensionIds(_config, _cliExtensionIds = [], _options = {}) {
+  return [...FIXED_EXTENSION_IDS]
 }
 
 export function getAllowedOrigins(extensionIds) {

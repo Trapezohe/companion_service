@@ -12,7 +12,7 @@
  *   trapezohe-companion token               Show current access token
  *   trapezohe-companion self-check          Run diagnostics and show repair suggestions
  *   trapezohe-companion repair <action>     Repair common local setup issues
- *   trapezohe-companion register [ext-id]  Register Chrome Native Messaging host
+ *   trapezohe-companion register            Register Chrome Native Messaging host
  *   trapezohe-companion unregister         Remove Native Messaging host registration
  *   trapezohe-companion bootstrap          One-shot setup for non-technical users
  */
@@ -1078,7 +1078,7 @@ Commands:
   self-check            Run diagnostics and list suggested repairs
   repair <action>       Repair config or native host registration
   bootstrap            One-shot setup + start (non-interactive friendly)
-  register <ext-id>    Register Chrome Native Messaging host for auto-pairing
+  register             Register Chrome Native Messaging host for the built-in Ghast extension
   unregister           Remove Native Messaging host registration
 
 Examples:
@@ -1092,12 +1092,12 @@ Examples:
   trapezohe-companion policy workspace ~/trapezohe-workspace
   trapezohe-companion self-check --json
   trapezohe-companion repair repair_config
-  trapezohe-companion repair register_native_host --ext-id abc123
-  trapezohe-companion bootstrap --ext-id abc123 --mode workspace --workspace ~/trapezohe-workspace
-  trapezohe-companion register abc123  # Register native host for extension ID
+  trapezohe-companion repair register_native_host
+  trapezohe-companion bootstrap --mode workspace --workspace ~/trapezohe-workspace
+  trapezohe-companion register  # Register native host for the built-in Ghast extension
 
 Config: ~/.trapezohe/companion.json
-Docs:   https://github.com/trapezohe/companion
+Docs:   https://github.com/Trapezohe/companion_service
 `)
 }
 

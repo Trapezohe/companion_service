@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Trapezohe Companion — One-click installer for macOS / Linux
-# Usage: curl -fsSL https://raw.githubusercontent.com/trapezohe/companion/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash
 
 BOLD='\033[1m'
 GREEN='\033[0;32m'
@@ -12,7 +12,6 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 NON_INTERACTIVE=0
-EXT_ID=""
 MODE="workspace"
 WORKSPACE_ROOT=""
 ENABLE_AUTOSTART=1
@@ -25,7 +24,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --ext-id)
-      EXT_ID="${2:-}"
+      # Deprecated: the companion now targets the built-in official Ghast extension ID.
       shift 2
       ;;
     --mode)
@@ -103,9 +102,6 @@ run_bootstrap() {
   if [[ -n "$WORKSPACE_ROOT" ]]; then
     cmd+=(--workspace "$WORKSPACE_ROOT")
   fi
-  if [[ -n "$EXT_ID" ]]; then
-    cmd+=(--ext-id "$EXT_ID")
-  fi
   if [[ "$ENABLE_AUTOSTART" -eq 0 ]]; then
     cmd+=(--no-autostart)
   fi
@@ -123,19 +119,9 @@ register_native_host() {
   echo ""
   echo -e "  ${BOLD}Chrome Native Messaging (auto-pairing)${NC}"
   echo ""
-  echo "  To enable automatic pairing with the Trapezohe extension,"
-  echo "  enter your extension ID (find it at chrome://extensions/)."
-  echo ""
-  read -p "  Extension ID (or press Enter to skip): " EXT_ID
-
-  if [ -z "$EXT_ID" ]; then
-    echo -e "  ${YELLOW}⚠${NC} Skipped. You can register later with:"
-    echo "    trapezohe-companion register <extension-id>"
-    return
-  fi
-
-  trapezohe-companion register "$EXT_ID" 2>&1 | sed 's/^/    /'
-  echo -e "  ${GREEN}✓${NC} Native messaging host registered"
+  echo "  Registering the built-in Ghast extension pairing..."
+  trapezohe-companion register 2>&1 | sed 's/^/    /'
+  echo -e "  ${GREEN}✓${NC} Native messaging host registered for Ghast"
 }
 
 # ── Auto-start setup (default: enabled) ──
@@ -266,5 +252,5 @@ echo "    trapezohe-companion start -d   # Start as daemon"
 echo "    trapezohe-companion status     # Check status"
 echo ""
 echo "  Config: ~/.trapezohe/companion.json"
-echo "  Docs:   https://github.com/trapezohe/companion"
+echo "  Docs:   https://github.com/Trapezohe/companion_service"
 echo ""

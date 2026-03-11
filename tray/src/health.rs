@@ -71,6 +71,8 @@ struct DiagnosticsRunPayload {
     run_id: String,
     #[serde(default)]
     summary: String,
+    #[serde(default)]
+    error: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -130,9 +132,11 @@ fn map_diagnostics_payload(payload: DiagnosticsPayload) -> DiagnosticsSnapshot {
             .runs
             .recent_failed
             .into_iter()
+            .filter(|item| item.error != "companion_restart_recovery")
             .map(|item| RecentFailure {
                 run_id: item.run_id,
                 summary: item.summary,
+                error: item.error,
             })
             .collect(),
         servers: payload
@@ -272,6 +276,7 @@ mod tests {
                 recent_failed: vec![DiagnosticsRunPayload {
                     run_id: "run_1".into(),
                     summary: "Restart failed".into(),
+                    error: "runtime_restart_failed".into(),
                 }],
             },
             approvals: DiagnosticsApprovalsPayload {
@@ -289,6 +294,23 @@ mod tests {
         assert_eq!(mapped.running_acp_sessions, 1);
         assert_eq!(mapped.recent_failures.len(), 1);
         assert_eq!(mapped.servers[0].tool_count, 4);
+    }
+
+    #[test]
+    fn ignores_restart_recovery_failures_in_diagnostics_mapping() {
+        let payload = DiagnosticsPayload {
+            runs: DiagnosticsRunsPayload {
+                recent_failed: vec![DiagnosticsRunPayload {
+                    run_id: "run_recovery".into(),
+                    summary: "Session orphaned after companion restart".into(),
+                    error: "companion_restart_recovery".into(),
+                }],
+            },
+            ..DiagnosticsPayload::default()
+        };
+
+        let mapped = map_diagnostics_payload(payload);
+        assert!(mapped.recent_failures.is_empty());
     }
 
     #[test]

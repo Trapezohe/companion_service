@@ -16,7 +16,9 @@ if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
   exit 0
 fi
 
-TMP_SCRIPT="$(mktemp /tmp/trapezohe-companion-bootstrap.XXXXXX.sh)"
+# The postinstall runs as root, so mktemp -t lands under a root-only temp directory.
+# Put the bootstrap script in /Users/Shared so the console user can execute it via su.
+TMP_SCRIPT="$(mktemp "/Users/Shared/trapezohe-companion-bootstrap.XXXXXX")"
 cat > "${TMP_SCRIPT}" <<'EOS'
 #!/bin/bash
 set -euo pipefail
@@ -187,7 +189,7 @@ LAUNCHER
   chmod 755 "${launcher}"
 
   # Write Chrome NativeMessagingHosts manifests
-  local ext_id="olngglipkifpkolknipcbdcifbkcfhkk"
+  local ext_id="nnhdkkgpoeojjddikcjadgpkbfbjhcal"
   local origin="chrome-extension://${ext_id}/"
   local host_names=("com.ghast.companion" "com.trapezohe.companion")
   local browser_dirs=(
@@ -256,6 +258,31 @@ WRAPPER
   log "Deployed companion service to ${service_dir}, wrapper at ${wrapper}"
 }
 
+restart_companion_daemon() {
+  local wrapper="${LOCAL_NODE_DIR}/bin/trapezohe-companion"
+  if [[ ! -x "${wrapper}" ]]; then
+    log "Installed companion CLI missing at ${wrapper}; skipping runtime handoff"
+    return 0
+  fi
+
+  if [[ ! -f "${TRAPEZOHE_DIR}/companion.json" ]]; then
+    log "Companion config missing; skipping runtime handoff"
+    return 0
+  fi
+
+  if "${wrapper}" stop --force >/dev/null 2>&1; then
+    log "Stopped any existing companion daemon before handoff"
+  else
+    log "Installed CLI stop command failed; continuing with daemon handoff"
+  fi
+
+  if "${wrapper}" start -d >/dev/null 2>&1; then
+    log "Started installed companion daemon after handoff"
+  else
+    log "Installed CLI start command failed; runtime handoff skipped"
+  fi
+}
+
 launch_tray_once() {
   if [[ ! -x "${TRAY_BIN_PATH}" ]]; then
     log "Tray executable not found at ${TRAY_BIN_PATH}; skipping first launch"
@@ -268,6 +295,7 @@ launch_tray_once() {
 ensure_companion_config
 register_native_host || true
 deploy_companion_service || true
+restart_companion_daemon || true
 write_startup_policy
 remove_legacy_daemon_login_item
 register_tray_login_item
@@ -278,13 +306,13 @@ sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${TMP_SCRIPT}"
 sed -i '' "s/__NODE_VERSION__/${NODE_VERSION}/g" "${TMP_SCRIPT}"
 chmod 755 "${TMP_SCRIPT}"
 
-if ! su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then
+if su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then
+  echo "[$(date)] Companion bootstrap finished successfully." >> "${LOG_FILE}" 2>&1
+  rm -f "${TMP_SCRIPT}"
+  exit 0
+else
   RC="$?"
   echo "[$(date)] Installer user bootstrap failed (exit=${RC}). Installation will continue; user can retry from extension Settings > Companion." >> "${LOG_FILE}" 2>&1
   rm -f "${TMP_SCRIPT}"
   exit 0
 fi
-
-echo "[$(date)] Companion bootstrap finished successfully." >> "${LOG_FILE}" 2>&1
-rm -f "${TMP_SCRIPT}"
-exit 0

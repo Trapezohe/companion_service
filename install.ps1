@@ -1,10 +1,9 @@
 # Trapezohe Companion — One-click installer for Windows
-# Usage: irm https://raw.githubusercontent.com/trapezohe/companion/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 $NonInteractive = $false
-$ExtId = ""
 $Mode = "workspace"
 $WorkspaceRoot = ""
 $EnableAutostart = $true
@@ -16,13 +15,6 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         "--non-interactive" { $NonInteractive = $true; continue }
         "-y" { $NonInteractive = $true; continue }
         "--yes" { $NonInteractive = $true; continue }
-        "--ext-id" {
-            if ($i + 1 -lt $args.Count) {
-                $i++
-                $ExtId = $args[$i]
-            }
-            continue
-        }
         "--mode" {
             if ($i + 1 -lt $args.Count) {
                 $i++
@@ -98,9 +90,6 @@ function Run-Bootstrap {
     if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
         $bootstrapArgs += @("--workspace", $WorkspaceRoot)
     }
-    if (-not [string]::IsNullOrWhiteSpace($ExtId)) {
-        $bootstrapArgs += @("--ext-id", $ExtId)
-    }
     if (-not $EnableAutostart) {
         $bootstrapArgs += "--no-autostart"
     }
@@ -118,19 +107,9 @@ function Register-NativeHost {
     Write-Host ""
     Write-Host "  Chrome Native Messaging (auto-pairing)" -ForegroundColor White
     Write-Host ""
-    Write-Host "  To enable automatic pairing with the Trapezohe extension,"
-    Write-Host "  enter your extension ID (find it at chrome://extensions/)."
-    Write-Host ""
-    $extId = Read-Host "  Extension ID (or press Enter to skip)"
-
-    if ([string]::IsNullOrWhiteSpace($extId)) {
-        Write-Host "  WARNING: Skipped. Register later with:" -ForegroundColor Yellow
-        Write-Host "    trapezohe-companion register <extension-id>"
-        return
-    }
-
-    & trapezohe-companion register $extId 2>&1 | ForEach-Object { Write-Host "    $_" }
-    Write-Host "  OK Native messaging host registered" -ForegroundColor Green
+    Write-Host "  Registering the built-in Ghast extension pairing..."
+    & trapezohe-companion register 2>&1 | ForEach-Object { Write-Host "    $_" }
+    Write-Host "  OK Native messaging host registered for Ghast" -ForegroundColor Green
 }
 
 # ── Auto-start (default: enabled) ──
@@ -189,5 +168,5 @@ Write-Host "    trapezohe-companion start -d    # Start as daemon"
 Write-Host "    trapezohe-companion status      # Check status"
 Write-Host ""
 Write-Host "  Config: $env:USERPROFILE\.trapezohe\companion.json"
-Write-Host "  Docs:   https://github.com/trapezohe/companion"
+Write-Host "  Docs:   https://github.com/Trapezohe/companion_service"
 Write-Host ""

@@ -229,14 +229,15 @@ test('CLI native-host repair and self-check inspect the same manifest targets', 
   })
 })
 
-test('CLI native-host repair fails clearly when no extension ID is available', async () => {
+test('CLI native-host repair uses the fixed extension ID when no extension ID is provided', async () => {
   await withTempHome(async ({ tempHome, mod }) => {
     await mod.initConfig()
 
-    await assert.rejects(
-      () => runCli(tempHome, ['repair', 'register_native_host', '--json']),
-      /At least one extension ID is required/i,
-    )
+    const registered = await runCli(tempHome, ['repair', 'register_native_host', '--json'])
+    const payload = JSON.parse(String(registered.stdout || '{}'))
+
+    assert.deepEqual(payload.result?.extensionIds, ['nnhdkkgpoeojjddikcjadgpkbfbjhcal'])
+    assert.deepEqual(payload.result?.allowedOrigins, ['chrome-extension://nnhdkkgpoeojjddikcjadgpkbfbjhcal/'])
   })
 })
 
