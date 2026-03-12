@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, delimiter as PATH_DELIMITER } from 'node:path'
 
@@ -289,6 +289,60 @@ test('default codex command injects safe reasoning effort override', () => {
   assert.ok(command.includes('-c'))
   const idx = command.indexOf('-c')
   assert.equal(command[idx + 1], 'model_reasoning_effort=high')
+})
+
+test('default codex command skips git repo check when permission mode is full', () => {
+  const command = resolveDefaultCommand('codex', 'hello', null, {
+    permissionPolicy: { mode: 'full', workspaceRoots: [] },
+  })
+  assert.ok(Array.isArray(command))
+  assert.ok(command.includes('--skip-git-repo-check'))
+})
+
+test('default codex command preserves git repo check when permission mode is workspace', () => {
+  const command = resolveDefaultCommand('codex', 'hello', null, {
+    permissionPolicy: { mode: 'workspace', workspaceRoots: [process.cwd()] },
+  })
+  assert.ok(Array.isArray(command))
+  assert.equal(command.includes('--skip-git-repo-check'), false)
+})
+
+test('enqueuePrompt refreshes codex default command from permission policy', async (t) => {
+  cleanupAllAcpSessions()
+  t.after(() => cleanupAllAcpSessions())
+
+  const binDir = mkdtempSync(join(tmpdir(), 'acp-fake-codex-'))
+  const codexPath = join(binDir, 'codex')
+  writeFileSync(
+    codexPath,
+    '#!/usr/bin/env node\nconsole.log("ARGV=" + JSON.stringify(process.argv.slice(2)))\n',
+    'utf8',
+  )
+  chmodSync(codexPath, 0o755)
+  t.after(() => rmSync(binDir, { recursive: true, force: true }))
+
+  const pathValue = process.env.PATH
+    ? `${binDir}${PATH_DELIMITER}${process.env.PATH}`
+    : binDir
+  const { sessionId } = createAcpSession({
+    agentType: 'codex',
+    cwd: process.cwd(),
+    env: { PATH: pathValue },
+    permissionPolicy: { mode: 'workspace', workspaceRoots: [process.cwd()] },
+    timeoutMs: 5_000,
+  })
+
+  await enqueuePrompt(sessionId, {
+    prompt: 'hello',
+    permissionPolicy: { mode: 'full', workspaceRoots: [] },
+  })
+  await waitForState(sessionId, ['done', 'error'])
+
+  const argvEvent = await waitForEventMatch(
+    sessionId,
+    (event) => event.type === 'status' && String(event.text || '').includes('ARGV='),
+  )
+  assert.ok(String(argvEvent.text || '').includes('--skip-git-repo-check'))
 })
 
 test('default claude-code command can pin a stable claude session id', () => {

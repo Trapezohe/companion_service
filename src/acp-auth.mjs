@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process'
 import { readdirSync, existsSync, mkdirSync, copyFileSync, cpSync, statSync } from 'node:fs'
 import { join, dirname, delimiter as PATH_DELIMITER } from 'node:path'
 
+import { PERMISSION_MODE_FULL, normalizePermissionPolicy } from './permission-policy.mjs'
+
 const CLAUDE_HELP_PROBE_TIMEOUT_MS = Number(process.env.TRAPEZOHE_CLAUDE_HELP_PROBE_TIMEOUT_MS || 1_500)
 const CODEX_SAFE_REASONING_EFFORT = 'high'
 const SHELL_ENV_IMPORT_TIMEOUT_MS = Number(process.env.TRAPEZOHE_ACP_SHELL_ENV_IMPORT_TIMEOUT_MS || 5_000)
@@ -47,6 +49,11 @@ function parseOptionalBoolean(value) {
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false
   return null
+}
+
+function shouldSkipCodexGitRepoCheck(permissionPolicy) {
+  if (!permissionPolicy || typeof permissionPolicy !== 'object') return false
+  return normalizePermissionPolicy(permissionPolicy).mode === PERMISSION_MODE_FULL
 }
 
 function splitPathEntries(pathValue) {
@@ -424,7 +431,7 @@ export function prepareAgentSpawnEnvironment(options = {}) {
   }
 }
 
-export function resolveAgentDefaultCommand(agentType, prompt, agentSessionId) {
+export function resolveAgentDefaultCommand(agentType, prompt, agentSessionId, options = {}) {
   const type = String(agentType || '').toLowerCase()
   if (type === 'claude-code') {
     const command = [
@@ -445,6 +452,7 @@ export function resolveAgentDefaultCommand(agentType, prompt, agentSessionId) {
       'codex', 'exec',
       '--json',
       '--dangerously-bypass-approvals-and-sandbox',
+      ...(shouldSkipCodexGitRepoCheck(options.permissionPolicy) ? ['--skip-git-repo-check'] : []),
       '-c', `model_reasoning_effort=${CODEX_SAFE_REASONING_EFFORT}`,
       ...(prompt ? [prompt] : []),
     ]

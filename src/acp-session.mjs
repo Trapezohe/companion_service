@@ -57,6 +57,12 @@ function now() {
   return Date.now()
 }
 
+function clonePermissionPolicy(policy) {
+  return policy && typeof policy === 'object'
+    ? JSON.parse(JSON.stringify(policy))
+    : null
+}
+
 function clampInt(value, fallback, min, max) {
   const parsed = Number.parseInt(value, 10)
   if (!Number.isFinite(parsed)) return fallback
@@ -293,8 +299,8 @@ function enqueueOperation(session, op) {
  * Derive the default CLI command for a known agent type.
  * Returns null for 'raw' (caller must provide command explicitly).
  */
-export function resolveDefaultCommand(agentType, prompt, agentSessionId) {
-  return resolveAgentDefaultCommand(agentType, prompt, agentSessionId)
+export function resolveDefaultCommand(agentType, prompt, agentSessionId, options = {}) {
+  return resolveAgentDefaultCommand(agentType, prompt, agentSessionId, options)
 }
 
 export function createAcpSession(opts = {}) {
@@ -309,6 +315,7 @@ export function createAcpSession(opts = {}) {
     origin: typeof opts.origin === 'string' && opts.origin.trim() ? opts.origin.trim() : null,
     inputProvenance: opts.inputProvenance && typeof opts.inputProvenance === 'object' ? JSON.parse(JSON.stringify(opts.inputProvenance)) : null,
     env: opts.env || undefined,
+    permissionPolicy: clonePermissionPolicy(opts.permissionPolicy),
     timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     createdAt: now(),
     startedAt: undefined,
@@ -434,6 +441,9 @@ export function enqueuePrompt(sessionId, opts = {}) {
   if (opts.inputProvenance && typeof opts.inputProvenance === 'object') {
     session.inputProvenance = JSON.parse(JSON.stringify(opts.inputProvenance))
   }
+  if (opts.permissionPolicy && typeof opts.permissionPolicy === 'object') {
+    session.permissionPolicy = clonePermissionPolicy(opts.permissionPolicy)
+  }
 
   const blockedTerminalStates = new Set(['error', 'timeout', 'cancelled'])
   const previousState = session.state
@@ -485,7 +495,9 @@ export function enqueuePrompt(sessionId, opts = {}) {
   return enqueueOperation(session, () => {
     // Resolve command: explicit > session-level > auto-derived from agentType
     const command = opts.command || session.command
-      || resolveDefaultCommand(session.agentType, opts.prompt, session.agentSessionId)
+      || resolveDefaultCommand(session.agentType, opts.prompt, session.agentSessionId, {
+        permissionPolicy: session.permissionPolicy,
+      })
     if (!command) {
       throw new Error(
         `No command specified for ACP session "${sessionId}" (agentType="${session.agentType}"). ` +

@@ -50,6 +50,7 @@ export async function handleAcpRequest(req, res, url, pathname, ctx) {
         timeoutMs: body.timeoutMs,
         origin: body.origin,
         inputProvenance: body.inputProvenance,
+        permissionPolicy: typeof ctx.getPermissionPolicy === 'function' ? ctx.getPermissionPolicy() : undefined,
       })
       if (typeof ctx.createAcpRun === 'function') {
         const run = await ctx.createAcpRun(result)
@@ -86,6 +87,7 @@ export async function handleAcpRequest(req, res, url, pathname, ctx) {
         env: body.env,
         origin: body.origin,
         inputProvenance: body.inputProvenance,
+        permissionPolicy: typeof ctx.getPermissionPolicy === 'function' ? ctx.getPermissionPolicy() : undefined,
       })
       const session = getAcpSessionById(sessionId)
       if (session && typeof ctx.syncAcpRunIngress === 'function') {
