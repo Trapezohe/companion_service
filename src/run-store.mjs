@@ -41,8 +41,21 @@ function RUNS_BACKUP_FILE() {
  * }} RunEnvelope
  */
 
-/** @type {{ runs: RunEnvelope[], sessionLinks: Record<string, { runId: string, type?: string, updatedAt?: number }> }} */
-let store = { runs: [], sessionLinks: {} }
+/**
+ * @typedef {{
+ *   runId: string,
+ *   type?: string,
+ *   conversationId?: string,
+ *   sourceToolName?: string,
+ *   sourceToolCallId?: string,
+ *   approvalRequestId?: string,
+ *   sessionId?: string,
+ *   updatedAt?: number
+ * }} BrowserRunLink
+ */
+
+/** @type {{ runs: RunEnvelope[], sessionLinks: Record<string, BrowserRunLink>, actionLinks: Record<string, BrowserRunLink> }} */
+let store = { runs: [], sessionLinks: {}, actionLinks: {} }
 let loaded = false
 let persistTimer = null
 let persistPromise = null
@@ -91,6 +104,41 @@ function normalizeTimestamp(value) {
   const n = Number(value)
   if (!Number.isFinite(n)) return undefined
   return Math.max(0, Math.floor(n))
+}
+
+function normalizeBrowserRunLink(input, fallback = {}) {
+  if (!input || typeof input !== 'object') return null
+  const runId = typeof input.runId === 'string' ? input.runId.trim() : ''
+  if (!runId) return null
+  return {
+    runId,
+    ...(typeof input.type === 'string' && input.type.trim() ? { type: input.type.trim() } : {}),
+    ...(typeof input.conversationId === 'string' && input.conversationId.trim()
+      ? { conversationId: input.conversationId.trim() }
+      : typeof fallback.conversationId === 'string' && fallback.conversationId.trim()
+        ? { conversationId: fallback.conversationId.trim() }
+        : {}),
+    ...(typeof input.sourceToolName === 'string' && input.sourceToolName.trim()
+      ? { sourceToolName: input.sourceToolName.trim() }
+      : typeof fallback.sourceToolName === 'string' && fallback.sourceToolName.trim()
+        ? { sourceToolName: fallback.sourceToolName.trim() }
+        : {}),
+    ...(typeof input.sourceToolCallId === 'string' && input.sourceToolCallId.trim()
+      ? { sourceToolCallId: input.sourceToolCallId.trim() }
+      : typeof fallback.sourceToolCallId === 'string' && fallback.sourceToolCallId.trim()
+        ? { sourceToolCallId: fallback.sourceToolCallId.trim() }
+        : {}),
+    ...(typeof input.approvalRequestId === 'string' && input.approvalRequestId.trim()
+      ? { approvalRequestId: input.approvalRequestId.trim() }
+      : typeof fallback.approvalRequestId === 'string' && fallback.approvalRequestId.trim()
+        ? { approvalRequestId: fallback.approvalRequestId.trim() }
+        : {}),
+    ...(normalizeTimestamp(input.updatedAt) !== undefined
+      ? { updatedAt: normalizeTimestamp(input.updatedAt) }
+      : normalizeTimestamp(fallback.updatedAt) !== undefined
+        ? { updatedAt: normalizeTimestamp(fallback.updatedAt) }
+        : {}),
+  }
 }
 
 function normalizeDeliveryState(input) {
@@ -152,17 +200,26 @@ async function readStoreFile(filePath) {
             && typeof value.runId === 'string'
             && value.runId.trim(),
           )
-          .map(([sessionId, value]) => [
-            sessionId.trim(),
-            {
-              runId: String(value.runId).trim(),
-              ...(typeof value.type === 'string' && value.type.trim() ? { type: String(value.type).trim() } : {}),
-              ...(normalizeTimestamp(value.updatedAt) !== undefined ? { updatedAt: normalizeTimestamp(value.updatedAt) } : {}),
-            },
-          ]),
+          .map(([sessionId, value]) => [sessionId.trim(), normalizeBrowserRunLink(value)])
+          .filter((entry) => Boolean(entry[1])),
       )
     : {}
-  return { runs, sessionLinks }
+  const actionLinks = parsed.actionLinks && typeof parsed.actionLinks === 'object' && !Array.isArray(parsed.actionLinks)
+    ? Object.fromEntries(
+        Object.entries(parsed.actionLinks)
+          .filter(([actionId, value]) =>
+            typeof actionId === 'string'
+            && actionId.trim()
+            && value
+            && typeof value === 'object'
+            && typeof value.runId === 'string'
+            && value.runId.trim(),
+          )
+          .map(([actionId, value]) => [actionId.trim(), normalizeBrowserRunLink(value)])
+          .filter((entry) => Boolean(entry[1])),
+      )
+    : {}
+  return { runs, sessionLinks, actionLinks }
 }
 
 function trimStoreRuns() {
@@ -173,7 +230,11 @@ function trimStoreRuns() {
 async function writeStoreNow() {
   await ensureConfigDir()
   trimStoreRuns()
-  const payload = JSON.stringify({ runs: store.runs, sessionLinks: store.sessionLinks }, null, 2) + '\n'
+  const payload = JSON.stringify({
+    runs: store.runs,
+    sessionLinks: store.sessionLinks,
+    actionLinks: store.actionLinks,
+  }, null, 2) + '\n'
   const target = RUNS_FILE()
   const backup = RUNS_BACKUP_FILE()
   const tmp = `${target}.tmp`
@@ -229,7 +290,7 @@ export async function loadRunStore() {
     store = await readStoreFile(RUNS_FILE())
   } catch (err) {
     if (err.code === 'ENOENT') {
-      store = { runs: [] }
+      store = { runs: [], sessionLinks: {}, actionLinks: {} }
     } else {
       console.warn(`[run-store] Primary runs.json corrupted: ${err.message}`)
       try {
@@ -237,13 +298,16 @@ export async function loadRunStore() {
         console.warn('[run-store] Recovered from backup runs.json.bak')
       } catch (backupErr) {
         console.warn(`[run-store] Backup also unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { runs: [], sessionLinks: {} }
+        store = { runs: [], sessionLinks: {}, actionLinks: {} }
       }
     }
   }
   trimStoreRuns()
   if (!store.sessionLinks || typeof store.sessionLinks !== 'object') {
     store.sessionLinks = {}
+  }
+  if (!store.actionLinks || typeof store.actionLinks !== 'object') {
+    store.actionLinks = {}
   }
   loaded = true
   return clone(store)
@@ -470,7 +534,7 @@ export async function getRunDiagnostics(options = {}) {
 }
 
 export async function clearRunStoreForTests() {
-  store = { runs: [], sessionLinks: {} }
+  store = { runs: [], sessionLinks: {}, actionLinks: {} }
   loaded = true
   if (persistTimer) {
     clearTimeout(persistTimer)
@@ -478,7 +542,7 @@ export async function clearRunStoreForTests() {
   }
   persistPromise = null
   await ensureConfigDir()
-  const payload = JSON.stringify({ runs: [], sessionLinks: {} }, null, 2) + '\n'
+  const payload = JSON.stringify({ runs: [], sessionLinks: {}, actionLinks: {} }, null, 2) + '\n'
   await fs.writeFile(RUNS_FILE(), payload, { encoding: 'utf8', mode: FILE_MODE })
   await safeChmod(RUNS_FILE(), FILE_MODE)
 }
@@ -491,6 +555,18 @@ export async function setSessionRunLink(sessionId, runId, meta = {}) {
   store.sessionLinks[normalizedSessionId] = {
     runId: normalizedRunId,
     ...(typeof meta.type === 'string' && meta.type.trim() ? { type: meta.type.trim() } : {}),
+    ...(typeof meta.conversationId === 'string' && meta.conversationId.trim()
+      ? { conversationId: meta.conversationId.trim() }
+      : {}),
+    ...(typeof meta.sourceToolName === 'string' && meta.sourceToolName.trim()
+      ? { sourceToolName: meta.sourceToolName.trim() }
+      : {}),
+    ...(typeof meta.sourceToolCallId === 'string' && meta.sourceToolCallId.trim()
+      ? { sourceToolCallId: meta.sourceToolCallId.trim() }
+      : {}),
+    ...(typeof meta.approvalRequestId === 'string' && meta.approvalRequestId.trim()
+      ? { approvalRequestId: meta.approvalRequestId.trim() }
+      : {}),
     updatedAt: now(),
   }
   schedulePersist()
@@ -518,4 +594,47 @@ export async function clearSessionRunLink(sessionId) {
   delete store.sessionLinks[normalizedSessionId]
   schedulePersist()
   return true
+}
+
+export async function linkRunToBrowserSession(sessionId, input = {}) {
+  const runId = typeof input.runId === 'string' ? input.runId.trim() : ''
+  if (!runId) return null
+  return setSessionRunLink(sessionId, runId, {
+    ...(typeof input.type === 'string' ? { type: input.type } : {}),
+    ...(typeof input.conversationId === 'string' ? { conversationId: input.conversationId } : {}),
+    ...(typeof input.sourceToolName === 'string' ? { sourceToolName: input.sourceToolName } : {}),
+    ...(typeof input.sourceToolCallId === 'string' ? { sourceToolCallId: input.sourceToolCallId } : {}),
+    ...(typeof input.approvalRequestId === 'string' ? { approvalRequestId: input.approvalRequestId } : {}),
+  })
+}
+
+export async function getBrowserSessionLink(sessionId) {
+  return getSessionRunLink(sessionId)
+}
+
+export async function linkRunToBrowserAction(actionId, input = {}) {
+  await ensureLoaded()
+  const normalizedActionId = typeof actionId === 'string' ? actionId.trim() : ''
+  const normalizedRunId = typeof input.runId === 'string' ? input.runId.trim() : ''
+  if (!normalizedActionId || !normalizedRunId) return null
+  store.actionLinks[normalizedActionId] = normalizeBrowserRunLink({
+    runId: normalizedRunId,
+    ...(typeof input.type === 'string' ? { type: input.type } : {}),
+    ...(typeof input.conversationId === 'string' ? { conversationId: input.conversationId } : {}),
+    ...(typeof input.sourceToolName === 'string' ? { sourceToolName: input.sourceToolName } : {}),
+    ...(typeof input.sourceToolCallId === 'string' ? { sourceToolCallId: input.sourceToolCallId } : {}),
+    ...(typeof input.approvalRequestId === 'string' ? { approvalRequestId: input.approvalRequestId } : {}),
+    ...(typeof input.sessionId === 'string' ? { sessionId: input.sessionId } : {}),
+    updatedAt: now(),
+  })
+  schedulePersist()
+  return clone(store.actionLinks[normalizedActionId])
+}
+
+export async function getBrowserActionLink(actionId) {
+  await ensureLoaded()
+  const normalizedActionId = typeof actionId === 'string' ? actionId.trim() : ''
+  if (!normalizedActionId) return null
+  const link = store.actionLinks[normalizedActionId]
+  return link ? clone(link) : null
 }
