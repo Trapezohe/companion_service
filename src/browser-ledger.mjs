@@ -94,6 +94,101 @@ function artifactSortKey(entry) {
   )
 }
 
+function readLinkedField(entry, field) {
+  if (!entry || typeof entry !== 'object') return undefined
+  if (entry.link && typeof entry.link === 'object' && safeText(entry.link[field], 200)) {
+    return safeText(entry.link[field], 200)
+  }
+  const ownerRecord = entry.session && typeof entry.session === 'object'
+    ? entry.session
+    : entry.action && typeof entry.action === 'object'
+      ? entry.action
+      : null
+  if (!ownerRecord) return undefined
+  switch (field) {
+    case 'runId':
+      return safeText(ownerRecord.ownerRunId, 200)
+    case 'conversationId':
+      return safeText(ownerRecord.ownerConversationId, 200)
+    case 'sourceToolName':
+      return safeText(ownerRecord.sourceToolName, 200)
+    case 'sourceToolCallId':
+      return safeText(ownerRecord.sourceToolCallId, 200)
+    case 'approvalRequestId':
+      return safeText(ownerRecord.approvalRequestId, 200)
+    default:
+      return undefined
+  }
+}
+
+function matchesLinkFilters(entry, query = {}) {
+  const runId = safeText(query.runId, 200)
+  const conversationId = safeText(query.conversationId, 200)
+  const sourceToolName = safeText(query.sourceToolName, 200)
+  const sourceToolCallId = safeText(query.sourceToolCallId, 200)
+  const approvalRequestId = safeText(query.approvalRequestId, 200)
+
+  if (runId && readLinkedField(entry, 'runId') !== runId) return false
+  if (conversationId && readLinkedField(entry, 'conversationId') !== conversationId) return false
+  if (sourceToolName && readLinkedField(entry, 'sourceToolName') !== sourceToolName) return false
+  if (sourceToolCallId && readLinkedField(entry, 'sourceToolCallId') !== sourceToolCallId) return false
+  if (approvalRequestId && readLinkedField(entry, 'approvalRequestId') !== approvalRequestId) return false
+
+  return true
+}
+
+function resolveSessionTarget(entry) {
+  if (!Array.isArray(entry?.targets) || entry.targets.length === 0) return null
+  const primaryTargetId = safeText(entry?.session?.primaryTargetId, 200)
+  if (primaryTargetId) {
+    const primary = entry.targets.find((target) => target?.targetId === primaryTargetId)
+    if (primary) return primary
+  }
+  const active = entry.targets.find((target) => target?.active === true)
+  return active || entry.targets[0] || null
+}
+
+function buildRecentLinkedSessionSummary(entry) {
+  const target = resolveSessionTarget(entry)
+  return {
+    sessionId: entry.session.sessionId,
+    state: entry.session.state,
+    updatedAt: normalizeTimestamp(entry.session.updatedAt, entry.syncedAt),
+    ...(safeText(target?.targetId, 200) ? { targetId: safeText(target.targetId, 200) } : {}),
+    ...(safeText(target?.url, 2_000) ? { url: safeText(target.url, 2_000) } : {}),
+    ...(safeText(target?.title, 500) ? { title: safeText(target.title, 500) } : {}),
+    link: clone(entry.link || {
+      runId: readLinkedField(entry, 'runId'),
+      conversationId: readLinkedField(entry, 'conversationId'),
+      sourceToolName: readLinkedField(entry, 'sourceToolName'),
+      sourceToolCallId: readLinkedField(entry, 'sourceToolCallId'),
+      approvalRequestId: readLinkedField(entry, 'approvalRequestId'),
+      updatedAt: normalizeTimestamp(entry.session.updatedAt, entry.syncedAt),
+    }),
+  }
+}
+
+function buildRecentLinkedActionSummary(entry) {
+  return {
+    actionId: entry.action.actionId,
+    sessionId: entry.action.sessionId,
+    ...(safeText(entry.action.targetId, 200) ? { targetId: safeText(entry.action.targetId, 200) } : {}),
+    kind: entry.action.kind,
+    status: entry.action.status,
+    finishedAt: normalizeTimestamp(entry.action.finishedAt, entry.action.startedAt || entry.syncedAt),
+    ...(entry.action.error?.code ? { errorCode: safeText(entry.action.error.code, 64) } : {}),
+    ...(safeText(entry.action.resultSummary, 500) ? { resultSummary: safeText(entry.action.resultSummary, 500) } : {}),
+    link: clone(entry.link || {
+      runId: readLinkedField(entry, 'runId'),
+      conversationId: readLinkedField(entry, 'conversationId'),
+      sourceToolName: readLinkedField(entry, 'sourceToolName'),
+      sourceToolCallId: readLinkedField(entry, 'sourceToolCallId'),
+      approvalRequestId: readLinkedField(entry, 'approvalRequestId'),
+      updatedAt: normalizeTimestamp(entry.action.finishedAt, entry.action.startedAt || entry.syncedAt),
+    }),
+  }
+}
+
 function normalizeCapabilities(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
   return {
@@ -676,6 +771,7 @@ export async function listBrowserSessions(query = {}) {
   if (ownerConversationId) {
     sessions = sessions.filter((entry) => entry.session.ownerConversationId === ownerConversationId)
   }
+  sessions = sessions.filter((entry) => matchesLinkFilters(entry, query))
   const result = paginate(sessions, query.limit, query.offset)
   return {
     total: result.total,
@@ -705,6 +801,7 @@ export async function listBrowserActions(query = {}) {
   if (targetId) actions = actions.filter((entry) => entry.action.targetId === targetId)
   if (kind) actions = actions.filter((entry) => entry.action.kind === kind)
   if (status) actions = actions.filter((entry) => entry.action.status === status)
+  actions = actions.filter((entry) => matchesLinkFilters(entry, query))
   const result = paginate(actions, query.limit, query.offset)
   return {
     total: result.total,
@@ -743,16 +840,28 @@ export async function getBrowserLedgerDiagnostics() {
     return state && state !== 'closed' && state !== 'error'
   }).length
   const failedRecent = store.actions.filter((entry) => entry?.action?.status === 'failed').length
+  const linkedSessions = sortByTimestampDescending(
+    store.sessions.filter((entry) => Boolean(readLinkedField(entry, 'runId'))),
+    sessionSortKey,
+  )
+  const linkedActions = sortByTimestampDescending(
+    store.actions.filter((entry) => Boolean(readLinkedField(entry, 'runId'))),
+    actionSortKey,
+  )
   return {
     enabled: true,
     loaded,
     sessions: {
       total: store.sessions.length,
       active: activeSessions,
+      linked: linkedSessions.length,
+      recentLinked: linkedSessions.slice(0, 5).map(buildRecentLinkedSessionSummary),
     },
     actions: {
       total: store.actions.length,
       failedRecent,
+      linked: linkedActions.length,
+      recentLinked: linkedActions.slice(0, 5).map(buildRecentLinkedActionSummary),
     },
     artifacts: {
       total: store.artifacts.length,

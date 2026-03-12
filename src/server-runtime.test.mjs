@@ -5,6 +5,7 @@ import { createCompanionServer } from './server.mjs'
 import { addPendingRun, clearCronStoreForTests } from './cron-store.mjs'
 import { cleanupAllSessions } from './runtime.mjs'
 import { clearRunStoreForTests, listRuns } from './run-store.mjs'
+import { clearBrowserLedgerForTests } from './browser-ledger.mjs'
 import {
   clearApprovalStoreForTests,
   createApproval,
@@ -41,6 +42,7 @@ async function startTestServer(options = {}) {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
     await clearCronStoreForTests()
+    await clearBrowserLedgerForTests()
   }
   const token = 'test-token'
   const mcpManager = options.mcpManager || createMcpManagerStub()
@@ -204,6 +206,8 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(health.payload.supportedFeatures.acp, true)
   assert.equal(health.payload.supportedFeatures.mcp, true)
   assert.equal(health.payload.supportedFeatures.cronReplay, true)
+  assert.equal(health.payload.supportedFeatures.browserLedger, true)
+  assert.equal(health.payload.supportedFeatures.browserEvents, false)
 
   const capabilities = await requestJson(ctx, '/api/system/capabilities')
   assert.equal(capabilities.status, 200)
@@ -211,6 +215,8 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(capabilities.payload.version, health.payload.version)
   assert.equal(capabilities.payload.supportedFeatures.runLedger, true)
   assert.equal(capabilities.payload.supportedFeatures.approvalStore, true)
+  assert.equal(capabilities.payload.supportedFeatures.browserLedger, true)
+  assert.equal(capabilities.payload.supportedFeatures.browserEvents, false)
 })
 
 test('diagnostics and self-check endpoints return structured companion health details', async (t) => {
@@ -256,6 +262,11 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.equal(diagnostics.payload.mediaNormalizationSummary.available, true)
   assert.equal(diagnostics.payload.mediaNormalizationSummary.engine, 'test-engine')
   assert.ok(Array.isArray(diagnostics.payload.nativeHostRegistration?.hostNames))
+  assert.equal(typeof diagnostics.payload.browser.enabled, 'boolean')
+  assert.equal(typeof diagnostics.payload.browser.loaded, 'boolean')
+  assert.equal(typeof diagnostics.payload.browser.sessions.active, 'number')
+  assert.equal(typeof diagnostics.payload.browser.actions.failedRecent, 'number')
+  assert.equal(typeof diagnostics.payload.browser.artifacts.recent, 'number')
 
   const selfCheck = await requestJson(ctx, '/api/system/self-check')
   assert.equal(selfCheck.status, 200)
@@ -267,6 +278,171 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.equal(typeof selfCheck.payload.checks.workspacePolicy.ok, 'boolean')
   assert.equal(typeof selfCheck.payload.checks.nativeHostRegistration.ok, 'boolean')
   assert.ok(Array.isArray(selfCheck.payload.checks.mcpExecutables))
+})
+
+test('browser ledger sync and query endpoints persist browser runtime records', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const sessionSync = await requestJson(ctx, '/api/browser/sessions/sync', {
+    method: 'POST',
+    body: {
+      session: {
+        sessionId: 'browser-session-1',
+        driver: 'extension-tab',
+        state: 'ready',
+        createdAt: 1_710_000_200_000,
+        updatedAt: 1_710_000_200_100,
+        profileId: 'default',
+        primaryTargetId: 'target-1',
+        capabilities: {
+          navigate: true,
+          snapshot: true,
+          click: true,
+          type: true,
+          upload: false,
+          dialog: false,
+          console: false,
+          screenshot: false,
+          pdf: false,
+        },
+      },
+      targets: [{
+        targetId: 'target-1',
+        sessionId: 'browser-session-1',
+        kind: 'page',
+        url: 'https://example.com',
+        title: 'Example',
+        active: true,
+        attached: true,
+        lastSeenAt: 1_710_000_200_100,
+      }],
+      link: {
+        runId: 'run-browser-1',
+        conversationId: 'conv-browser-1',
+        sourceToolName: 'browser_navigate',
+        sourceToolCallId: 'tool-call-browser-1',
+        approvalRequestId: 'approval-browser-1',
+      },
+      source: 'extension-background',
+    },
+  })
+  assert.equal(sessionSync.status, 200)
+  assert.equal(sessionSync.payload.ok, true)
+  assert.equal(sessionSync.payload.session.session.sessionId, 'browser-session-1')
+
+  const actionSync = await requestJson(ctx, '/api/browser/actions/sync', {
+    method: 'POST',
+    body: {
+      action: {
+        actionId: 'browser-action-1',
+        sessionId: 'browser-session-1',
+        targetId: 'target-1',
+        kind: 'navigate',
+        status: 'completed',
+        startedAt: 1_710_000_200_200,
+        finishedAt: 1_710_000_200_250,
+        inputSummary: 'navigate to example.com',
+        resultSummary: 'navigation complete',
+        nextSnapshotId: 'snapshot-1',
+      },
+      snapshot: {
+        snapshotId: 'snapshot-1',
+        sessionId: 'browser-session-1',
+        targetId: 'target-1',
+        format: 'ai',
+        url: 'https://example.com',
+        title: 'Example',
+        body: 'Example body',
+        refs: [],
+        stats: {
+          chars: 12,
+          lines: 1,
+          refs: 0,
+          interactive: 0,
+          truncated: false,
+        },
+        createdAt: 1_710_000_200_240,
+        source: 'navigate',
+      },
+      link: {
+        runId: 'run-browser-1',
+        conversationId: 'conv-browser-1',
+        sourceToolName: 'browser_navigate',
+        sourceToolCallId: 'tool-call-browser-1',
+        approvalRequestId: 'approval-browser-1',
+      },
+    },
+  })
+  assert.equal(actionSync.status, 200)
+  assert.equal(actionSync.payload.ok, true)
+  assert.equal(actionSync.payload.action.action.actionId, 'browser-action-1')
+
+  const artifactSync = await requestJson(ctx, '/api/browser/artifacts/sync', {
+    method: 'POST',
+    body: {
+      artifact: {
+        artifactId: 'browser-artifact-1',
+        sessionId: 'browser-session-1',
+        targetId: 'target-1',
+        kind: 'screenshot',
+        createdAt: 1_710_000_200_260,
+        mimeType: 'image/png',
+        byteLength: 128,
+        storage: 'companion',
+        pathOrKey: 'browser/browser-artifact-1.png',
+      },
+      actionId: 'browser-action-1',
+    },
+  })
+  assert.equal(artifactSync.status, 200)
+  assert.equal(artifactSync.payload.ok, true)
+  assert.equal(artifactSync.payload.artifact.artifact.artifactId, 'browser-artifact-1')
+
+  const sessions = await requestJson(ctx, '/api/browser/sessions?limit=10&offset=0')
+  assert.equal(sessions.status, 200)
+  assert.equal(sessions.payload.total, 1)
+  assert.equal(sessions.payload.sessions[0].session.sessionId, 'browser-session-1')
+  assert.equal(sessions.payload.sessions[0].link.runId, 'run-browser-1')
+
+  const sessionsByRun = await requestJson(ctx, '/api/browser/sessions?runId=run-browser-1')
+  assert.equal(sessionsByRun.status, 200)
+  assert.equal(sessionsByRun.payload.total, 1)
+  assert.equal(sessionsByRun.payload.sessions[0].link.sourceToolCallId, 'tool-call-browser-1')
+
+  const detail = await requestJson(ctx, '/api/browser/sessions/browser-session-1')
+  assert.equal(detail.status, 200)
+  assert.equal(detail.payload.session.session.sessionId, 'browser-session-1')
+  assert.equal(detail.payload.session.targets[0].targetId, 'target-1')
+  assert.equal(detail.payload.session.link.approvalRequestId, 'approval-browser-1')
+
+  const actions = await requestJson(ctx, '/api/browser/actions?sessionId=browser-session-1')
+  assert.equal(actions.status, 200)
+  assert.equal(actions.payload.total, 1)
+  assert.equal(actions.payload.actions[0].action.status, 'completed')
+  assert.equal(actions.payload.actions[0].snapshot.snapshotId, 'snapshot-1')
+  assert.equal(actions.payload.actions[0].link.runId, 'run-browser-1')
+
+  const actionsByToolCall = await requestJson(ctx, '/api/browser/actions?sourceToolCallId=tool-call-browser-1')
+  assert.equal(actionsByToolCall.status, 200)
+  assert.equal(actionsByToolCall.payload.total, 1)
+  assert.equal(actionsByToolCall.payload.actions[0].link.sourceToolName, 'browser_navigate')
+
+  const artifacts = await requestJson(ctx, '/api/browser/artifacts?sessionId=browser-session-1')
+  assert.equal(artifacts.status, 200)
+  assert.equal(artifacts.payload.total, 1)
+  assert.equal(artifacts.payload.artifacts[0].artifact.artifactId, 'browser-artifact-1')
+  assert.equal(artifacts.payload.artifacts[0].actionId, 'browser-action-1')
+
+  const diagnostics = await requestJson(ctx, '/api/browser/diagnostics')
+  assert.equal(diagnostics.status, 200)
+  assert.equal(diagnostics.payload.sessions.linked, 1)
+  assert.equal(diagnostics.payload.sessions.recentLinked[0].link.runId, 'run-browser-1')
+  assert.equal(diagnostics.payload.actions.linked, 1)
+  assert.equal(diagnostics.payload.actions.recentLinked[0].link.sourceToolCallId, 'tool-call-browser-1')
 })
 
 test('repair endpoint returns updated self-check payload for supported repair actions', async (t) => {

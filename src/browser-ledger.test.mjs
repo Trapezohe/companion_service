@@ -222,6 +222,10 @@ test('browser ledger supports sync, query, and persistence across reload', async
     assert.equal(sessions.sessions[0].session.sessionId, 'browser-session-1')
     assert.equal(sessions.sessions[0].link.runId, 'run-1')
 
+    const linkedSessions = await mod.listBrowserSessions({ runId: 'run-1', limit: 10, offset: 0 })
+    assert.equal(linkedSessions.total, 1)
+    assert.equal(linkedSessions.sessions[0].link.sourceToolCallId, 'call-nav-1')
+
     const detail = await mod.getBrowserSessionById('browser-session-1')
     assert.ok(detail)
     assert.equal(detail.targets[0].targetId, 'target-1')
@@ -232,6 +236,10 @@ test('browser ledger supports sync, query, and persistence across reload', async
     assert.equal(actions.actions[0].action.status, 'completed')
     assert.equal(actions.actions[0].snapshot.snapshotId, 'snapshot-1')
 
+    const linkedActions = await mod.listBrowserActions({ sourceToolCallId: 'call-nav-1', limit: 10, offset: 0 })
+    assert.equal(linkedActions.total, 1)
+    assert.equal(linkedActions.actions[0].link.runId, 'run-1')
+
     const artifacts = await mod.listBrowserArtifacts({ sessionId: 'browser-session-1', limit: 10, offset: 0 })
     assert.equal(artifacts.total, 1)
     assert.equal(artifacts.artifacts[0].artifact.artifactId, 'browser-artifact-1')
@@ -241,7 +249,13 @@ test('browser ledger supports sync, query, and persistence across reload', async
     assert.equal(diagnostics.loaded, true)
     assert.equal(diagnostics.sessions.total, 1)
     assert.equal(diagnostics.sessions.active, 1)
+    assert.equal(diagnostics.sessions.linked, 1)
+    assert.equal(diagnostics.sessions.recentLinked[0].sessionId, 'browser-session-1')
+    assert.equal(diagnostics.sessions.recentLinked[0].link.runId, 'run-1')
     assert.equal(diagnostics.actions.failedRecent, 0)
+    assert.equal(diagnostics.actions.linked, 1)
+    assert.equal(diagnostics.actions.recentLinked[0].actionId, 'browser-action-1')
+    assert.equal(diagnostics.actions.recentLinked[0].link.sourceToolCallId, 'call-nav-1')
     assert.equal(diagnostics.artifacts.recent, 1)
 
     await mod.flushBrowserLedger()

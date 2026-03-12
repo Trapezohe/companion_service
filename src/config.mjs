@@ -22,6 +22,8 @@ export const COMPANION_SUPPORTED_FEATURES = {
   diagnostics: true,
   approvalStore: true,
   runLedger: true,
+  browserLedger: true,
+  browserEvents: false,
   mediaNormalization: true,
 }
 

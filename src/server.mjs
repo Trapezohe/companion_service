@@ -68,6 +68,8 @@ import {
   relinkApprovalRun,
 } from './approval-store.mjs'
 import { handleAcpRequest } from './acp-routes.mjs'
+import { handleBrowserRequest } from './browser-routes.mjs'
+import { flushBrowserLedger, loadBrowserLedger } from './browser-ledger.mjs'
 import {
   cleanupAllAcpSessions,
   listAcpSessions,
@@ -641,6 +643,7 @@ export function createCompanionServer({
   const initStoresPromise = Promise.all([
     loadRunStore().catch(() => undefined),
     loadApprovalStore().catch(() => undefined),
+    loadBrowserLedger().catch(() => undefined),
   ]).then(async () => {
     await restoreSessionRunStateOnStartup(sessionRunIndex).catch(() => undefined)
   })
@@ -1285,6 +1288,14 @@ export function createCompanionServer({
       }
     }
 
+    // ── Browser ledger endpoints ──
+    const browserHandled = await handleBrowserRequest(req, res, url, pathname, {
+      authorize: (r) => authorize(r, token),
+      sendJson,
+      readJsonBody,
+    })
+    if (browserHandled) return
+
     // ── MCP endpoints ──
 
     // List MCP servers
@@ -1509,6 +1520,7 @@ export function createCompanionServer({
     cleanupAllAcpSessions()
     void flushRunStore().catch(() => undefined)
     void flushApprovalStore().catch(() => undefined)
+    void flushBrowserLedger().catch(() => undefined)
   })
 
   return server

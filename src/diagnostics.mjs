@@ -10,6 +10,7 @@ import {
 import { listRuns } from './run-store.mjs'
 import { listPendingApprovals } from './approval-store.mjs'
 import { listAcpSessions } from './acp-session.mjs'
+import { getBrowserLedgerDiagnostics } from './browser-ledger.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
 import {
@@ -143,6 +144,7 @@ export async function buildDiagnosticsPayload(params) {
   const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
   const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
   const mediaNormalizationSummary = await buildMediaNormalizationSummary(params)
+  const browserLedgerSummary = await getBrowserLedgerDiagnostics()
 
   const payload = {
     protocolVersion: params.protocolVersion,
@@ -173,6 +175,17 @@ export async function buildDiagnosticsPayload(params) {
     capabilitySummary,
     acpIngressSummary,
     mediaNormalizationSummary,
+    browser: {
+      enabled: params.supportedFeatures?.browserLedger === true,
+      loaded: browserLedgerSummary.loaded,
+      sessions: browserLedgerSummary.sessions,
+      actions: browserLedgerSummary.actions,
+      artifacts: browserLedgerSummary.artifacts,
+      capabilities: {
+        browserLedger: params.supportedFeatures?.browserLedger === true,
+        browserEvents: params.supportedFeatures?.browserEvents === true,
+      },
+    },
   }
 
   logEvent('info', 'diagnostics', 'Companion diagnostics generated', {
@@ -181,6 +194,8 @@ export async function buildDiagnosticsPayload(params) {
     acpSessions: payload.acp.totalSessions,
     mcpServers: payload.mcp.connectedServers,
     capabilityFeatures: payload.capabilitySummary.availableFeatures.length,
+    browserSessions: payload.browser.sessions.active,
+    browserFailedActions: payload.browser.actions.failedRecent,
   })
 
   return payload
