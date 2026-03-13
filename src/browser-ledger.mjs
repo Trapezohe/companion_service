@@ -16,6 +16,10 @@ const MAX_BROWSER_ARTIFACTS_PER_SESSION = Math.max(
   1,
   Number(process.env.TRAPEZOHE_MAX_BROWSER_ARTIFACTS_PER_SESSION || 50) || 50,
 )
+const MAX_BROWSER_EVENTS = Math.max(
+  1,
+  Number(process.env.TRAPEZOHE_MAX_BROWSER_EVENTS || 500) || 500,
+)
 const WRITE_DEBOUNCE_MS = Math.max(50, Number(process.env.TRAPEZOHE_BROWSER_LEDGER_WRITE_DEBOUNCE_MS || 250) || 250)
 
 function BROWSER_LEDGER_FILE() {
@@ -26,7 +30,7 @@ function BROWSER_LEDGER_BACKUP_FILE() {
   return path.join(getConfigDir(), 'browser-ledger.json.bak')
 }
 
-let store = { sessions: [], actions: [], artifacts: [] }
+let store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
 let loaded = false
 let persistTimer = null
 let persistPromise = null
@@ -92,6 +96,10 @@ function artifactSortKey(entry) {
     normalizeTimestamp(entry?.artifact?.createdAt, undefined)
     ?? normalizeTimestamp(entry?.syncedAt, 0)
   )
+}
+
+function eventSortKey(entry) {
+  return normalizeTimestamp(entry?.cursor, 0)
 }
 
 function readLinkedField(entry, field) {
@@ -471,13 +479,48 @@ function normalizeArtifactEnvelope(input) {
   }
 }
 
+function normalizeBrowserEventRecord(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const cursor = normalizeTimestamp(input.cursor, undefined)
+  const type = safeText(input.type, 64)
+  const sessionId = safeText(input.sessionId, 200)
+  if (cursor === undefined || !type || !sessionId) return null
+
+  return {
+    cursor,
+    type,
+    sessionId,
+    ...(safeText(input.actionId, 200) ? { actionId: safeText(input.actionId, 200) } : {}),
+    ...(safeText(input.artifactId, 200) ? { artifactId: safeText(input.artifactId, 200) } : {}),
+    ...(safeText(input.targetId, 200) ? { targetId: safeText(input.targetId, 200) } : {}),
+    ...(safeText(input.kind, 64) ? { kind: safeText(input.kind, 64) } : {}),
+    ...(safeText(input.state, 64) ? { state: safeText(input.state, 64) } : {}),
+    ...(safeText(input.status, 64) ? { status: safeText(input.status, 64) } : {}),
+    ...(safeText(input.source, 64) ? { source: safeText(input.source, 64) } : {}),
+    ...(safeText(input.errorCode, 64) ? { errorCode: safeText(input.errorCode, 64) } : {}),
+    ...(safeText(input.resultSummary, 500) ? { resultSummary: safeText(input.resultSummary, 500) } : {}),
+    ...(safeText(input.mimeType, 200) ? { mimeType: safeText(input.mimeType, 200) } : {}),
+    syncedAt: normalizeTimestamp(input.syncedAt, now()),
+    ...(normalizeLinkRecord(input.link, input.link) ? { link: normalizeLinkRecord(input.link, input.link) } : {}),
+  }
+}
+
 async function readStoreFile(filePath) {
   const raw = await fs.readFile(filePath, 'utf8')
   const parsed = JSON.parse(raw)
+  const events = Array.isArray(parsed.events)
+    ? parsed.events.map(normalizeBrowserEventRecord).filter(Boolean)
+    : []
   return {
     sessions: Array.isArray(parsed.sessions) ? parsed.sessions.map(normalizeSessionEnvelope).filter(Boolean) : [],
     actions: Array.isArray(parsed.actions) ? parsed.actions.map(normalizeActionEnvelope).filter(Boolean) : [],
     artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts.map(normalizeArtifactEnvelope).filter(Boolean) : [],
+    events: sortByTimestampDescending(events, eventSortKey).reverse(),
+    nextCursor: Math.max(
+      normalizeTimestamp(parsed.nextCursor, 0) || 0,
+      events.length > 0 ? events[events.length - 1].cursor + 1 : 1,
+      1,
+    ),
   }
 }
 
@@ -516,6 +559,13 @@ function trimStore() {
     MAX_BROWSER_ARTIFACTS_PER_SESSION,
     artifactSortKey,
   )
+
+  if (!Array.isArray(store.events)) {
+    store.events = []
+  }
+  if (store.events.length > MAX_BROWSER_EVENTS) {
+    store.events = store.events.slice(store.events.length - MAX_BROWSER_EVENTS)
+  }
 }
 
 async function writeStoreSnapshot(snapshot) {
@@ -582,7 +632,7 @@ export async function loadBrowserLedger() {
     store = await readStoreFile(BROWSER_LEDGER_FILE())
   } catch (err) {
     if (err.code === 'ENOENT') {
-      store = { sessions: [], actions: [], artifacts: [] }
+      store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
     } else {
       console.warn(`[browser-ledger] Primary browser-ledger.json corrupted: ${err.message}`)
       try {
@@ -590,7 +640,7 @@ export async function loadBrowserLedger() {
         console.warn('[browser-ledger] Recovered from backup browser-ledger.json.bak')
       } catch (backupErr) {
         console.warn(`[browser-ledger] Backup also unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { sessions: [], actions: [], artifacts: [] }
+        store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
       }
     }
   }
@@ -679,6 +729,63 @@ function mergeArtifactEnvelope(current, incoming) {
   }
 }
 
+function appendBrowserEvent(event) {
+  const normalized = normalizeBrowserEventRecord({
+    ...event,
+    cursor: store.nextCursor,
+  })
+  if (!normalized) return null
+  store.nextCursor = normalized.cursor + 1
+  store.events.push(normalized)
+  if (store.events.length > MAX_BROWSER_EVENTS) {
+    store.events.splice(0, store.events.length - MAX_BROWSER_EVENTS)
+  }
+  return normalized
+}
+
+function recordSessionSyncEvent(entry) {
+  const target = resolveSessionTarget(entry)
+  return appendBrowserEvent({
+    type: 'session_synced',
+    sessionId: entry.session.sessionId,
+    ...(safeText(target?.targetId, 200) ? { targetId: safeText(target.targetId, 200) } : {}),
+    state: entry.session.state,
+    source: entry.source,
+    syncedAt: entry.syncedAt,
+    link: entry.link,
+  })
+}
+
+function recordActionSyncEvent(entry) {
+  return appendBrowserEvent({
+    type: 'action_synced',
+    sessionId: entry.action.sessionId,
+    ...(safeText(entry.action.actionId, 200) ? { actionId: safeText(entry.action.actionId, 200) } : {}),
+    ...(safeText(entry.action.targetId, 200) ? { targetId: safeText(entry.action.targetId, 200) } : {}),
+    kind: entry.action.kind,
+    status: entry.action.status,
+    source: 'extension-background',
+    syncedAt: entry.syncedAt,
+    ...(safeText(entry.action.error?.code, 64) ? { errorCode: safeText(entry.action.error.code, 64) } : {}),
+    ...(safeText(entry.action.resultSummary, 500) ? { resultSummary: safeText(entry.action.resultSummary, 500) } : {}),
+    link: entry.link,
+  })
+}
+
+function recordArtifactSyncEvent(entry) {
+  return appendBrowserEvent({
+    type: 'artifact_synced',
+    sessionId: entry.artifact.sessionId,
+    ...(safeText(entry.actionId, 200) ? { actionId: safeText(entry.actionId, 200) } : {}),
+    ...(safeText(entry.artifact.artifactId, 200) ? { artifactId: safeText(entry.artifact.artifactId, 200) } : {}),
+    ...(safeText(entry.artifact.targetId, 200) ? { targetId: safeText(entry.artifact.targetId, 200) } : {}),
+    kind: entry.artifact.kind,
+    mimeType: entry.artifact.mimeType,
+    source: 'extension-background',
+    syncedAt: entry.syncedAt,
+  })
+}
+
 export async function syncBrowserSession(payload) {
   await ensureLoaded()
   const normalized = normalizeSessionEnvelope(payload)
@@ -692,6 +799,8 @@ export async function syncBrowserSession(payload) {
   } else {
     store.sessions.push(normalized)
   }
+  const stored = store.sessions.find((entry) => entry.session.sessionId === normalized.session.sessionId)
+  if (stored) recordSessionSyncEvent(stored)
   trimStore()
   if (normalized.link?.runId) {
     await linkRunToBrowserSession(normalized.session.sessionId, {
@@ -700,7 +809,7 @@ export async function syncBrowserSession(payload) {
     }).catch(() => undefined)
   }
   schedulePersist()
-  return clone(store.sessions.find((entry) => entry.session.sessionId === normalized.session.sessionId))
+  return clone(stored)
 }
 
 export async function syncBrowserAction(payload) {
@@ -716,6 +825,8 @@ export async function syncBrowserAction(payload) {
   } else {
     store.actions.push(normalized)
   }
+  const stored = store.actions.find((entry) => entry.action.actionId === normalized.action.actionId)
+  if (stored) recordActionSyncEvent(stored)
   trimStore()
   if (normalized.link?.runId) {
     await linkRunToBrowserAction(normalized.action.actionId, {
@@ -725,7 +836,7 @@ export async function syncBrowserAction(payload) {
     }).catch(() => undefined)
   }
   schedulePersist()
-  return clone(store.actions.find((entry) => entry.action.actionId === normalized.action.actionId))
+  return clone(stored)
 }
 
 export async function syncBrowserArtifact(payload) {
@@ -741,9 +852,11 @@ export async function syncBrowserArtifact(payload) {
   } else {
     store.artifacts.push(normalized)
   }
+  const stored = store.artifacts.find((entry) => entry.artifact.artifactId === normalized.artifact.artifactId)
+  if (stored) recordArtifactSyncEvent(stored)
   trimStore()
   schedulePersist()
-  return clone(store.artifacts.find((entry) => entry.artifact.artifactId === normalized.artifact.artifactId))
+  return clone(stored)
 }
 
 function paginate(items, limitRaw, offsetRaw) {
@@ -833,6 +946,37 @@ export async function listBrowserArtifacts(query = {}) {
   }
 }
 
+export async function listBrowserEvents(query = {}) {
+  await ensureLoaded()
+  const after = clampInt(query.after, 0, 0, Number.MAX_SAFE_INTEGER)
+  const limit = clampInt(query.limit, 50, 1, 500)
+  const sessionId = safeText(query.sessionId, 200)
+  const actionId = safeText(query.actionId, 200)
+  const artifactId = safeText(query.artifactId, 200)
+  const type = safeText(query.type, 64)
+
+  const filtered = store.events
+    .filter((entry) => entry.cursor > after)
+    .filter((entry) => !sessionId || entry.sessionId === sessionId)
+    .filter((entry) => !actionId || entry.actionId === actionId)
+    .filter((entry) => !artifactId || entry.artifactId === artifactId)
+    .filter((entry) => !type || entry.type === type)
+    .filter((entry) => matchesLinkFilters(entry, query))
+    .sort((a, b) => a.cursor - b.cursor)
+
+  const events = clone(filtered.slice(0, limit))
+  const nextCursor = events.length > 0
+    ? events[events.length - 1].cursor
+    : Math.max(after, (store.nextCursor || 1) - 1)
+
+  return {
+    ok: true,
+    events,
+    nextCursor,
+    hasMore: filtered.some((entry) => entry.cursor > nextCursor),
+  }
+}
+
 export async function getBrowserLedgerDiagnostics() {
   await ensureLoaded()
   const activeSessions = store.sessions.filter((entry) => {
@@ -867,6 +1011,11 @@ export async function getBrowserLedgerDiagnostics() {
       total: store.artifacts.length,
       recent: store.artifacts.length,
     },
+    events: {
+      total: store.events.length,
+      recent: sortByTimestampDescending(store.events, eventSortKey).slice(0, 5).map(clone),
+      nextCursor: Math.max((store.nextCursor || 1) - 1, 0),
+    },
   }
 }
 
@@ -875,7 +1024,7 @@ export async function clearBrowserLedgerForTests() {
     clearTimeout(persistTimer)
     persistTimer = null
   }
-  store = { sessions: [], actions: [], artifacts: [] }
+  store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
   loaded = true
   await queuePersist()
 }

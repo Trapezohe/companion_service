@@ -181,6 +181,7 @@ export async function buildDiagnosticsPayload(params) {
       sessions: browserLedgerSummary.sessions,
       actions: browserLedgerSummary.actions,
       artifacts: browserLedgerSummary.artifacts,
+      events: browserLedgerSummary.events,
       capabilities: {
         browserLedger: params.supportedFeatures?.browserLedger === true,
         browserEvents: params.supportedFeatures?.browserEvents === true,

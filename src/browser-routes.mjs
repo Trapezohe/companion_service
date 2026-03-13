@@ -1,6 +1,7 @@
 import {
   getBrowserLedgerDiagnostics,
   getBrowserSessionById,
+  listBrowserEvents,
   listBrowserActions,
   listBrowserArtifacts,
   listBrowserSessions,
@@ -99,6 +100,24 @@ export async function handleBrowserRequest(req, res, url, pathname, ctx) {
         kind: url.searchParams.get('kind'),
         limit: url.searchParams.get('limit'),
         offset: url.searchParams.get('offset'),
+      })
+      sendJson(res, 200, result)
+      return true
+    }
+
+    if (req.method === 'GET' && pathname === '/api/browser/events') {
+      const result = await listBrowserEvents({
+        after: url.searchParams.get('after'),
+        limit: url.searchParams.get('limit'),
+        sessionId: url.searchParams.get('sessionId'),
+        actionId: url.searchParams.get('actionId'),
+        artifactId: url.searchParams.get('artifactId'),
+        type: url.searchParams.get('type'),
+        runId: url.searchParams.get('runId'),
+        conversationId: url.searchParams.get('conversationId'),
+        sourceToolName: url.searchParams.get('sourceToolName'),
+        sourceToolCallId: url.searchParams.get('sourceToolCallId'),
+        approvalRequestId: url.searchParams.get('approvalRequestId'),
       })
       sendJson(res, 200, result)
       return true

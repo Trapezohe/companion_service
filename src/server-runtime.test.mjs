@@ -207,7 +207,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(health.payload.supportedFeatures.mcp, true)
   assert.equal(health.payload.supportedFeatures.cronReplay, true)
   assert.equal(health.payload.supportedFeatures.browserLedger, true)
-  assert.equal(health.payload.supportedFeatures.browserEvents, false)
+  assert.equal(health.payload.supportedFeatures.browserEvents, true)
 
   const capabilities = await requestJson(ctx, '/api/system/capabilities')
   assert.equal(capabilities.status, 200)
@@ -216,7 +216,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(capabilities.payload.supportedFeatures.runLedger, true)
   assert.equal(capabilities.payload.supportedFeatures.approvalStore, true)
   assert.equal(capabilities.payload.supportedFeatures.browserLedger, true)
-  assert.equal(capabilities.payload.supportedFeatures.browserEvents, false)
+  assert.equal(capabilities.payload.supportedFeatures.browserEvents, true)
 })
 
 test('diagnostics and self-check endpoints return structured companion health details', async (t) => {
@@ -443,6 +443,77 @@ test('browser ledger sync and query endpoints persist browser runtime records', 
   assert.equal(diagnostics.payload.sessions.recentLinked[0].link.runId, 'run-browser-1')
   assert.equal(diagnostics.payload.actions.linked, 1)
   assert.equal(diagnostics.payload.actions.recentLinked[0].link.sourceToolCallId, 'tool-call-browser-1')
+})
+
+test('browser events endpoint returns cursor-paged browser sync events', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const baseline = await requestJson(ctx, '/api/browser/events?after=0&limit=1')
+  assert.equal(baseline.status, 200)
+  const startCursor = baseline.payload.nextCursor
+
+  await requestJson(ctx, '/api/browser/sessions/sync', {
+    method: 'POST',
+    body: {
+      session: {
+        sessionId: 'browser-session-events-1',
+        driver: 'extension-tab',
+        state: 'ready',
+        createdAt: 1_710_000_300_000,
+        updatedAt: 1_710_000_300_100,
+        profileId: 'default',
+      },
+    },
+  })
+
+  await requestJson(ctx, '/api/browser/actions/sync', {
+    method: 'POST',
+    body: {
+      action: {
+        actionId: 'browser-action-events-1',
+        sessionId: 'browser-session-events-1',
+        kind: 'navigate',
+        status: 'completed',
+        startedAt: 1_710_000_300_200,
+        finishedAt: 1_710_000_300_250,
+        inputSummary: 'navigate to example.com',
+      },
+    },
+  })
+
+  await requestJson(ctx, '/api/browser/artifacts/sync', {
+    method: 'POST',
+    body: {
+      artifact: {
+        artifactId: 'browser-artifact-events-1',
+        sessionId: 'browser-session-events-1',
+        kind: 'screenshot',
+        createdAt: 1_710_000_300_260,
+        mimeType: 'image/png',
+        byteLength: 128,
+        storage: 'companion',
+        pathOrKey: 'browser/browser-artifact-events-1.png',
+      },
+      actionId: 'browser-action-events-1',
+    },
+  })
+
+  const events = await requestJson(ctx, `/api/browser/events?after=${startCursor}&limit=10`)
+  assert.equal(events.status, 200)
+  assert.equal(events.payload.ok, true)
+  assert.deepEqual(events.payload.events.map((event) => event.type), [
+    'session_synced',
+    'action_synced',
+    'artifact_synced',
+  ])
+  assert.equal(events.payload.events[0].sessionId, 'browser-session-events-1')
+  assert.equal(events.payload.events[1].actionId, 'browser-action-events-1')
+  assert.equal(events.payload.events[2].artifactId, 'browser-artifact-events-1')
+  assert.equal(typeof events.payload.nextCursor, 'number')
 })
 
 test('repair endpoint returns updated self-check payload for supported repair actions', async (t) => {

@@ -35,6 +35,7 @@ async function withTempHome(run, options = {}) {
     const cacheBust = `${Date.now()}-${Math.random()}`
     mod = await import(`./browser-ledger.mjs?bust=${cacheBust}`)
     await mod.loadBrowserLedger()
+    await mod.clearBrowserLedgerForTests()
     await run({ tempHome, mod })
   } finally {
     await mod?.flushBrowserLedger?.().catch(() => undefined)
@@ -270,6 +271,64 @@ test('browser ledger supports sync, query, and persistence across reload', async
     assert.equal(restored.session.sourceToolName, 'browser_navigate')
     assert.equal(restored.link.runId, 'run-1')
     assert.equal(restored.targets[0].targetId, 'target-1')
+  })
+})
+
+test('browser ledger emits cursor-paged sync events and exposes them in diagnostics', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.syncBrowserSession({
+      session: createSession('browser-session-events-1', {
+        createdAt: 1_710_000_010_000,
+        updatedAt: 1_710_000_010_100,
+        ownerConversationId: 'conv-events-1',
+        ownerRunId: 'run-events-1',
+      }),
+      targets: [createTarget('browser-session-events-1', 'target-events-1', { lastSeenAt: 1_710_000_010_100 })],
+    })
+
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-events-1', 'browser-action-events-1', {
+        targetId: 'target-events-1',
+        kind: 'click',
+        status: 'failed',
+        startedAt: 1_710_000_010_200,
+        finishedAt: 1_710_000_010_250,
+        inputSummary: 'click [7]',
+        error: {
+          code: 'TARGET_STALE',
+          message: 'Snapshot is stale.',
+          retryable: true,
+        },
+      }),
+    })
+
+    await mod.syncBrowserArtifact({
+      artifact: createArtifact('browser-session-events-1', 'browser-artifact-events-1', {
+        targetId: 'target-events-1',
+        createdAt: 1_710_000_010_260,
+      }),
+      actionId: 'browser-action-events-1',
+    })
+
+    const firstPage = await mod.listBrowserEvents({ after: 0, limit: 2 })
+    assert.equal(firstPage.ok, true)
+    assert.equal(firstPage.events.length, 2)
+    assert.equal(firstPage.events[0].type, 'session_synced')
+    assert.equal(firstPage.events[1].type, 'action_synced')
+    assert.equal(firstPage.events[0].sessionId, 'browser-session-events-1')
+    assert.equal(firstPage.hasMore, true)
+
+    const secondPage = await mod.listBrowserEvents({ after: firstPage.nextCursor, limit: 2 })
+    assert.equal(secondPage.ok, true)
+    assert.equal(secondPage.events.length, 1)
+    assert.equal(secondPage.events[0].type, 'artifact_synced')
+    assert.equal(secondPage.events[0].artifactId, 'browser-artifact-events-1')
+    assert.equal(secondPage.hasMore, false)
+
+    const diagnostics = await mod.getBrowserLedgerDiagnostics()
+    assert.equal(diagnostics.events.total, 3)
+    assert.equal(diagnostics.events.recent[0].type, 'artifact_synced')
+    assert.equal(diagnostics.events.recent[0].artifactId, 'browser-artifact-events-1')
   })
 })
 

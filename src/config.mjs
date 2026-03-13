@@ -23,7 +23,7 @@ export const COMPANION_SUPPORTED_FEATURES = {
   approvalStore: true,
   runLedger: true,
   browserLedger: true,
-  browserEvents: false,
+  browserEvents: true,
   mediaNormalization: true,
 }
 

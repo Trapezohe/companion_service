@@ -132,7 +132,7 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
       ...BASE_FEATURES,
       mcp: false,
       browserLedger: true,
-      browserEvents: false,
+      browserEvents: true,
     },
     getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
     getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),
@@ -155,7 +155,7 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.browser.enabled, true)
   assert.equal(payload.browser.loaded, true)
   assert.equal(payload.browser.capabilities.browserLedger, true)
-  assert.equal(payload.browser.capabilities.browserEvents, false)
+  assert.equal(payload.browser.capabilities.browserEvents, true)
   assert.equal(payload.browser.sessions.total, 1)
   assert.equal(payload.browser.sessions.active, 1)
   assert.equal(payload.browser.sessions.linked, 1)
@@ -164,4 +164,6 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.browser.actions.linked, 1)
   assert.equal(payload.browser.actions.recentLinked[0].link.sourceToolCallId, 'tool-call-browser-1')
   assert.equal(payload.browser.artifacts.recent, 1)
+  assert.equal(payload.browser.events.total, 3)
+  assert.equal(payload.browser.events.recent[0].type, 'artifact_synced')
 })
