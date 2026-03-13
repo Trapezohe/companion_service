@@ -1,13 +1,13 @@
 <p align="center">
-  <img src="./docs/assets/ghast-logo.png" alt="Trapezohe Companion" width="180" />
+  <img src="./docs/assets/ghast-logo.png" alt="Ghast AI Companion" width="180" />
 </p>
 
-<h1 align="center">Trapezohe Companion</h1>
+<h1 align="center">Ghast AI Companion</h1>
 
 <p align="center">
-  <strong>The desktop runtime for the <a href="https://github.com/Trapezohe/trapezohe_extension">Trapezohe browser extension</a>.</strong>
+  <strong>The desktop runtime for <a href="https://github.com/Trapezohe/trapezohe_extension">Ghast AI</a>.</strong>
   <br />
-  It auto-pairs locally, unlocks trusted desktop capabilities, hosts MCP tools, and provides the runtime backbone behind browser automation, diagnostics, and local agent workflows.
+  Shipped in this repository as <code>trapezohe-companion</code>, it auto-pairs locally, unlocks trusted desktop capabilities, hosts MCP tools, and provides the runtime backbone behind browser automation, diagnostics, and local agent workflows.
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 A browser extension alone cannot safely expose local files, shell execution, native browser pairing, or long-running desktop services.
 
-Trapezohe Companion is the local process that closes that gap. It runs on your machine, binds to `127.0.0.1`, protects access with a local token, and works with the extension to provide:
+Ghast AI Companion is the local process that closes that gap. It runs on your machine, binds to `127.0.0.1`, protects access with a local token, and works with the Ghast AI extension to provide:
 
 - local command execution with permission-policy controls
 - local file and MCP-backed tool access
@@ -44,8 +44,8 @@ Trapezohe Companion is the local process that closes that gap. It runs on your m
 
 ```mermaid
 flowchart LR
-  Extension["Trapezohe Extension\nchat, tools, browser runtime"]
-  Companion["Trapezohe Companion\ndaemon + tray + local HTTP"]
+  Extension["Ghast AI Extension\nchat, tools, browser runtime"]
+  Companion["Ghast AI Companion\ndaemon + tray + local HTTP"]
   Local["Local machine\nshell, files, MCP, browser, cron"]
   Diagnostics["Diagnostics & operator surfaces\nruns, approvals, browser drill-down"]
 
@@ -116,7 +116,7 @@ For ordinary users, the intended flow is simple:
 
 1. Install the desktop companion
 2. Open the tray app or keep the daemon running
-3. Open the Trapezohe extension and go to `Settings -> Companion`
+3. Open the Ghast AI extension and go to `Settings -> Companion`
 4. Click the status check / connection check flow
 
 When native-host registration is healthy, pairing should be automatic.
