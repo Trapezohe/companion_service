@@ -24,6 +24,7 @@ export const COMPANION_SUPPORTED_FEATURES = {
   runLedger: true,
   browserLedger: true,
   browserEvents: true,
+  browserDrilldown: true,
   mediaNormalization: true,
   memoryCheckpointShadow: true,
 }

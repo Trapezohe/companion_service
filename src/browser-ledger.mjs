@@ -45,6 +45,10 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function normalizeSupportedFeatures(input) {
+  return input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+}
+
 function clampInt(value, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
   const parsed = Number.parseInt(value, 10)
   if (!Number.isFinite(parsed)) return fallback
@@ -903,8 +907,7 @@ function paginate(items, limitRaw, offsetRaw) {
   }
 }
 
-export async function listBrowserSessions(query = {}) {
-  await ensureLoaded()
+function buildBrowserSessionListResult(query = {}) {
   const sessionId = safeText(query.sessionId, 200)
   const state = safeText(query.state, 64)
   const ownerConversationId = safeText(query.ownerConversationId, 200)
@@ -925,21 +928,14 @@ export async function listBrowserSessions(query = {}) {
   }
 }
 
-export async function getBrowserSessionById(sessionId) {
-  await ensureLoaded()
-  const id = safeText(sessionId, 200)
-  if (!id) return null
-  const found = store.sessions.find((entry) => entry.session.sessionId === id)
-  return found ? clone(found) : null
-}
-
-export async function listBrowserActions(query = {}) {
-  await ensureLoaded()
+function buildBrowserActionListResult(query = {}) {
+  const actionId = safeText(query.actionId, 200)
   const sessionId = safeText(query.sessionId, 200)
   const targetId = safeText(query.targetId, 200)
   const kind = safeText(query.kind, 64)
   const status = safeText(query.status, 64)
   let actions = sortByTimestampDescending(store.actions, actionSortKey)
+  if (actionId) actions = actions.filter((entry) => entry.action.actionId === actionId)
   if (sessionId) actions = actions.filter((entry) => entry.action.sessionId === sessionId)
   if (targetId) actions = actions.filter((entry) => entry.action.targetId === targetId)
   if (kind) actions = actions.filter((entry) => entry.action.kind === kind)
@@ -955,13 +951,14 @@ export async function listBrowserActions(query = {}) {
   }
 }
 
-export async function listBrowserArtifacts(query = {}) {
-  await ensureLoaded()
+function buildBrowserArtifactListResult(query = {}) {
+  const artifactId = safeText(query.artifactId, 200)
   const sessionId = safeText(query.sessionId, 200)
   const targetId = safeText(query.targetId, 200)
   const actionId = safeText(query.actionId, 200)
   const kind = safeText(query.kind, 64)
   let artifacts = sortByTimestampDescending(store.artifacts, artifactSortKey)
+  if (artifactId) artifacts = artifacts.filter((entry) => entry.artifact.artifactId === artifactId)
   if (sessionId) artifacts = artifacts.filter((entry) => entry.artifact.sessionId === sessionId)
   if (targetId) artifacts = artifacts.filter((entry) => entry.artifact.targetId === targetId)
   if (actionId) artifacts = artifacts.filter((entry) => entry.actionId === actionId)
@@ -976,8 +973,7 @@ export async function listBrowserArtifacts(query = {}) {
   }
 }
 
-export async function listBrowserEvents(query = {}) {
-  await ensureLoaded()
+function buildBrowserEventListResult(query = {}) {
   const after = clampInt(query.after, 0, 0, Number.MAX_SAFE_INTEGER)
   const limit = clampInt(query.limit, 50, 1, 500)
   const windowMode = safeText(query.window, 32)
@@ -1013,7 +1009,131 @@ export async function listBrowserEvents(query = {}) {
   }
 }
 
-export async function getBrowserLedgerDiagnostics() {
+function normalizeBrowserDrilldownQuery(query = {}) {
+  const sourceToolCallId = safeText(query.sourceToolCallId, 200)
+  return {
+    ...(safeText(query.runId, 200) ? { runId: safeText(query.runId, 200) } : {}),
+    ...(safeText(query.conversationId, 200) ? { conversationId: safeText(query.conversationId, 200) } : {}),
+    ...(sourceToolCallId ? { sourceToolCallId } : {}),
+    ...(!sourceToolCallId && safeText(query.sourceToolName, 200)
+      ? { sourceToolName: safeText(query.sourceToolName, 200) }
+      : {}),
+    ...(safeText(query.approvalRequestId, 200) ? { approvalRequestId: safeText(query.approvalRequestId, 200) } : {}),
+    ...(safeText(query.sessionId, 200) ? { sessionId: safeText(query.sessionId, 200) } : {}),
+    ...(safeText(query.actionId, 200) ? { actionId: safeText(query.actionId, 200) } : {}),
+    ...(safeText(query.artifactId, 200) ? { artifactId: safeText(query.artifactId, 200) } : {}),
+    ...(safeText(query.type, 64) ? { type: safeText(query.type, 64) } : {}),
+    sessionLimit: clampInt(query.sessionLimit, 5, 1, 100),
+    actionLimit: clampInt(query.actionLimit, 8, 1, 100),
+    artifactLimit: clampInt(query.artifactLimit, 6, 1, 100),
+    eventLimit: clampInt(query.eventLimit, 10, 1, 100),
+    eventAfter: clampInt(query.eventAfter, 0, 0, Number.MAX_SAFE_INTEGER),
+    ...(safeText(query.eventWindow, 32) === 'tail' ? { eventWindow: 'tail' } : {}),
+  }
+}
+
+export async function listBrowserSessions(query = {}) {
+  await ensureLoaded()
+  return buildBrowserSessionListResult(query)
+}
+
+export async function getBrowserSessionById(sessionId) {
+  await ensureLoaded()
+  const id = safeText(sessionId, 200)
+  if (!id) return null
+  const found = store.sessions.find((entry) => entry.session.sessionId === id)
+  return found ? clone(found) : null
+}
+
+export async function listBrowserActions(query = {}) {
+  await ensureLoaded()
+  return buildBrowserActionListResult(query)
+}
+
+export async function listBrowserArtifacts(query = {}) {
+  await ensureLoaded()
+  return buildBrowserArtifactListResult(query)
+}
+
+export async function listBrowserEvents(query = {}) {
+  await ensureLoaded()
+  return buildBrowserEventListResult(query)
+}
+
+export async function getBrowserLedgerDrilldown(query = {}) {
+  await ensureLoaded()
+  const filters = normalizeBrowserDrilldownQuery(query)
+  const sessions = buildBrowserSessionListResult({
+    ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
+    ...(filters.runId ? { runId: filters.runId } : {}),
+    ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+    ...(filters.sourceToolName ? { sourceToolName: filters.sourceToolName } : {}),
+    ...(filters.sourceToolCallId ? { sourceToolCallId: filters.sourceToolCallId } : {}),
+    ...(filters.approvalRequestId ? { approvalRequestId: filters.approvalRequestId } : {}),
+    limit: filters.sessionLimit,
+    offset: 0,
+  })
+  const actions = buildBrowserActionListResult({
+    ...(filters.actionId ? { actionId: filters.actionId } : {}),
+    ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
+    ...(filters.runId ? { runId: filters.runId } : {}),
+    ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+    ...(filters.sourceToolName ? { sourceToolName: filters.sourceToolName } : {}),
+    ...(filters.sourceToolCallId ? { sourceToolCallId: filters.sourceToolCallId } : {}),
+    ...(filters.approvalRequestId ? { approvalRequestId: filters.approvalRequestId } : {}),
+    limit: filters.actionLimit,
+    offset: 0,
+  })
+  const artifacts = buildBrowserArtifactListResult({
+    ...(filters.artifactId ? { artifactId: filters.artifactId } : {}),
+    ...(filters.actionId ? { actionId: filters.actionId } : {}),
+    ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
+    limit: filters.artifactLimit,
+    offset: 0,
+  })
+  const events = buildBrowserEventListResult({
+    ...(filters.runId ? { runId: filters.runId } : {}),
+    ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+    ...(filters.sourceToolName ? { sourceToolName: filters.sourceToolName } : {}),
+    ...(filters.sourceToolCallId ? { sourceToolCallId: filters.sourceToolCallId } : {}),
+    ...(filters.approvalRequestId ? { approvalRequestId: filters.approvalRequestId } : {}),
+    ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
+    ...(filters.actionId ? { actionId: filters.actionId } : {}),
+    ...(filters.artifactId ? { artifactId: filters.artifactId } : {}),
+    ...(filters.type ? { type: filters.type } : {}),
+    ...(filters.eventWindow ? { window: filters.eventWindow } : {}),
+    after: filters.eventAfter,
+    limit: filters.eventLimit,
+  })
+
+  return {
+    ok: true,
+    filters: {
+      ...(filters.runId ? { runId: filters.runId } : {}),
+      ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+      ...(filters.sourceToolName ? { sourceToolName: filters.sourceToolName } : {}),
+      ...(filters.sourceToolCallId ? { sourceToolCallId: filters.sourceToolCallId } : {}),
+      ...(filters.approvalRequestId ? { approvalRequestId: filters.approvalRequestId } : {}),
+      ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
+      ...(filters.actionId ? { actionId: filters.actionId } : {}),
+      ...(filters.artifactId ? { artifactId: filters.artifactId } : {}),
+      ...(filters.type ? { type: filters.type } : {}),
+      ...(filters.eventWindow ? { eventWindow: filters.eventWindow } : {}),
+      sessionLimit: filters.sessionLimit,
+      actionLimit: filters.actionLimit,
+      artifactLimit: filters.artifactLimit,
+      eventLimit: filters.eventLimit,
+      eventAfter: filters.eventAfter,
+    },
+    sessions,
+    actions,
+    artifacts,
+    events,
+  }
+}
+
+export async function getBrowserLedgerDiagnostics(options = {}) {
+  const supportedFeatures = normalizeSupportedFeatures(options.supportedFeatures)
   await ensureLoaded()
   const activeSessions = store.sessions.filter((entry) => {
     const state = String(entry?.session?.state || '').trim().toLowerCase()
@@ -1029,7 +1149,7 @@ export async function getBrowserLedgerDiagnostics() {
     actionSortKey,
   )
   return {
-    enabled: true,
+    enabled: supportedFeatures.browserLedger === false ? false : true,
     loaded,
     sessions: {
       total: store.sessions.length,
@@ -1051,6 +1171,18 @@ export async function getBrowserLedgerDiagnostics() {
       total: store.events.length,
       recent: sortByTimestampDescending(store.events, eventSortKey).slice(0, 5).map(clone),
       nextCursor: Math.max((store.nextCursor || 1) - 1, 0),
+    },
+    operator: {
+      drilldownAvailable: supportedFeatures.browserDrilldown === true,
+      routes: {
+        ...(supportedFeatures.browserDrilldown === true ? { drilldown: '/api/browser/drilldown' } : {}),
+      },
+      eventWindowModes: supportedFeatures.browserEvents === true ? ['tail'] : [],
+    },
+    capabilities: {
+      browserLedger: supportedFeatures.browserLedger === true,
+      browserEvents: supportedFeatures.browserEvents === true,
+      browserDrilldown: supportedFeatures.browserDrilldown === true,
     },
   }
 }

@@ -414,6 +414,80 @@ test('browser ledger can read a recent tail window and continue incrementally fr
   })
 })
 
+test('browser ledger drilldown aggregates linked records without over-filtering by source tool name', async () => {
+  await withTempHome(async ({ mod }) => {
+    const sharedLink = {
+      runId: 'run-drilldown-1',
+      conversationId: 'conv-drilldown-1',
+      sourceToolCallId: 'tool-call-drilldown-1',
+      approvalRequestId: 'approval-drilldown-1',
+    }
+
+    await mod.syncBrowserSession({
+      session: createSession('browser-session-drilldown-1', {
+        createdAt: 1_710_000_020_000,
+        updatedAt: 1_710_000_020_100,
+        ownerConversationId: sharedLink.conversationId,
+        ownerRunId: sharedLink.runId,
+        sourceToolName: 'browser_navigate',
+        sourceToolCallId: sharedLink.sourceToolCallId,
+        approvalRequestId: sharedLink.approvalRequestId,
+      }),
+      targets: [createTarget('browser-session-drilldown-1', 'target-drilldown-1', {
+        lastSeenAt: 1_710_000_020_100,
+      })],
+      link: {
+        ...sharedLink,
+        sourceToolName: 'browser_navigate',
+      },
+    })
+
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-drilldown-1', 'browser-action-drilldown-1', {
+        targetId: 'target-drilldown-1',
+        kind: 'click',
+        status: 'completed',
+        startedAt: 1_710_000_020_200,
+        finishedAt: 1_710_000_020_250,
+      }),
+      link: {
+        ...sharedLink,
+        sourceToolName: 'browser_click',
+      },
+    })
+
+    await mod.syncBrowserArtifact({
+      artifact: createArtifact('browser-session-drilldown-1', 'browser-artifact-drilldown-1', {
+        targetId: 'target-drilldown-1',
+        createdAt: 1_710_000_020_260,
+      }),
+      actionId: 'browser-action-drilldown-1',
+    })
+
+    const drilldown = await mod.getBrowserLedgerDrilldown({
+      runId: sharedLink.runId,
+      conversationId: sharedLink.conversationId,
+      sourceToolName: 'browser_click',
+      sourceToolCallId: sharedLink.sourceToolCallId,
+      approvalRequestId: sharedLink.approvalRequestId,
+      sessionId: 'browser-session-drilldown-1',
+      actionId: 'browser-action-drilldown-1',
+      eventWindow: 'tail',
+      eventLimit: 2,
+    })
+
+    assert.equal(drilldown.sessions.total, 1)
+    assert.equal(drilldown.actions.total, 1)
+    assert.equal(drilldown.artifacts.total, 1)
+    assert.deepEqual(drilldown.events.events.map((event) => event.type), [
+      'action_synced',
+      'artifact_synced',
+    ])
+    assert.equal(drilldown.filters.sourceToolName, undefined)
+    assert.equal(drilldown.filters.sourceToolCallId, sharedLink.sourceToolCallId)
+  })
+})
+
 test('browser ledger derives artifact link from linked actions and preserves it across re-sync', async () => {
   await withTempHome(async ({ mod }) => {
     await mod.syncBrowserSession({

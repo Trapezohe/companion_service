@@ -1,5 +1,6 @@
 import {
   getBrowserLedgerDiagnostics,
+  getBrowserLedgerDrilldown,
   getBrowserSessionById,
   listBrowserEvents,
   listBrowserActions,
@@ -13,7 +14,7 @@ import {
 const BROWSER_SESSION_ID_RE = /^\/api\/browser\/sessions\/([^/]+)$/
 
 export async function handleBrowserRequest(req, res, url, pathname, ctx) {
-  const { authorize, sendJson, readJsonBody } = ctx
+  const { authorize, sendJson, readJsonBody, supportedFeatures } = ctx
 
   if (!pathname.startsWith('/api/browser/')) return false
 
@@ -124,8 +125,30 @@ export async function handleBrowserRequest(req, res, url, pathname, ctx) {
       return true
     }
 
+    if (req.method === 'GET' && pathname === '/api/browser/drilldown') {
+      const result = await getBrowserLedgerDrilldown({
+        runId: url.searchParams.get('runId'),
+        conversationId: url.searchParams.get('conversationId'),
+        sourceToolName: url.searchParams.get('sourceToolName'),
+        sourceToolCallId: url.searchParams.get('sourceToolCallId'),
+        approvalRequestId: url.searchParams.get('approvalRequestId'),
+        sessionId: url.searchParams.get('sessionId'),
+        actionId: url.searchParams.get('actionId'),
+        artifactId: url.searchParams.get('artifactId'),
+        type: url.searchParams.get('type'),
+        sessionLimit: url.searchParams.get('sessionLimit'),
+        actionLimit: url.searchParams.get('actionLimit'),
+        artifactLimit: url.searchParams.get('artifactLimit'),
+        eventLimit: url.searchParams.get('eventLimit'),
+        eventAfter: url.searchParams.get('eventAfter'),
+        eventWindow: url.searchParams.get('eventWindow'),
+      })
+      sendJson(res, 200, result)
+      return true
+    }
+
     if (req.method === 'GET' && pathname === '/api/browser/diagnostics') {
-      const diagnostics = await getBrowserLedgerDiagnostics()
+      const diagnostics = await getBrowserLedgerDiagnostics({ supportedFeatures })
       sendJson(res, 200, diagnostics)
       return true
     }
