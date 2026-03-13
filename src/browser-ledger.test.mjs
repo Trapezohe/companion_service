@@ -414,6 +414,95 @@ test('browser ledger can read a recent tail window and continue incrementally fr
   })
 })
 
+test('browser ledger derives artifact link from linked actions and preserves it across re-sync', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.syncBrowserSession({
+      session: createSession('browser-session-artifact-link-1', {
+        createdAt: 1_710_000_030_000,
+        updatedAt: 1_710_000_030_100,
+        ownerConversationId: 'conv-artifact-1',
+        ownerRunId: 'run-artifact-1',
+        sourceToolName: 'browser_click',
+        sourceToolCallId: 'call-artifact-1',
+      }),
+      targets: [createTarget('browser-session-artifact-link-1', 'target-artifact-1', {
+        lastSeenAt: 1_710_000_030_100,
+      })],
+    })
+
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-artifact-link-1', 'browser-action-artifact-link-1', {
+        targetId: 'target-artifact-1',
+        kind: 'click',
+        status: 'completed',
+        startedAt: 1_710_000_030_200,
+        finishedAt: 1_710_000_030_250,
+        ownerConversationId: 'conv-artifact-1',
+        ownerRunId: 'run-artifact-1',
+        sourceToolName: 'browser_click',
+        sourceToolCallId: 'call-artifact-1',
+      }),
+    })
+
+    const firstSync = await mod.syncBrowserArtifact({
+      artifact: createArtifact('browser-session-artifact-link-1', 'browser-artifact-link-1', {
+        targetId: 'target-artifact-1',
+        createdAt: 1_710_000_030_260,
+      }),
+      actionId: 'browser-action-artifact-link-1',
+    })
+
+    assert.deepEqual(firstSync.link, {
+      runId: 'run-artifact-1',
+      conversationId: 'conv-artifact-1',
+      sourceToolName: 'browser_click',
+      sourceToolCallId: 'call-artifact-1',
+      updatedAt: 1_710_000_030_250,
+    })
+
+    const firstEvents = await mod.listBrowserEvents({
+      runId: 'run-artifact-1',
+      sourceToolCallId: 'call-artifact-1',
+      actionId: 'browser-action-artifact-link-1',
+      limit: 10,
+      after: 0,
+    })
+    assert.equal(firstEvents.events.some((event) => event.type === 'artifact_synced'), true)
+
+    await mod.syncBrowserArtifact({
+      artifact: createArtifact('browser-session-artifact-link-1', 'browser-artifact-link-1', {
+        targetId: 'target-artifact-1',
+        createdAt: 1_710_000_030_300,
+        byteLength: 128,
+      }),
+      actionId: 'browser-action-artifact-link-1',
+    })
+
+    const artifacts = await mod.listBrowserArtifacts({
+      sessionId: 'browser-session-artifact-link-1',
+      actionId: 'browser-action-artifact-link-1',
+      limit: 10,
+      offset: 0,
+    })
+    assert.deepEqual(artifacts.artifacts[0].link, {
+      runId: 'run-artifact-1',
+      conversationId: 'conv-artifact-1',
+      sourceToolName: 'browser_click',
+      sourceToolCallId: 'call-artifact-1',
+      updatedAt: 1_710_000_030_250,
+    })
+
+    const secondEvents = await mod.listBrowserEvents({
+      runId: 'run-artifact-1',
+      sourceToolCallId: 'call-artifact-1',
+      actionId: 'browser-action-artifact-link-1',
+      limit: 10,
+      after: firstEvents.nextCursor,
+    })
+    assert.equal(secondEvents.events.some((event) => event.type === 'artifact_synced'), true)
+  })
+})
+
 test('browser ledger trims old sessions and cascades action and artifact retention', async () => {
   await withTempHome(async ({ mod }) => {
     for (let index = 1; index <= 3; index += 1) {

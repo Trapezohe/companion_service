@@ -458,6 +458,33 @@ function normalizeArtifactEnvelope(input) {
   const artifactId = safeText(rawArtifact.artifactId, 200)
   const sessionId = safeText(rawArtifact.sessionId, 200)
   if (!artifactId || !sessionId) return null
+  const actionId = safeText(payload.actionId, 200)
+  const relatedAction = actionId
+    ? store.actions.find((entry) => entry?.action?.actionId === actionId) || null
+    : null
+  const relatedSession = store.sessions.find((entry) => entry?.session?.sessionId === sessionId) || null
+  const linkedFallback = relatedAction
+    ? {
+      runId: readLinkedField(relatedAction, 'runId'),
+      conversationId: readLinkedField(relatedAction, 'conversationId'),
+      sourceToolName: readLinkedField(relatedAction, 'sourceToolName'),
+      sourceToolCallId: readLinkedField(relatedAction, 'sourceToolCallId'),
+      approvalRequestId: readLinkedField(relatedAction, 'approvalRequestId'),
+      updatedAt: normalizeTimestamp(
+        relatedAction?.action?.finishedAt,
+        normalizeTimestamp(relatedAction?.action?.startedAt, now()),
+      ),
+    }
+    : relatedSession
+      ? {
+        runId: readLinkedField(relatedSession, 'runId'),
+        conversationId: readLinkedField(relatedSession, 'conversationId'),
+        sourceToolName: readLinkedField(relatedSession, 'sourceToolName'),
+        sourceToolCallId: readLinkedField(relatedSession, 'sourceToolCallId'),
+        approvalRequestId: readLinkedField(relatedSession, 'approvalRequestId'),
+        updatedAt: normalizeTimestamp(relatedSession?.session?.updatedAt, now()),
+      }
+      : payload.link
 
   return {
     artifact: {
@@ -471,8 +498,8 @@ function normalizeArtifactEnvelope(input) {
       storage: safeText(rawArtifact.storage, 64) || 'companion',
       pathOrKey: safeText(rawArtifact.pathOrKey, 2_000) || '',
     },
-    ...(safeText(payload.actionId, 200) ? { actionId: safeText(payload.actionId, 200) } : {}),
-    ...(normalizeLinkRecord(payload.link, payload.link) ? { link: normalizeLinkRecord(payload.link, payload.link) } : {}),
+    ...(actionId ? { actionId } : {}),
+    ...(normalizeLinkRecord(payload.link, linkedFallback) ? { link: normalizeLinkRecord(payload.link, linkedFallback) } : {}),
     ...(typeof payload.bytesBase64 === 'string' && payload.bytesBase64
       ? { bytesBase64: payload.bytesBase64 }
       : {}),
@@ -721,6 +748,7 @@ function mergeArtifactEnvelope(current, incoming) {
       ...incoming.artifact,
     },
     ...(incoming.actionId ? { actionId: incoming.actionId } : current?.actionId ? { actionId: current.actionId } : {}),
+    ...(normalizeLinkRecord(incoming.link, current?.link) ? { link: normalizeLinkRecord(incoming.link, current?.link) } : {}),
     ...(incoming.bytesBase64
       ? { bytesBase64: incoming.bytesBase64 }
       : current?.bytesBase64
