@@ -34,6 +34,19 @@ after(async () => {
   await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
 })
 
+const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
+const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-diagnostics-test-'))
+process.env.TRAPEZOHE_CONFIG_DIR = testConfigDir
+
+after(async () => {
+  await clearRunStoreForTests().catch(() => undefined)
+  await clearApprovalStoreForTests().catch(() => undefined)
+  await clearMemoryShadowStoreForTests().catch(() => undefined)
+  if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
+  else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
+  await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
+})
+
 const BASE_FEATURES = {
   acp: true,
   mcp: true,

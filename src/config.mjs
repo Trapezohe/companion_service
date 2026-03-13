@@ -4,14 +4,14 @@ import os from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 
-const CONFIG_DIR = path.join(os.homedir(), '.trapezohe')
-const CONFIG_FILE = path.join(CONFIG_DIR, 'companion.json')
-const PID_FILE = path.join(CONFIG_DIR, 'companion.pid')
 const CONFIG_DIR_MODE = 0o700
 const CONFIG_FILE_MODE = 0o600
 const DEFAULT_MCP_REQUEST_TIMEOUT_MS = 120_000
 const MIN_MCP_REQUEST_TIMEOUT_MS = 1
 const MAX_MCP_REQUEST_TIMEOUT_MS = 600_000
+const DEFAULT_MEMORY_SHADOW_REFRESH_SLA_HOURS = 30
+const MIN_MEMORY_SHADOW_REFRESH_SLA_HOURS = 1
+const MAX_MEMORY_SHADOW_REFRESH_SLA_HOURS = 24 * 30
 
 const DEFAULT_PERMISSION_POLICY = normalizePermissionPolicy({ mode: 'full' })
 export const COMPANION_PROTOCOL_VERSION = '2026-03-07'
@@ -36,15 +36,20 @@ const DEFAULT_CONFIG = {
 }
 
 export function getConfigDir() {
-  return CONFIG_DIR
+  const override = typeof process.env.TRAPEZOHE_CONFIG_DIR === 'string'
+    ? process.env.TRAPEZOHE_CONFIG_DIR.trim()
+    : ''
+  if (override) return override
+  const homeDir = process.env.HOME || process.env.USERPROFILE || os.homedir()
+  return path.join(homeDir, '.trapezohe')
 }
 
 export function getConfigPath() {
-  return CONFIG_FILE
+  return path.join(getConfigDir(), 'companion.json')
 }
 
 export function getPidPath() {
-  return PID_FILE
+  return path.join(getConfigDir(), 'companion.pid')
 }
 
 function coerceMcpRequestTimeoutMs(value, fallback) {
@@ -55,10 +60,28 @@ function coerceMcpRequestTimeoutMs(value, fallback) {
   return Math.min(MAX_MCP_REQUEST_TIMEOUT_MS, Math.max(MIN_MCP_REQUEST_TIMEOUT_MS, Math.round(numeric)))
 }
 
+function coerceMemoryShadowRefreshSlaHours(value, fallback) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback
+  }
+  return Math.min(
+    MAX_MEMORY_SHADOW_REFRESH_SLA_HOURS,
+    Math.max(MIN_MEMORY_SHADOW_REFRESH_SLA_HOURS, Math.round(numeric)),
+  )
+}
+
 export function getDefaultMcpRequestTimeoutMs() {
   return coerceMcpRequestTimeoutMs(
     process.env.TRAPEZOHE_MCP_REQUEST_TIMEOUT_MS,
     DEFAULT_MCP_REQUEST_TIMEOUT_MS,
+  )
+}
+
+export function getDefaultMemoryShadowRefreshSlaHours() {
+  return coerceMemoryShadowRefreshSlaHours(
+    process.env.TRAPEZOHE_MEMORY_SHADOW_REFRESH_SLA_HOURS,
+    DEFAULT_MEMORY_SHADOW_REFRESH_SLA_HOURS,
   )
 }
 
@@ -90,16 +113,18 @@ async function safeChmod(target, mode) {
 }
 
 export async function ensureConfigDir() {
-  await fs.mkdir(CONFIG_DIR, { recursive: true, mode: CONFIG_DIR_MODE })
-  await safeChmod(CONFIG_DIR, CONFIG_DIR_MODE)
+  const configDir = getConfigDir()
+  await fs.mkdir(configDir, { recursive: true, mode: CONFIG_DIR_MODE })
+  await safeChmod(configDir, CONFIG_DIR_MODE)
 }
 
 export async function loadConfig() {
   await ensureConfigDir()
 
   try {
-    const raw = await fs.readFile(CONFIG_FILE, 'utf8')
-    await safeChmod(CONFIG_FILE, CONFIG_FILE_MODE)
+    const configPath = getConfigPath()
+    const raw = await fs.readFile(configPath, 'utf8')
+    await safeChmod(configPath, CONFIG_FILE_MODE)
     const parsed = JSON.parse(raw)
     return {
       port: Number(parsed.port) || DEFAULT_CONFIG.port,
@@ -142,8 +167,9 @@ export async function saveConfig(config) {
     normalized.extensionIds = config.extensionIds.filter((id) => typeof id === 'string' && id.trim())
   }
   const json = JSON.stringify(normalized, null, 2) + '\n'
-  await fs.writeFile(CONFIG_FILE, json, { encoding: 'utf8', mode: CONFIG_FILE_MODE })
-  await safeChmod(CONFIG_FILE, CONFIG_FILE_MODE)
+  const configPath = getConfigPath()
+  await fs.writeFile(configPath, json, { encoding: 'utf8', mode: CONFIG_FILE_MODE })
+  await safeChmod(configPath, CONFIG_FILE_MODE)
 }
 
 function normalizeMcpServerConfig(input) {
@@ -245,8 +271,9 @@ export async function initConfig() {
   await ensureConfigDir()
 
   try {
-    await fs.access(CONFIG_FILE)
-    return { created: false, path: CONFIG_FILE }
+    const configPath = getConfigPath()
+    await fs.access(configPath)
+    return { created: false, path: configPath }
   } catch {
     // File doesn't exist, create default
   }
@@ -254,7 +281,7 @@ export async function initConfig() {
   const token = randomBytes(24).toString('hex')
   const config = { ...DEFAULT_CONFIG, token }
   await saveConfig(config)
-  return { created: true, path: CONFIG_FILE, token }
+  return { created: true, path: getConfigPath(), token }
 }
 
 export async function repairConfigDefaults() {
@@ -285,7 +312,7 @@ export async function repairConfigDefaults() {
   await saveConfig(nextConfig)
   return {
     ok: true,
-    path: CONFIG_FILE,
+    path: getConfigPath(),
     token: nextToken,
     generatedToken: !existing?.token,
     mcpServerCount: Object.keys(nextConfig.mcpServers).length,
@@ -301,14 +328,16 @@ export function resolveToken(config) {
 
 export async function writePid(pid = process.pid) {
   await ensureConfigDir()
-  await fs.writeFile(PID_FILE, String(pid), { encoding: 'utf8', mode: CONFIG_FILE_MODE })
-  await safeChmod(PID_FILE, CONFIG_FILE_MODE)
+  const pidPath = getPidPath()
+  await fs.writeFile(pidPath, String(pid), { encoding: 'utf8', mode: CONFIG_FILE_MODE })
+  await safeChmod(pidPath, CONFIG_FILE_MODE)
 }
 
 export async function readPid() {
   try {
-    const raw = await fs.readFile(PID_FILE, 'utf8')
-    await safeChmod(PID_FILE, CONFIG_FILE_MODE)
+    const pidPath = getPidPath()
+    const raw = await fs.readFile(pidPath, 'utf8')
+    await safeChmod(pidPath, CONFIG_FILE_MODE)
     return Number(raw.trim()) || null
   } catch {
     return null
@@ -317,7 +346,7 @@ export async function readPid() {
 
 export async function removePid() {
   try {
-    await fs.unlink(PID_FILE)
+    await fs.unlink(getPidPath())
   } catch {
     // Ignore if already removed
   }

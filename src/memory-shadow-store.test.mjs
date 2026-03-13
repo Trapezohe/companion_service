@@ -1,7 +1,8 @@
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
+import os from 'node:os'
 import path from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 
 import {
   clearMemoryShadowStoreForTests,
@@ -10,6 +11,17 @@ import {
   ingestMemoryShadowEnvelope,
 } from './memory-shadow-store.mjs'
 import { getConfigDir } from './config.mjs'
+
+const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
+const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-memory-shadow-store-test-'))
+process.env.TRAPEZOHE_CONFIG_DIR = testConfigDir
+
+after(async () => {
+  await clearMemoryShadowStoreForTests().catch(() => undefined)
+  if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
+  else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
+  await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
+})
 
 function makeShadowEnvelope() {
   const latestPointer = {
