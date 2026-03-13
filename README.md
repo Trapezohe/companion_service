@@ -199,7 +199,7 @@ All endpoints require `Authorization: Bearer <token>` header and only accept con
 
 ```
 GET /healthz
-→ { "ok": true, "pid": 12345, "version": "0.1.8", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
+→ { "ok": true, "pid": 12345, "version": "0.1.9", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
 ```
 
 ### Diagnostics / Repair
