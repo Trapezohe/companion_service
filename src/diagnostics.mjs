@@ -10,6 +10,7 @@ import {
 import { listRuns } from './run-store.mjs'
 import { listPendingApprovals } from './approval-store.mjs'
 import { listAcpSessions } from './acp-session.mjs'
+import { getMemoryShadowStatus } from './memory-shadow-store.mjs'
 import { getBrowserLedgerDiagnostics } from './browser-ledger.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
@@ -109,6 +110,51 @@ async function buildMediaNormalizationSummary(params) {
   }
 }
 
+async function buildMemoryShadowRefreshSummary(params) {
+  if (!params.memoryShadowRefresh || typeof params.memoryShadowRefresh.getState !== 'function') {
+    return null
+  }
+
+  try {
+    const state = await params.memoryShadowRefresh.getState()
+    return {
+      available: state?.available === true || params.memoryShadowRefresh.available === true,
+      state: state?.state || 'empty',
+      freshnessOwner: state?.freshnessOwner || 'none',
+      freshnessSlaHours: Number.isFinite(state?.freshnessSlaHours)
+        ? Number(state.freshnessSlaHours)
+        : (Number.isFinite(params.memoryShadowRefresh.freshnessSlaHours)
+          ? Number(params.memoryShadowRefresh.freshnessSlaHours)
+          : null),
+      lastAttemptAt: Number.isFinite(state?.lastAttemptAt) ? Number(state.lastAttemptAt) : null,
+      lastOutcome: state?.lastOutcome || null,
+      lastError: state?.lastError || null,
+      lastSourceGeneration: state?.lastSourceGeneration || null,
+      lastSourceCommittedAt: Number.isFinite(state?.lastSourceCommittedAt)
+        ? Number(state.lastSourceCommittedAt)
+        : null,
+      lastPublishedGeneration: state?.lastPublishedGeneration || null,
+      lastPublishedAt: Number.isFinite(state?.lastPublishedAt) ? Number(state.lastPublishedAt) : null,
+      lastPublishSource: state?.lastPublishSource || null,
+    }
+  } catch (error) {
+    return {
+      available: false,
+      state: 'failed',
+      freshnessOwner: 'none',
+      freshnessSlaHours: null,
+      lastAttemptAt: null,
+      lastOutcome: 'failed',
+      lastError: error instanceof Error ? error.message : String(error),
+      lastSourceGeneration: null,
+      lastSourceCommittedAt: null,
+      lastPublishedGeneration: null,
+      lastPublishedAt: null,
+      lastPublishSource: null,
+    }
+  }
+}
+
 async function checkNativeHostRegistration(config) {
   const extensionIds = getConfiguredExtensionIds(config)
   const manifestTargets = getNativeHostManifestTargets()
@@ -140,11 +186,15 @@ export async function buildDiagnosticsPayload(params) {
   const permissionPolicy = normalizePermissionPolicy(params.getPermissionPolicy?.() || config.permissionPolicy)
   const servers = params.mcpManager?.getServers?.() || []
   const nativeHostRegistration = await checkNativeHostRegistration(config)
+  const memoryShadow = await getMemoryShadowStatus().catch(() => null)
 
   const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
   const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
   const mediaNormalizationSummary = await buildMediaNormalizationSummary(params)
-  const browserLedgerSummary = await getBrowserLedgerDiagnostics()
+  const memoryShadowRefresh = await buildMemoryShadowRefreshSummary(params)
+  const browserLedgerSummary = await getBrowserLedgerDiagnostics({
+    supportedFeatures: params.supportedFeatures,
+  })
 
   const payload = {
     protocolVersion: params.protocolVersion,
@@ -175,6 +225,8 @@ export async function buildDiagnosticsPayload(params) {
     capabilitySummary,
     acpIngressSummary,
     mediaNormalizationSummary,
+    ...(memoryShadow ? { memoryShadow } : {}),
+    ...(memoryShadowRefresh ? { memoryShadowRefresh } : {}),
     browser: {
       enabled: params.supportedFeatures?.browserLedger === true,
       loaded: browserLedgerSummary.loaded,
@@ -182,10 +234,8 @@ export async function buildDiagnosticsPayload(params) {
       actions: browserLedgerSummary.actions,
       artifacts: browserLedgerSummary.artifacts,
       events: browserLedgerSummary.events,
-      capabilities: {
-        browserLedger: params.supportedFeatures?.browserLedger === true,
-        browserEvents: params.supportedFeatures?.browserEvents === true,
-      },
+      operator: browserLedgerSummary.operator,
+      capabilities: browserLedgerSummary.capabilities,
     },
   }
 
@@ -195,6 +245,8 @@ export async function buildDiagnosticsPayload(params) {
     acpSessions: payload.acp.totalSessions,
     mcpServers: payload.mcp.connectedServers,
     capabilityFeatures: payload.capabilitySummary.availableFeatures.length,
+    memoryShadowGeneration: payload.memoryShadow?.mirroredGeneration || null,
+    memoryShadowRefreshState: payload.memoryShadowRefresh?.state || null,
     browserSessions: payload.browser.sessions.active,
     browserFailedActions: payload.browser.actions.failedRecent,
   })

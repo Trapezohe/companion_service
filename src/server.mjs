@@ -10,6 +10,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   COMPANION_PROTOCOL_VERSION,
   COMPANION_SUPPORTED_FEATURES,
+  getDefaultMemoryShadowRefreshSlaHours,
   repairConfigDefaults,
 } from './config.mjs'
 import { COMPANION_VERSION } from './version.mjs'
@@ -77,6 +78,16 @@ import {
   setAcpSessionTransitionHook,
 } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
+import {
+  getMemoryShadowEnvelope,
+  getMemoryShadowStatus,
+  ingestMemoryShadowEnvelope,
+  loadMemoryShadowStore,
+} from './memory-shadow-store.mjs'
+import {
+  createFileBackedMemoryShadowRefreshStateStore,
+  createMemoryShadowPublisher,
+} from './memory-shadow-publisher.mjs'
 import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 
@@ -631,8 +642,10 @@ export function createCompanionServer({
   },
   shutdownFn = null,
   cleanupFn = null,
+  publishMemoryShadowRefresh = null,
   normalizeMediaImage = normalizeImagePayload,
   getMediaSupport = getMediaNormalizationSupport,
+  memoryShadowRefreshSlaHours = getDefaultMemoryShadowRefreshSlaHours(),
 }) {
   const sessionRunIndex = new Map()
   let lastKnownOriginPolicy = {
@@ -640,9 +653,16 @@ export function createCompanionServer({
     allowUnpairedExtensionOrigin: false,
   }
   const serializeApprovalMutation = createKeyedSerializer()
+  const memoryShadowRefresh = createMemoryShadowPublisher({
+    getShadowEnvelope: getMemoryShadowEnvelope,
+    publishShadowRefresh: publishMemoryShadowRefresh,
+    freshnessSlaHours: memoryShadowRefreshSlaHours,
+    stateStore: createFileBackedMemoryShadowRefreshStateStore(),
+  })
   const initStoresPromise = Promise.all([
     loadRunStore().catch(() => undefined),
     loadApprovalStore().catch(() => undefined),
+    loadMemoryShadowStore().catch(() => undefined),
     loadBrowserLedger().catch(() => undefined),
   ]).then(async () => {
     await restoreSessionRunStateOnStartup(sessionRunIndex).catch(() => undefined)
@@ -912,6 +932,43 @@ export function createCompanionServer({
       return sendJson(res, 200, buildCompanionCapabilitiesPayload())
     }
 
+
+    if (req.method === 'POST' && pathname === '/api/memory/checkpoints/shadow') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const result = await ingestMemoryShadowEnvelope(body)
+        return sendJson(res, 200, {
+          ok: true,
+          status: result.status,
+        })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/api/memory/checkpoints/shadow/status') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const status = await getMemoryShadowStatus()
+      return sendJson(res, 200, status)
+    }
+
+    if (req.method === 'POST' && pathname === '/api/memory/checkpoints/shadow/refresh') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req).catch(() => ({}))
+        const result = await memoryShadowRefresh.refresh({
+          force: body?.force === true,
+        })
+        return sendJson(res, 200, result)
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
     if (req.method === 'GET' && pathname === '/api/system/diagnostics') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
@@ -923,6 +980,7 @@ export function createCompanionServer({
         getPermissionPolicy,
         getMediaSupport,
         mcpManager,
+        memoryShadowRefresh,
       })
       return sendJson(res, 200, diagnostics)
     }
@@ -1293,6 +1351,7 @@ export function createCompanionServer({
       authorize: (r) => authorize(r, token),
       sendJson,
       readJsonBody,
+      supportedFeatures: COMPANION_SUPPORTED_FEATURES,
     })
     if (browserHandled) return
 

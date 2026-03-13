@@ -1,5 +1,8 @@
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
+import os from 'node:os'
+import path from 'node:path'
+import { mkdtemp, rm } from 'node:fs/promises'
 
 import { createCompanionServer } from './server.mjs'
 import { addPendingRun, clearCronStoreForTests } from './cron-store.mjs'
@@ -12,6 +15,23 @@ import {
   flushApprovalStore,
   getApprovalById,
 } from './approval-store.mjs'
+import { clearMemoryShadowStoreForTests } from './memory-shadow-store.mjs'
+import { clearMemoryShadowRefreshStateForTests } from './memory-shadow-publisher.mjs'
+
+const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
+const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-server-runtime-test-'))
+process.env.TRAPEZOHE_CONFIG_DIR = testConfigDir
+
+after(async () => {
+  await clearRunStoreForTests().catch(() => undefined)
+  await clearApprovalStoreForTests().catch(() => undefined)
+  await clearCronStoreForTests().catch(() => undefined)
+  await clearMemoryShadowStoreForTests().catch(() => undefined)
+  await clearMemoryShadowRefreshStateForTests().catch(() => undefined)
+  if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
+  else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
+  await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
+})
 
 function createMcpManagerStub() {
   return {
@@ -20,6 +40,79 @@ function createMcpManagerStub() {
     getServers: () => [],
     callTool: async () => ({ ok: true }),
     restartServer: async () => {},
+  }
+}
+
+function makeShadowEnvelope() {
+  const latestPointer = {
+    version: 1,
+    generation: '2026-03-13T00-00-00.000Z',
+    committedAt: 1700000005000,
+    manifestKey: 'memory-checkpoints/generations/2026-03-13T00-00-00.000Z/manifest.json',
+  }
+  const history = {
+    version: 1,
+    generation: '2026-03-13T00-00-00.000Z',
+    previousGeneration: '2026-03-12T00-00-00.000Z',
+    coverageDay: '2026-03-13',
+    committedAt: 1700000005000,
+    manifestKey: latestPointer.manifestKey,
+    artifactCount: 2,
+    requiredArtifactCount: 2,
+    lastHistoryKey: 'memory-checkpoints/history/2026-03-13T00-00-00.000Z.json',
+  }
+  const manifest = {
+    version: 1,
+    generatedAt: 1700000000000,
+    committedAt: 1700000005000,
+    generation: '2026-03-13T00-00-00.000Z',
+    previousGeneration: '2026-03-12T00-00-00.000Z',
+    latestPointerKey: 'memory-checkpoints/latest.json',
+    overallHash: 'overall-hash',
+    nodeCount: 1,
+    coreDocCount: 0,
+    dailyLogCount: 0,
+    structuredContextCount: 1,
+    artifacts: [
+      {
+        key: 'context-nodes.json',
+        label: 'Context Snapshot',
+        kind: 'context_snapshot',
+        updatedAt: 1700000000000,
+        checksum: 'ctx-checksum',
+        count: 1,
+        bytes: 128,
+        storageKey: 'memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/context-nodes.json',
+        required: true,
+      },
+      {
+        key: 'memory-index.json',
+        label: 'memory-index.json',
+        kind: 'derived_meta',
+        updatedAt: 1700000005000,
+        checksum: 'memory-index-checksum',
+        bytes: 32,
+        storageKey: 'memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/indexes/memory-index.json',
+        required: true,
+      },
+    ],
+  }
+  return {
+    version: 1,
+    authority: 'extension_primary',
+    generation: '2026-03-13T00-00-00.000Z',
+    previousGeneration: '2026-03-12T00-00-00.000Z',
+    committedAt: 1700000005000,
+    latestPointer,
+    latestPointerPayload: JSON.stringify(latestPointer),
+    history,
+    historyPayload: JSON.stringify(history),
+    manifest,
+    manifestPayload: JSON.stringify(manifest),
+    artifactPayloads: {
+      'memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/context-nodes.json': '{"nodes":true}',
+      'memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/indexes/memory-index.json': '[{"id":"mem-1"}]',
+    },
   }
 }
 
@@ -42,6 +135,8 @@ async function startTestServer(options = {}) {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
     await clearCronStoreForTests()
+    await clearMemoryShadowStoreForTests()
+    await clearMemoryShadowRefreshStateForTests()
     await clearBrowserLedgerForTests()
   }
   const token = 'test-token'
@@ -49,6 +144,9 @@ async function startTestServer(options = {}) {
   const server = createCompanionServer({
     token,
     mcpManager,
+    ...(typeof options.publishMemoryShadowRefresh === 'function'
+      ? { publishMemoryShadowRefresh: options.publishMemoryShadowRefresh }
+      : {}),
     ...(typeof options.setMcpServerConfig === 'function'
       ? { setMcpServerConfig: options.setMcpServerConfig }
       : {}),
@@ -192,6 +290,121 @@ test('media normalization endpoint accepts payloads above the default JSON body 
   assert.equal(response.payload.bytesBase64.length, largeBase64.length)
 })
 
+
+test('memory shadow endpoints ingest committed extension envelopes and expose read-only status', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const ingest = await requestJson(ctx, '/api/memory/checkpoints/shadow', {
+    method: 'POST',
+    body: makeShadowEnvelope(),
+  })
+
+  assert.equal(ingest.status, 200)
+  assert.equal(ingest.payload.ok, true)
+  assert.equal(ingest.payload.status.mirroredGeneration, '2026-03-13T00-00-00.000Z')
+  assert.equal(ingest.payload.status.mirroredCommittedAt, 1700000005000)
+  assert.equal(ingest.payload.status.freshness.state, 'fresh')
+
+  const status = await requestJson(ctx, '/api/memory/checkpoints/shadow/status')
+  assert.equal(status.status, 200)
+  assert.deepEqual(status.payload, ingest.payload.status)
+})
+
+test('memory shadow ingest rejects non-authoritative envelopes', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const response = await requestJson(ctx, '/api/memory/checkpoints/shadow', {
+    method: 'POST',
+    body: {
+      ...makeShadowEnvelope(),
+      authority: 'companion_shadow',
+    },
+  })
+
+  assert.equal(response.status, 400)
+  assert.match(response.payload.error, /extension_primary/i)
+})
+
+
+test('memory shadow refresh endpoint refuses publish when no mirrored shadow exists', async (t) => {
+  const ctx = await startTestServer({
+    publishMemoryShadowRefresh: async () => ({ txHash: '0xtx', rootHash: '0xroot' }),
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const response = await requestJson(ctx, '/api/memory/checkpoints/shadow/refresh', {
+    method: 'POST',
+    body: {},
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.published, false)
+  assert.equal(response.payload.reason, 'no_shadow_checkpoint')
+})
+
+test('memory shadow refresh endpoint publishes stale mirrored state through the injected follower publisher', async (t) => {
+  const calls = []
+  const staleEnvelope = {
+    ...makeShadowEnvelope(),
+    committedAt: Date.UTC(2026, 2, 10, 0, 0, 0),
+    latestPointer: {
+      ...makeShadowEnvelope().latestPointer,
+      committedAt: Date.UTC(2026, 2, 10, 0, 0, 0),
+    },
+    history: {
+      ...makeShadowEnvelope().history,
+      committedAt: Date.UTC(2026, 2, 10, 0, 0, 0),
+    },
+    manifest: {
+      ...makeShadowEnvelope().manifest,
+      committedAt: Date.UTC(2026, 2, 10, 0, 0, 0),
+      generatedAt: Date.UTC(2026, 2, 9, 23, 59, 55),
+    },
+  }
+  staleEnvelope.latestPointerPayload = JSON.stringify(staleEnvelope.latestPointer)
+  staleEnvelope.historyPayload = JSON.stringify(staleEnvelope.history)
+  staleEnvelope.manifestPayload = JSON.stringify(staleEnvelope.manifest)
+
+  const ctx = await startTestServer({
+    publishMemoryShadowRefresh: async (bundle) => {
+      calls.push(bundle)
+      return { txHash: '0xtx', rootHash: '0xroot' }
+    },
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const ingest = await requestJson(ctx, '/api/memory/checkpoints/shadow', {
+    method: 'POST',
+    body: staleEnvelope,
+  })
+  assert.equal(ingest.status, 200)
+
+  const response = await requestJson(ctx, '/api/memory/checkpoints/shadow/refresh', {
+    method: 'POST',
+    body: {},
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(response.payload.published, true)
+  assert.equal(response.payload.publishSource, 'shadow_refresh')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].sourceGeneration, staleEnvelope.generation)
+})
+
 test('health and capabilities endpoints expose protocol contract fields', async (t) => {
   const ctx = await startTestServer()
   t.after(async () => {
@@ -208,6 +421,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(health.payload.supportedFeatures.cronReplay, true)
   assert.equal(health.payload.supportedFeatures.browserLedger, true)
   assert.equal(health.payload.supportedFeatures.browserEvents, true)
+  assert.equal(health.payload.supportedFeatures.browserDrilldown, true)
 
   const capabilities = await requestJson(ctx, '/api/system/capabilities')
   assert.equal(capabilities.status, 200)
@@ -217,6 +431,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(capabilities.payload.supportedFeatures.approvalStore, true)
   assert.equal(capabilities.payload.supportedFeatures.browserLedger, true)
   assert.equal(capabilities.payload.supportedFeatures.browserEvents, true)
+  assert.equal(capabilities.payload.supportedFeatures.browserDrilldown, true)
 })
 
 test('diagnostics and self-check endpoints return structured companion health details', async (t) => {
@@ -443,6 +658,12 @@ test('browser ledger sync and query endpoints persist browser runtime records', 
   assert.equal(diagnostics.payload.sessions.recentLinked[0].link.runId, 'run-browser-1')
   assert.equal(diagnostics.payload.actions.linked, 1)
   assert.equal(diagnostics.payload.actions.recentLinked[0].link.sourceToolCallId, 'tool-call-browser-1')
+  assert.equal(diagnostics.payload.capabilities.browserLedger, true)
+  assert.equal(diagnostics.payload.capabilities.browserEvents, true)
+  assert.equal(diagnostics.payload.capabilities.browserDrilldown, true)
+  assert.equal(diagnostics.payload.operator.drilldownAvailable, true)
+  assert.equal(diagnostics.payload.operator.routes.drilldown, '/api/browser/drilldown')
+  assert.deepEqual(diagnostics.payload.operator.eventWindowModes, ['tail'])
 })
 
 test('browser events endpoint returns cursor-paged browser sync events', async (t) => {
@@ -514,6 +735,238 @@ test('browser events endpoint returns cursor-paged browser sync events', async (
   assert.equal(events.payload.events[1].actionId, 'browser-action-events-1')
   assert.equal(events.payload.events[2].artifactId, 'browser-artifact-events-1')
   assert.equal(typeof events.payload.nextCursor, 'number')
+})
+
+test('browser events endpoint supports window=tail for recent contract and incremental follow-up', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const link = {
+    runId: 'run-browser-tail-1',
+    conversationId: 'conv-browser-tail-1',
+    sourceToolName: 'browser_click',
+    sourceToolCallId: 'tool-call-browser-tail-1',
+    approvalRequestId: 'approval-browser-tail-1',
+  }
+
+  await requestJson(ctx, '/api/browser/sessions/sync', {
+    method: 'POST',
+    body: {
+      session: {
+        sessionId: 'browser-session-tail-1',
+        driver: 'extension-tab',
+        state: 'ready',
+        createdAt: 1_710_000_310_000,
+        updatedAt: 1_710_000_310_100,
+        profileId: 'default',
+      },
+      link,
+    },
+  })
+
+  await requestJson(ctx, '/api/browser/actions/sync', {
+    method: 'POST',
+    body: {
+      action: {
+        actionId: 'browser-action-tail-1',
+        sessionId: 'browser-session-tail-1',
+        targetId: 'target-tail-1',
+        kind: 'click',
+        status: 'completed',
+        startedAt: 1_710_000_310_200,
+        finishedAt: 1_710_000_310_250,
+        inputSummary: 'click [1]',
+        resultSummary: 'clicked checkout button',
+      },
+      link,
+    },
+  })
+
+  await requestJson(ctx, '/api/browser/artifacts/sync', {
+    method: 'POST',
+    body: {
+      artifact: {
+        artifactId: 'browser-artifact-tail-1',
+        sessionId: 'browser-session-tail-1',
+        targetId: 'target-tail-1',
+        kind: 'screenshot',
+        createdAt: 1_710_000_310_260,
+        mimeType: 'image/png',
+        byteLength: 64,
+        storage: 'companion',
+        pathOrKey: 'browser/browser-artifact-tail-1.png',
+      },
+      actionId: 'browser-action-tail-1',
+      link,
+    },
+  })
+
+  const tailWindow = await requestJson(
+    ctx,
+    '/api/browser/events'
+      + '?runId=run-browser-tail-1'
+      + '&conversationId=conv-browser-tail-1'
+      + '&sourceToolCallId=tool-call-browser-tail-1'
+      + '&approvalRequestId=approval-browser-tail-1'
+      + '&window=tail'
+      + '&limit=2',
+  )
+  assert.equal(tailWindow.status, 200)
+  assert.equal(tailWindow.payload.ok, true)
+  assert.deepEqual(tailWindow.payload.events.map((event) => event.type), [
+    'action_synced',
+    'artifact_synced',
+  ])
+  assert.equal(tailWindow.payload.events[0].resultSummary, 'clicked checkout button')
+  assert.equal(tailWindow.payload.events[1].artifactId, 'browser-artifact-tail-1')
+  assert.equal(tailWindow.payload.hasMore, false)
+  assert.equal(typeof tailWindow.payload.nextCursor, 'number')
+
+  await requestJson(ctx, '/api/browser/actions/sync', {
+    method: 'POST',
+    body: {
+      action: {
+        actionId: 'browser-action-tail-1',
+        sessionId: 'browser-session-tail-1',
+        targetId: 'target-tail-1',
+        kind: 'click',
+        status: 'failed',
+        startedAt: 1_710_000_310_200,
+        finishedAt: 1_710_000_310_300,
+        inputSummary: 'click [1]',
+        resultSummary: 'retry failed on stale target',
+        error: {
+          code: 'TARGET_STALE',
+          message: 'Snapshot became stale before click.',
+          retryable: true,
+        },
+      },
+      link,
+    },
+  })
+
+  const increment = await requestJson(
+    ctx,
+    '/api/browser/events'
+      + `?runId=run-browser-tail-1`
+      + '&conversationId=conv-browser-tail-1'
+      + '&sourceToolCallId=tool-call-browser-tail-1'
+      + '&approvalRequestId=approval-browser-tail-1'
+      + `&after=${tailWindow.payload.nextCursor}`
+      + '&limit=10',
+  )
+  assert.equal(increment.status, 200)
+  assert.equal(increment.payload.ok, true)
+  assert.deepEqual(increment.payload.events.map((event) => event.type), ['action_synced'])
+  assert.equal(increment.payload.events[0].status, 'failed')
+  assert.equal(increment.payload.events[0].errorCode, 'TARGET_STALE')
+  assert.equal(increment.payload.events[0].resultSummary, 'retry failed on stale target')
+  assert.ok(increment.payload.nextCursor > tailWindow.payload.nextCursor)
+})
+
+test('browser drilldown endpoint aggregates linked records for operator surfaces', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const link = {
+    runId: 'run-browser-drilldown-1',
+    conversationId: 'conv-browser-drilldown-1',
+    sourceToolCallId: 'tool-call-browser-drilldown-1',
+    approvalRequestId: 'approval-browser-drilldown-1',
+  }
+
+  await requestJson(ctx, '/api/browser/sessions/sync', {
+    method: 'POST',
+    body: {
+      session: {
+        sessionId: 'browser-session-drilldown-1',
+        driver: 'extension-tab',
+        state: 'ready',
+        createdAt: 1_710_000_320_000,
+        updatedAt: 1_710_000_320_100,
+        profileId: 'default',
+      },
+      link: {
+        ...link,
+        sourceToolName: 'browser_navigate',
+      },
+    },
+  })
+
+  await requestJson(ctx, '/api/browser/actions/sync', {
+    method: 'POST',
+    body: {
+      action: {
+        actionId: 'browser-action-drilldown-1',
+        sessionId: 'browser-session-drilldown-1',
+        targetId: 'target-drilldown-1',
+        kind: 'click',
+        status: 'completed',
+        startedAt: 1_710_000_320_200,
+        finishedAt: 1_710_000_320_250,
+        inputSummary: 'click [1]',
+        resultSummary: 'clicked checkout button',
+      },
+      link: {
+        ...link,
+        sourceToolName: 'browser_click',
+      },
+    },
+  })
+
+  await requestJson(ctx, '/api/browser/artifacts/sync', {
+    method: 'POST',
+    body: {
+      artifact: {
+        artifactId: 'browser-artifact-drilldown-1',
+        sessionId: 'browser-session-drilldown-1',
+        targetId: 'target-drilldown-1',
+        kind: 'screenshot',
+        createdAt: 1_710_000_320_260,
+        mimeType: 'image/png',
+        byteLength: 64,
+        storage: 'companion',
+        pathOrKey: 'browser/browser-artifact-drilldown-1.png',
+      },
+      actionId: 'browser-action-drilldown-1',
+      link: {
+        ...link,
+        sourceToolName: 'browser_click',
+      },
+    },
+  })
+
+  const drilldown = await requestJson(
+    ctx,
+    '/api/browser/drilldown'
+      + '?runId=run-browser-drilldown-1'
+      + '&conversationId=conv-browser-drilldown-1'
+      + '&sourceToolName=browser_click'
+      + '&sourceToolCallId=tool-call-browser-drilldown-1'
+      + '&approvalRequestId=approval-browser-drilldown-1'
+      + '&sessionId=browser-session-drilldown-1'
+      + '&actionId=browser-action-drilldown-1'
+      + '&eventWindow=tail'
+      + '&eventLimit=2',
+  )
+
+  assert.equal(drilldown.status, 200)
+  assert.equal(drilldown.payload.ok, true)
+  assert.equal(drilldown.payload.sessions.total, 1)
+  assert.equal(drilldown.payload.actions.total, 1)
+  assert.equal(drilldown.payload.artifacts.total, 1)
+  assert.deepEqual(drilldown.payload.events.events.map((event) => event.type), [
+    'action_synced',
+    'artifact_synced',
+  ])
+  assert.equal(drilldown.payload.filters.sourceToolName, undefined)
+  assert.equal(drilldown.payload.filters.sourceToolCallId, 'tool-call-browser-drilldown-1')
 })
 
 test('repair endpoint returns updated self-check payload for supported repair actions', async (t) => {

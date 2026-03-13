@@ -25,6 +25,7 @@ export const COMPANION_SUPPORTED_FEATURES = {
   browserLedger: true,
   browserEvents: true,
   mediaNormalization: true,
+  memoryCheckpointShadow: true,
 }
 
 const DEFAULT_CONFIG = {
