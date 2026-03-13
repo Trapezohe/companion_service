@@ -18,7 +18,11 @@ function delay(ms) {
 }
 
 function interruptibleLongRunningCommand() {
-  const nodeScript = "process.on('SIGINT', () => process.exit(130)); setInterval(() => {}, 1000)"
+  const nodeScript = [
+    "process.on('SIGINT', () => process.exit(130))",
+    "process.stdout.write('READY\\n')",
+    'setInterval(() => {}, 1000)',
+  ].join('; ')
   if (process.platform === 'win32') {
     return `node -e "${nodeScript}"`
   }
@@ -151,6 +155,8 @@ test('sendKeysToSession ctrl-c exits running process', async (t) => {
     cwd: process.cwd(),
     timeoutMs: 20_000,
   })
+
+  await waitForStdoutContains(sessionId, 'READY')
 
   const sent = sendKeysToSession(sessionId, 'ctrl-c')
   assert.equal(sent.ok, true)

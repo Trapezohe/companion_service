@@ -121,7 +121,11 @@ function delay(ms) {
 }
 
 function interruptibleLongRunningCommand() {
-  const nodeScript = "process.on('SIGINT', () => process.exit(130)); setInterval(() => {}, 1000)"
+  const nodeScript = [
+    "process.on('SIGINT', () => process.exit(130))",
+    "process.stdout.write('READY\\n')",
+    'setInterval(() => {}, 1000)',
+  ].join('; ')
   if (process.platform === 'win32') {
     return `node -e "${nodeScript}"`
   }
@@ -1217,6 +1221,8 @@ test('runtime session send-keys endpoint can interrupt running process', async (
   assert.equal(started.status, 200)
   const { sessionId } = started.payload
   assert.ok(sessionId)
+
+  await waitForSessionStdout(ctx, sessionId, 'READY')
 
   const sendKeys = await requestJson(ctx, `/api/runtime/session/${sessionId}/send-keys`, {
     method: 'POST',

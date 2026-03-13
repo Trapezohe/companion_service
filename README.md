@@ -1,118 +1,144 @@
-# Trapezohe Companion
+<p align="center">
+  <img src="./docs/assets/ghast-logo.png" alt="Trapezohe Companion" width="180" />
+</p>
 
-Local companion daemon for the [Trapezohe AI](https://github.com/trapezohe/trapezohe) Chrome extension — hosts MCP servers and provides a command execution runtime.
+<h1 align="center">Trapezohe Companion</h1>
 
-## What It Does
+<p align="center">
+  <strong>The desktop runtime for the <a href="https://github.com/Trapezohe/trapezohe_extension">Trapezohe browser extension</a>.</strong>
+  <br />
+  It auto-pairs locally, unlocks trusted desktop capabilities, hosts MCP tools, and provides the runtime backbone behind browser automation, diagnostics, and local agent workflows.
+</p>
 
-The Trapezohe Chrome extension has limited capabilities due to browser sandbox restrictions. The Companion runs on your local machine and provides:
+<p align="center">
+  macOS installer (.pkg) &nbsp;•&nbsp; Windows installer (.msi) &nbsp;•&nbsp; Linux / developer setup via CLI
+</p>
 
-- **MCP Server Host** — Spawn and manage [Model Context Protocol](https://modelcontextprotocol.io/) servers (Tavily search, filesystem access, databases, etc.)
-- **Command Runtime** — Execute shell commands on your machine (with user confirmation in the extension)
-- **Tool Bridge** — Exposes all MCP tools to the extension via a local HTTP API
+---
 
-## Quick Start
+## Why Companion exists
 
-### One-Click Install
+A browser extension alone cannot safely expose local files, shell execution, native browser pairing, or long-running desktop services.
 
-**macOS / Linux:**
+Trapezohe Companion is the local process that closes that gap. It runs on your machine, binds to `127.0.0.1`, protects access with a local token, and works with the extension to provide:
+
+- local command execution with permission-policy controls
+- local file and MCP-backed tool access
+- Chromium native-host pairing for Chrome, Brave, Chromium, and Edge
+- browser runtime support, event ledgers, and drill-down diagnostics for operator tooling
+- ACP session ingress, approval flow, and run tracking
+- self-check, repair, media normalization, and memory checkpoint shadow support
+
+## What it powers
+
+| Area | What you get |
+| --- | --- |
+| Desktop pairing | The extension can discover and trust a local companion automatically through native messaging. |
+| Local runtime | Shell commands, long-running sessions, stdin / send-keys flows, and permission-policy enforcement. |
+| MCP host | A local MCP bridge that can host filesystem, search, database, and custom tool servers. |
+| Browser runtime backbone | Session/action/artifact ledgers, event tails, and drill-down APIs for browser automation debugging. |
+| Agent ingress | ACP sessions, approvals, run ledger links, and operator-facing runtime metadata. |
+| Reliability | Diagnostics, self-check, repair loops, media normalization, and follower-only memory shadow freshness. |
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+  Extension["Trapezohe Extension\nchat, tools, browser runtime"]
+  Companion["Trapezohe Companion\ndaemon + tray + local HTTP"]
+  Local["Local machine\nshell, files, MCP, browser, cron"]
+  Diagnostics["Diagnostics & operator surfaces\nruns, approvals, browser drill-down"]
+
+  Extension <--> Companion
+  Companion <--> Local
+  Companion --> Diagnostics
+  Extension --> Diagnostics
+```
+
+## Install
+
+### Recommended: installer packages
+
+Download the latest release from:
+
+- [Latest release](https://github.com/Trapezohe/companion_service/releases/latest)
+
+| Platform | Package | Notes |
+| --- | --- | --- |
+| macOS | `trapezohe-companion-macos.pkg` | Installs the daemon and tray app together |
+| Windows | `trapezohe-companion-windows.msi` | Installs the daemon and tray app together |
+| Linux | CLI / script install | No packaged desktop installer yet |
+
+The desktop tray panel is installed together with the daemon in the packaged desktop installers.
+
+Installers are currently unsigned, so Gatekeeper or SmartScreen may warn on first launch. Verify the release source and `SHA256SUMS.txt` before proceeding.
+
+### Script / CLI install
+
+For Linux, development environments, or manual setup flows:
+
+**macOS / Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash
 ```
 
-Non-interactive (one command, no prompts):
+Non-interactive workspace-scoped setup:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash -s -- --non-interactive --mode workspace --workspace ~/trapezohe-workspace
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell)**
 
 ```powershell
 irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex
 ```
 
-Non-interactive:
+Non-interactive workspace-scoped setup:
 
 ```powershell
 irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex -- --non-interactive --mode workspace --workspace "$HOME\\trapezohe-workspace"
 ```
 
-### Installer Packages (No Terminal Flow)
-
-You can also install from GitHub Releases:
-
-- macOS: `trapezohe-companion-macos.pkg`
-- Windows: `trapezohe-companion-windows.msi`
-- Integrity file: `SHA256SUMS.txt`
-
-Latest release page:
-
-```text
-https://github.com/Trapezohe/companion_service/releases/latest
-```
-
-Recommended verification before running installers:
-
-macOS:
-
-```bash
-shasum -a 256 ./trapezohe-companion-macos.pkg
-```
-
-Windows (PowerShell):
-
-```powershell
-Get-FileHash .\trapezohe-companion-windows.msi -Algorithm SHA256
-```
-
-Compare the command output with `SHA256SUMS.txt`.
-
-Both installers now ship the local daemon and the desktop tray panel together. The desktop tray panel is installed together with the daemon as the default local control surface:
-
-- the tray is installed as a real app / executable, not a separate public portable download
-- the tray becomes the single desktop login item
-- on sign-in, the tray checks daemon state and starts the local runtime if policy allows it
-
-> Note: unsigned installers can trigger OS trust warnings (Gatekeeper / SmartScreen). This is expected for unsigned builds; verify checksum first, then proceed only if you trust the release source.
-
-Installers attempt a best-effort bootstrap automatically. If Node.js is missing or bootstrap fails, package installation still succeeds so users can retry from extension **Settings → Companion**. The tray startup policy is still written so ordinary users can reopen the panel and retry local runtime setup without touching Terminal.
-- macOS installer log: `/Users/Shared/trapezohe-companion-installer.log`
-- Windows installer log: `%ProgramData%\\TrapezoheCompanion\\installer.log`
-
-### Manual Install (npm)
+### npm install
 
 ```bash
 npm install -g trapezohe-companion
 trapezohe-companion bootstrap --mode workspace --workspace ~/trapezohe-workspace
 ```
 
-The `bootstrap` command handles everything: creates config, registers the Chrome Native Messaging host for auto-pairing, and starts the daemon.
+`bootstrap` creates config, registers the native host, and starts the local daemon in one flow.
 
-If you prefer step-by-step:
+## Pairing with the extension
 
-```bash
-npm install -g trapezohe-companion
-trapezohe-companion init                           # Create config
-trapezohe-companion register                      # Register native messaging host
-trapezohe-companion start                          # Start the daemon
-```
+For ordinary users, the intended flow is simple:
 
-### Connect to Extension
+1. Install the desktop companion
+2. Open the tray app or keep the daemon running
+3. Open the Trapezohe extension and go to `Settings -> Companion`
+4. Click the status check / connection check flow
 
-**Automatic (recommended):** `bootstrap` and `register` always pair the companion with the built-in official Ghast extension ID, so the extension auto-discovers the companion via Chrome Native Messaging — no manual config needed.
+When native-host registration is healthy, pairing should be automatic.
 
-**Manual fallback:**
-1. Start the companion: `trapezohe-companion start`
-2. Copy the access token: `trapezohe-companion token`
-3. In the Trapezohe extension: **Settings → Companion**
-4. Enter URL: `http://127.0.0.1:41591`
-5. Paste the token
-6. Enable and save
+If you need the manual fallback path:
+
+1. Start the service: `trapezohe-companion start`
+2. Print the token: `trapezohe-companion token`
+3. In the extension's Companion page, enter `http://127.0.0.1:41591`
+4. Paste the token and save
 
 ## Configuration
 
-Config file: `~/.trapezohe/companion.json`
+Companion stores local state under `~/.trapezohe/` by default.
+
+Important files:
+
+- config: `~/.trapezohe/companion.json`
+- PID file: `~/.trapezohe/companion.pid`
+- native-host manifests: browser-specific native messaging directories
+
+Example config:
 
 ```json
 {
@@ -126,57 +152,56 @@ Config file: `~/.trapezohe/companion.json`
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/documents"]
-    },
-    "tavily-search": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/tavily-mcp-server"],
-      "env": {
-        "TAVILY_API_KEY": "tvly-xxxxx"
-      }
     }
   }
 }
 ```
 
-### Permission Modes
+### Permission policy
 
-- `workspace` (recommended): command runtime is restricted to configured `workspaceRoots`; requests outside the boundary are blocked.
-- `full`: no workspace boundary checks (OpenClaw-like full system control with current user permissions).
+- `workspace` - recommended for development and controlled local execution
+- `full` - no workspace boundary restriction for the current OS user
 
-The `mcpServers` format is compatible with [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) — you can reuse your existing MCP server configurations.
-
-### MCP Server Config Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `command` | string | Command to launch the MCP server |
-| `args` | string[] | Command arguments |
-| `env` | object | Additional environment variables |
-| `cwd` | string | Working directory (optional) |
-
-## CLI Commands
+## CLI quick reference
 
 ```bash
-trapezohe-companion start       # Start in foreground
-trapezohe-companion start -d    # Start as background daemon
-trapezohe-companion stop        # Stop the daemon
-trapezohe-companion stop --force # Force stop (SIGKILL fallback)
-trapezohe-companion status      # Show status and MCP server info
-trapezohe-companion init        # Create default config
-trapezohe-companion config      # Print config file path
-trapezohe-companion token       # Print access token
-trapezohe-companion policy      # Show current permission policy
-trapezohe-companion policy full
+trapezohe-companion start
+trapezohe-companion start -d
+trapezohe-companion stop
+trapezohe-companion stop --force
+trapezohe-companion status
+trapezohe-companion init
+trapezohe-companion token
+trapezohe-companion policy
 trapezohe-companion policy workspace ~/trapezohe-workspace
-trapezohe-companion self-check  # Run local diagnostics + suggested repairs
+trapezohe-companion self-check --json
 trapezohe-companion repair repair_config
 trapezohe-companion repair register_native_host
 trapezohe-companion bootstrap --mode workspace --workspace ~/trapezohe-workspace
 ```
 
-## Diagnostics and Repair
+## Core HTTP surfaces
 
-The Companion now exposes a built-in self-check and a small repair loop for the most common local failures:
+All HTTP endpoints are local-only and require `Authorization: Bearer <token>`.
+
+| Surface | Purpose |
+| --- | --- |
+| `/healthz` | Liveness, version, and basic runtime state |
+| `/api/system/capabilities` | Protocol version and supported feature flags |
+| `/api/system/diagnostics` | Companion health, browser ledger state, memory shadow, and MCP/runtime summaries |
+| `/api/system/self-check` | Repair-oriented health checks |
+| `/api/runtime/*` | Exec, session lifecycle, logs, stdin, send-keys, run ledger, approvals |
+| `/api/mcp/*` | MCP server inventory and tool invocation |
+| `/api/browser/*` | Browser sessions, actions, artifacts, events, and drill-down routes |
+| `/api/acp/*` | ACP session ingress and event transport |
+| `/api/cron/*` | Pending occurrence replay and cron bookkeeping |
+| `/api/memory-shadow/*` | Mirrored checkpoint shadow status and refresh hooks |
+
+If you need the exact contract, read the source of `src/server.mjs`, `src/browser-routes.mjs`, and `src/acp-routes.mjs`.
+
+## Diagnostics and repair
+
+Companion includes a built-in self-check and a lightweight repair loop for the most common local failures.
 
 ```bash
 trapezohe-companion self-check
@@ -185,101 +210,31 @@ trapezohe-companion repair repair_config
 trapezohe-companion repair register_native_host
 ```
 
-What these do:
+These checks cover config integrity, token availability, native-host registration, workspace policy, and configured MCP executable readiness.
 
-- `self-check` validates config readability, token presence, workspace policy, native host registration, and configured MCP executable availability.
-- `repair repair_config` rewrites missing config defaults while preserving MCP server config and the current access token where possible.
-- `repair register_native_host` re-registers the Chrome native messaging manifest for the built-in official Ghast extension ID.
+## Development
 
-## API Endpoints
-
-All endpoints require `Authorization: Bearer <token>` header and only accept connections from localhost.
-
-### Health Check
-
-```
-GET /healthz
-→ { "ok": true, "pid": 12345, "version": "0.1.9", "mcpServers": 2, "mcpTools": 5, "permissionPolicy": { ... } }
+```bash
+npm install
+npm test
+node bin/cli.mjs --help
+cargo test --manifest-path tray/Cargo.toml --locked
+npm run build:installer:macos
+npm run build:installer:windows
 ```
 
-### Diagnostics / Repair
+Useful local outputs:
 
-```
-GET /api/system/diagnostics
-→ structured MCP / ACP / runs / approvals diagnostics payload
+- macOS package: `dist/installers/trapezohe-companion-macos.pkg`
+- Windows MSI: `dist/installers/trapezohe-companion-windows.msi`
 
-GET /api/system/self-check
-→ { "ok": true, "checks": { ... }, "repairActions": [...] }
+## Notes for advanced operators
 
-POST /api/system/repair
-Body: { "action": "repair_config" }
-→ { "ok": true, "action": "repair_config", "selfCheck": { ... } }
-```
+The public product surface should stay simple, but the companion also exposes deeper operator and diagnostics capabilities used by the extension during debugging and reliability workflows, including:
 
-### Command Execution
+- browser ledger links between sessions, actions, artifacts, and events
+- drill-down routes for recent browser activity
+- runtime run / approval ledgers for ACP and local exec flows
+- checkpoint shadow freshness and mirrored recovery state
 
-```
-POST /api/runtime/exec
-Body: { "command": "echo hello", "cwd": "/tmp", "timeoutMs": 30000 }
-→ { "ok": true, "stdout": "hello\n", "stderr": "", "exitCode": 0, ... }
-```
-
-### MCP Tools
-
-```
-GET /api/mcp/tools
-→ { "tools": [{ "server": "filesystem", "name": "read_file", "description": "...", "inputSchema": {...} }] }
-
-POST /api/mcp/tools/call
-Body: { "server": "filesystem", "tool": "read_file", "arguments": { "path": "/tmp/test.txt" } }
-→ { "ok": true, "content": [{ "type": "text", "text": "file contents..." }] }
-```
-
-### MCP Servers
-
-```
-GET /api/mcp/servers
-→ { "servers": [{ "name": "filesystem", "status": "connected", "toolCount": 5 }] }
-
-POST /api/mcp/servers/{name}/restart
-→ { "ok": true, "name": "filesystem" }
-```
-
-### Permission Policy
-
-```
-GET /api/security/policy
-→ { "policy": { "mode": "workspace", "workspaceRoots": ["/Users/me/trapezohe-workspace"] } }
-
-POST /api/security/policy
-Body: { "mode": "full" }
-→ { "ok": true, "policy": { "mode": "full", "workspaceRoots": [] } }
-```
-
-## Popular MCP Servers
-
-| Server | Install | Description |
-|--------|---------|-------------|
-| Filesystem | `npx -y @modelcontextprotocol/server-filesystem /path` | Read/write files |
-| Brave Search | `npx -y @anthropic/brave-search-mcp-server` | Web search |
-| GitHub | `npx -y @modelcontextprotocol/server-github` | GitHub API |
-| PostgreSQL | `npx -y @modelcontextprotocol/server-postgres` | Database queries |
-| Puppeteer | `npx -y @anthropic/puppeteer-mcp-server` | Browser automation |
-
-Find more at [MCP Servers Directory](https://github.com/modelcontextprotocol/servers).
-
-## Security
-
-- **Loopback only**: The server only accepts connections from `127.0.0.1` / `::1`
-- **Token auth**: Every request requires a Bearer token
-- **User permissions**: MCP server processes run with your user permissions
-- **Extension confirmation**: High-risk commands require user confirmation in the extension UI
-
-## Requirements
-
-- Node.js 18+
-- Ghast Chrome extension (official Chrome Web Store build)
-
-## License
-
-MIT
+Those advanced surfaces are intentionally secondary to the ordinary install-and-connect flow.
