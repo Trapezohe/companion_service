@@ -577,6 +577,97 @@ test('browser ledger derives artifact link from linked actions and preserves it 
   })
 })
 
+test('browser ledger retains out-of-order actions until their session arrives', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-out-of-order-1', 'browser-action-out-of-order-1', {
+        targetId: 'target-out-of-order-1',
+        startedAt: 1_710_000_040_100,
+        status: 'running',
+      }),
+    })
+    await mod.flushBrowserLedger()
+
+    const beforeSession = await mod.listBrowserActions({
+      sessionId: 'browser-session-out-of-order-1',
+      limit: 10,
+      offset: 0,
+    })
+    assert.equal(beforeSession.total, 1)
+    assert.equal(beforeSession.actions[0].action.actionId, 'browser-action-out-of-order-1')
+
+    await mod.syncBrowserSession({
+      session: createSession('browser-session-out-of-order-1', {
+        createdAt: 1_710_000_040_000,
+        updatedAt: 1_710_000_040_200,
+        primaryTargetId: 'target-out-of-order-1',
+      }),
+      targets: [createTarget('browser-session-out-of-order-1', 'target-out-of-order-1', {
+        lastSeenAt: 1_710_000_040_200,
+      })],
+    })
+
+    const afterSession = await mod.listBrowserActions({
+      sessionId: 'browser-session-out-of-order-1',
+      limit: 10,
+      offset: 0,
+    })
+    assert.equal(afterSession.total, 1)
+    assert.equal(afterSession.actions[0].action.actionId, 'browser-action-out-of-order-1')
+  })
+})
+
+test('browser ledger retains out-of-order artifacts until their action arrives', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.syncBrowserSession({
+      session: createSession('browser-session-out-of-order-2', {
+        createdAt: 1_710_000_041_000,
+        updatedAt: 1_710_000_041_050,
+        primaryTargetId: 'target-out-of-order-2',
+      }),
+      targets: [createTarget('browser-session-out-of-order-2', 'target-out-of-order-2', {
+        lastSeenAt: 1_710_000_041_050,
+      })],
+    })
+
+    await mod.syncBrowserArtifact({
+      artifact: createArtifact('browser-session-out-of-order-2', 'browser-artifact-out-of-order-1', {
+        targetId: 'target-out-of-order-2',
+        createdAt: 1_710_000_041_100,
+      }),
+      actionId: 'browser-action-out-of-order-2',
+    })
+    await mod.flushBrowserLedger()
+
+    const beforeAction = await mod.listBrowserArtifacts({
+      sessionId: 'browser-session-out-of-order-2',
+      actionId: 'browser-action-out-of-order-2',
+      limit: 10,
+      offset: 0,
+    })
+    assert.equal(beforeAction.total, 1)
+    assert.equal(beforeAction.artifacts[0].artifact.artifactId, 'browser-artifact-out-of-order-1')
+
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-out-of-order-2', 'browser-action-out-of-order-2', {
+        targetId: 'target-out-of-order-2',
+        startedAt: 1_710_000_041_120,
+        finishedAt: 1_710_000_041_150,
+        status: 'completed',
+      }),
+    })
+
+    const afterAction = await mod.listBrowserArtifacts({
+      sessionId: 'browser-session-out-of-order-2',
+      actionId: 'browser-action-out-of-order-2',
+      limit: 10,
+      offset: 0,
+    })
+    assert.equal(afterAction.total, 1)
+    assert.equal(afterAction.artifacts[0].actionId, 'browser-action-out-of-order-2')
+  })
+})
+
 test('browser ledger trims old sessions and cascades action and artifact retention', async () => {
   await withTempHome(async ({ mod }) => {
     for (let index = 1; index <= 3; index += 1) {

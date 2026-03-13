@@ -16,6 +16,10 @@ const MAX_BROWSER_ARTIFACTS_PER_SESSION = Math.max(
   1,
   Number(process.env.TRAPEZOHE_MAX_BROWSER_ARTIFACTS_PER_SESSION || 50) || 50,
 )
+const MAX_BROWSER_ORPHAN_RETENTION_MS = Math.max(
+  1_000,
+  Number(process.env.TRAPEZOHE_MAX_BROWSER_ORPHAN_RETENTION_MS || 10 * 60 * 1000) || 10 * 60 * 1000,
+)
 const MAX_BROWSER_EVENTS = Math.max(
   1,
   Number(process.env.TRAPEZOHE_MAX_BROWSER_EVENTS || 500) || 500,
@@ -569,13 +573,28 @@ function trimPerSession(entries, getSessionId, limit, getSortKey) {
   return sortByTimestampDescending(Array.from(grouped.values()).flat(), getSortKey)
 }
 
+function isWithinOrphanRetention(entry, currentTs) {
+  const syncedAt = normalizeTimestamp(entry?.syncedAt, 0)
+  if (!syncedAt) return false
+  return currentTs - syncedAt <= MAX_BROWSER_ORPHAN_RETENTION_MS
+}
+
 function trimStore() {
+  const currentTs = now()
+  const knownSessionIds = new Set(store.sessions.map((entry) => entry.session.sessionId))
   store.sessions = sortByTimestampDescending(store.sessions, sessionSortKey).slice(0, MAX_BROWSER_SESSIONS)
   const validSessionIds = new Set(store.sessions.map((entry) => entry.session.sessionId))
 
-  store.actions = store.actions.filter((entry) => validSessionIds.has(entry.action.sessionId))
-  store.artifacts = store.artifacts.filter((entry) => validSessionIds.has(entry.artifact.sessionId))
+  store.actions = store.actions.filter((entry) => (
+    validSessionIds.has(entry.action.sessionId)
+    || (!knownSessionIds.has(entry.action.sessionId) && isWithinOrphanRetention(entry, currentTs))
+  ))
+  store.artifacts = store.artifacts.filter((entry) => (
+    validSessionIds.has(entry.artifact.sessionId)
+    || (!knownSessionIds.has(entry.artifact.sessionId) && isWithinOrphanRetention(entry, currentTs))
+  ))
 
+  const knownActionIds = new Set(store.actions.map((entry) => entry.action.actionId))
   store.actions = trimPerSession(
     store.actions,
     (entry) => entry.action.sessionId,
@@ -584,7 +603,11 @@ function trimStore() {
   )
 
   const validActionIds = new Set(store.actions.map((entry) => entry.action.actionId))
-  store.artifacts = store.artifacts.filter((entry) => !entry.actionId || validActionIds.has(entry.actionId))
+  store.artifacts = store.artifacts.filter((entry) => (
+    !entry.actionId
+    || validActionIds.has(entry.actionId)
+    || (!knownActionIds.has(entry.actionId) && isWithinOrphanRetention(entry, currentTs))
+  ))
   store.artifacts = trimPerSession(
     store.artifacts,
     (entry) => entry.artifact.sessionId,
