@@ -108,6 +108,7 @@ export async function handleBrowserRequest(req, res, url, pathname, ctx) {
     if (req.method === 'GET' && pathname === '/api/browser/events') {
       const result = await listBrowserEvents({
         after: url.searchParams.get('after'),
+        window: url.searchParams.get('window'),
         limit: url.searchParams.get('limit'),
         sessionId: url.searchParams.get('sessionId'),
         actionId: url.searchParams.get('actionId'),

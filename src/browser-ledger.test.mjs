@@ -332,6 +332,88 @@ test('browser ledger emits cursor-paged sync events and exposes them in diagnost
   })
 })
 
+test('browser ledger can read a recent tail window and continue incrementally from its cursor', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.syncBrowserSession({
+      session: createSession('browser-session-tail-1', {
+        createdAt: 1_710_000_020_000,
+        updatedAt: 1_710_000_020_100,
+        ownerConversationId: 'conv-tail-1',
+        ownerRunId: 'run-tail-1',
+      }),
+      targets: [createTarget('browser-session-tail-1', 'target-tail-1', { lastSeenAt: 1_710_000_020_100 })],
+    })
+
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-tail-1', 'browser-action-tail-1', {
+        targetId: 'target-tail-1',
+        kind: 'navigate',
+        status: 'completed',
+        startedAt: 1_710_000_020_200,
+        finishedAt: 1_710_000_020_250,
+        ownerConversationId: 'conv-tail-1',
+        ownerRunId: 'run-tail-1',
+        sourceToolName: 'browser_navigate',
+        sourceToolCallId: 'call-tail-1',
+      }),
+    })
+
+    await mod.syncBrowserArtifact({
+      artifact: createArtifact('browser-session-tail-1', 'browser-artifact-tail-1', {
+        targetId: 'target-tail-1',
+        createdAt: 1_710_000_020_260,
+      }),
+      actionId: 'browser-action-tail-1',
+      link: {
+        runId: 'run-tail-1',
+        conversationId: 'conv-tail-1',
+        sourceToolName: 'browser_navigate',
+        sourceToolCallId: 'call-tail-1',
+      },
+    })
+
+    const recentWindow = await mod.listBrowserEvents({
+      runId: 'run-tail-1',
+      window: 'tail',
+      limit: 2,
+    })
+    assert.equal(recentWindow.ok, true)
+    assert.deepEqual(
+      recentWindow.events.map((event) => event.type),
+      ['action_synced', 'artifact_synced'],
+    )
+    assert.equal(recentWindow.nextCursor, recentWindow.events[recentWindow.events.length - 1].cursor)
+    assert.equal(recentWindow.hasMore, false)
+
+    await mod.syncBrowserAction({
+      action: createAction('browser-session-tail-1', 'browser-action-tail-2', {
+        targetId: 'target-tail-1',
+        kind: 'click',
+        status: 'completed',
+        startedAt: 1_710_000_020_300,
+        finishedAt: 1_710_000_020_350,
+        ownerConversationId: 'conv-tail-1',
+        ownerRunId: 'run-tail-1',
+        sourceToolName: 'browser_click',
+        sourceToolCallId: 'call-tail-2',
+      }),
+    })
+
+    const increment = await mod.listBrowserEvents({
+      runId: 'run-tail-1',
+      after: recentWindow.nextCursor,
+      limit: 5,
+    })
+    assert.equal(increment.ok, true)
+    assert.deepEqual(
+      increment.events.map((event) => event.type),
+      ['action_synced'],
+    )
+    assert.equal(increment.hasMore, false)
+    assert.ok(increment.nextCursor > recentWindow.nextCursor)
+  })
+})
+
 test('browser ledger trims old sessions and cascades action and artifact retention', async () => {
   await withTempHome(async ({ mod }) => {
     for (let index = 1; index <= 3; index += 1) {

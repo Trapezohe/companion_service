@@ -472,6 +472,7 @@ function normalizeArtifactEnvelope(input) {
       pathOrKey: safeText(rawArtifact.pathOrKey, 2_000) || '',
     },
     ...(safeText(payload.actionId, 200) ? { actionId: safeText(payload.actionId, 200) } : {}),
+    ...(normalizeLinkRecord(payload.link, payload.link) ? { link: normalizeLinkRecord(payload.link, payload.link) } : {}),
     ...(typeof payload.bytesBase64 === 'string' && payload.bytesBase64
       ? { bytesBase64: payload.bytesBase64 }
       : {}),
@@ -783,6 +784,7 @@ function recordArtifactSyncEvent(entry) {
     mimeType: entry.artifact.mimeType,
     source: 'extension-background',
     syncedAt: entry.syncedAt,
+    link: entry.link,
   })
 }
 
@@ -950,6 +952,8 @@ export async function listBrowserEvents(query = {}) {
   await ensureLoaded()
   const after = clampInt(query.after, 0, 0, Number.MAX_SAFE_INTEGER)
   const limit = clampInt(query.limit, 50, 1, 500)
+  const windowMode = safeText(query.window, 32)
+  const useTailWindow = windowMode === 'tail' || windowMode === 'recent'
   const sessionId = safeText(query.sessionId, 200)
   const actionId = safeText(query.actionId, 200)
   const artifactId = safeText(query.artifactId, 200)
@@ -964,7 +968,11 @@ export async function listBrowserEvents(query = {}) {
     .filter((entry) => matchesLinkFilters(entry, query))
     .sort((a, b) => a.cursor - b.cursor)
 
-  const events = clone(filtered.slice(0, limit))
+  const events = clone(
+    useTailWindow
+      ? filtered.slice(Math.max(filtered.length - limit, 0))
+      : filtered.slice(0, limit),
+  )
   const nextCursor = events.length > 0
     ? events[events.length - 1].cursor
     : Math.max(after, (store.nextCursor || 1) - 1)
@@ -973,7 +981,7 @@ export async function listBrowserEvents(query = {}) {
     ok: true,
     events,
     nextCursor,
-    hasMore: filtered.some((entry) => entry.cursor > nextCursor),
+    hasMore: useTailWindow ? false : filtered.some((entry) => entry.cursor > nextCursor),
   }
 }
 
