@@ -24,6 +24,21 @@ function normalizeDeliveryMode(raw) {
     : DEFAULT_DELIVERY_MODE
 }
 
+function normalizePositiveCount(raw) {
+  return Number.isFinite(raw) && Number(raw) > 0 ? Math.round(Number(raw)) : null
+}
+
+export function normalizeSessionRetention(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const maxAgeDays = normalizePositiveCount(raw.maxAgeDays)
+  const maxRuns = normalizePositiveCount(raw.maxRuns)
+  if (maxAgeDays === null && maxRuns === null) return null
+  return {
+    maxAgeDays,
+    maxRuns,
+  }
+}
+
 function resolveDeliveryTransport(mode) {
   if (mode === 'chat' || mode === 'remote_channel') return 'outbox'
   if (mode === 'webhook') return 'direct'
@@ -35,6 +50,7 @@ export function normalizeAutomationSpec(job) {
   const agentType = normalizeAgentType(job?.agentType)
   const sessionTarget = normalizeSessionTarget(job?.sessionTarget)
   const deliveryMode = normalizeDeliveryMode(job?.delivery?.mode)
+  const sessionRetention = normalizeSessionRetention(job?.sessionRetention)
 
   let unsupportedReason = null
   if (executor === 'companion_acp' && !agentType) {
@@ -49,6 +65,8 @@ export function normalizeAutomationSpec(job) {
     executor,
     agentType,
     sessionTarget,
+    sessionRetention,
+    lifecycleCapable: sessionTarget !== 'main',
     supported: unsupportedReason === null,
     unsupportedReason,
     delivery: {
@@ -64,6 +82,7 @@ export function summarizeAutomationSpecs(jobs) {
     totalJobs: specs.length,
     extensionChatJobs: specs.filter((spec) => spec.executor === 'extension_chat').length,
     companionExecutableJobs: specs.filter((spec) => spec.executor === 'companion_acp' && spec.supported).length,
+    lifecycleCapableJobs: specs.filter((spec) => spec.lifecycleCapable).length,
     unsupportedCompanionJobs: specs
       .filter((spec) => spec.executor === 'companion_acp' && !spec.supported)
       .map((spec) => ({

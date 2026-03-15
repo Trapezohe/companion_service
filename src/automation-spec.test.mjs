@@ -71,3 +71,27 @@ test('normalizeAutomationSpec routes webhook delivery directly from the companio
 
   assert.equal(spec.delivery.transport, 'direct')
 })
+
+test('normalizeAutomationSpec preserves session retention and lifecycle capability for non-main automation sessions', () => {
+  const isolatedSpec = normalizeAutomationSpec(createJob({
+    sessionTarget: 'isolated',
+    sessionRetention: {
+      maxAgeDays: 14,
+      maxRuns: 30,
+    },
+  }))
+  const mainSpec = normalizeAutomationSpec(createJob({
+    sessionTarget: 'main',
+    sessionRetention: {
+      maxAgeDays: 7,
+      maxRuns: 10,
+    },
+  }))
+
+  assert.deepEqual(isolatedSpec.sessionRetention, {
+    maxAgeDays: 14,
+    maxRuns: 30,
+  })
+  assert.equal(isolatedSpec.lifecycleCapable, true)
+  assert.equal(mainSpec.lifecycleCapable, false)
+})

@@ -24,6 +24,10 @@ import {
   clearAutomationSessionStoreForTests,
   setAutomationSessionBinding,
 } from './automation-session-store.mjs'
+import {
+  clearCronStoreForTests,
+  upsertJob,
+} from './cron-store.mjs'
 
 const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
 const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-diagnostics-test-'))
@@ -35,6 +39,7 @@ after(async () => {
   await clearMemoryShadowStoreForTests().catch(() => undefined)
   await clearBrowserLedgerForTests().catch(() => undefined)
   await clearAutomationSessionStoreForTests().catch(() => undefined)
+  await clearCronStoreForTests().catch(() => undefined)
   cleanupAllAcpSessions()
   if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
   else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
@@ -131,11 +136,13 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   await clearApprovalStoreForTests()
   await clearMemoryShadowStoreForTests()
   await clearBrowserLedgerForTests()
+  await clearCronStoreForTests()
   t.after(async () => {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
     await clearMemoryShadowStoreForTests()
     await clearBrowserLedgerForTests()
+    await clearCronStoreForTests()
   })
 
   await createRun({ type: 'acp', state: 'done', summary: 'acp ok' })
@@ -288,11 +295,13 @@ test('buildDiagnosticsPayload summarizes automation execution bindings and activ
   await clearRunStoreForTests()
   await clearApprovalStoreForTests()
   await clearAutomationSessionStoreForTests()
+  await clearCronStoreForTests()
   cleanupAllAcpSessions()
   t.after(async () => {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
     await clearAutomationSessionStoreForTests()
+    await clearCronStoreForTests()
     cleanupAllAcpSessions()
   })
 
@@ -324,6 +333,55 @@ test('buildDiagnosticsPayload summarizes automation execution bindings and activ
   assert.equal(payload.automation.execution.runningAcpSessions, 0)
   assert.equal(payload.automation.execution.recentBindings[0].key, 'persistent:daily-brief')
   assert.equal(payload.automation.execution.recentBindings[0].sessionId, automationSession.sessionId)
+})
+
+test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await clearCronStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    await clearCronStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  await upsertJob({
+    id: 'job-main',
+    name: 'Main task',
+    executor: 'extension_chat',
+    sessionTarget: 'main',
+    delivery: { mode: 'notification' },
+  })
+  await upsertJob({
+    id: 'job-persistent',
+    name: 'Persistent task',
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:research-loop',
+    sessionRetention: {
+      maxAgeDays: 14,
+      maxRuns: 30,
+    },
+    delivery: { mode: 'chat' },
+  })
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  assert.equal(payload.automation.totalJobs, 2)
+  assert.equal(payload.automation.lifecycleCapableJobs, 1)
 })
 
 
