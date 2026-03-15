@@ -73,6 +73,23 @@ function mergeRunMeta(run, extra = {}) {
   }
 }
 
+async function finalizeTerminalRunStep(deps, runId, run, {
+  taskState,
+  stepState = 'done',
+  lifecycleSummary,
+  lifecycleTerminalState,
+}) {
+  return deps.updateRun(runId, {
+    ...(lifecycleSummary ? { summary: lifecycleSummary } : {}),
+    meta: mergeRunMeta(run, {
+      taskState,
+      stepState,
+      lifecycleSummary,
+      lifecycleTerminalState,
+    }),
+  }) || run
+}
+
 function cloneDeliveryTarget(job) {
   const target = job?.delivery?.target
   if (!target || typeof target !== 'object' || Array.isArray(target)) {
@@ -230,16 +247,16 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-      await deps.updateRun(queuedRun.runId, {
-        state: 'failed',
-        summary: `Companion automation failed to start: ${job?.name || 'unnamed job'}`,
-        error: message,
-        meta: buildAutomationMeta(job, spec, {
-          startupFailed: true,
-          taskState: 'failed',
-          stepState: 'launch',
-        }),
-      })
+    await deps.updateRun(queuedRun.runId, {
+      state: 'failed',
+      summary: `Companion automation failed to start: ${job?.name || 'unnamed job'}`,
+      error: message,
+      meta: buildAutomationMeta(job, spec, {
+        startupFailed: true,
+        taskState: 'failed',
+        stepState: 'launch',
+      }),
+    })
     return {
       mode: 'failed',
       reason: 'startup_failed',
@@ -284,16 +301,31 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
 
   const deliveryMode = typeof run.meta?.deliveryMode === 'string' ? run.meta.deliveryMode : ''
   if (run.meta?.executionMode !== 'companion_acp' || !deliveryMode || deliveryMode === 'notification') {
+    currentRun = await finalizeTerminalRunStep(deps, runId, currentRun, {
+      taskState: finalTaskState,
+      lifecycleSummary,
+      lifecycleTerminalState: terminalState || null,
+    })
     return { mode: 'skipped', reason: 'delivery_not_requested' }
   }
 
   if (terminalState !== 'done') {
+    currentRun = await finalizeTerminalRunStep(deps, runId, currentRun, {
+      taskState: finalTaskState,
+      lifecycleSummary,
+      lifecycleTerminalState: terminalState || null,
+    })
     return { mode: 'skipped', reason: 'terminal_state_not_deliverable' }
   }
 
   const deliveryAttemptAt = Date.now()
   const text = extractAutomationLifecycleText(events, run.summary || '')
   if (!text) {
+    currentRun = await finalizeTerminalRunStep(deps, runId, currentRun, {
+      taskState: finalTaskState,
+      lifecycleSummary,
+      lifecycleTerminalState: terminalState || null,
+    })
     return { mode: 'skipped', reason: 'empty_delivery_payload' }
   }
 

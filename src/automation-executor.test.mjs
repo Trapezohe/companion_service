@@ -307,6 +307,43 @@ test('deliverAutomationRunResult writes lifecycle summary before entering delive
   })
 })
 
+test('deliverAutomationRunResult closes notification-only runs with a terminal stepState', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-notification-only',
+      type: 'cron',
+      state: 'done',
+      summary: 'Automation finished',
+      meta: {
+        taskId: 'task-notification-only',
+        taskName: 'Notification-only report',
+        executionMode: 'companion_acp',
+        deliveryMode: 'notification',
+      },
+    })
+
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-notification',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Lifecycle summary ready.' },
+        ],
+      }),
+    })
+
+    assert.equal(delivery.mode, 'skipped')
+    assert.equal(delivery.reason, 'delivery_not_requested')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.taskState, 'done')
+    assert.equal(updated?.meta?.stepState, 'done')
+    assert.match(String(updated?.meta?.lifecycleSummary || ''), /Lifecycle summary ready\./)
+  })
+})
+
 test('deliverAutomationRunResult queues remote channel deliveries with target metadata preserved', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     const outbox = await import('./automation-outbox.mjs')

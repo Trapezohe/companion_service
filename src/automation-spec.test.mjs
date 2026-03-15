@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { normalizeAutomationSpec } from './automation-spec.mjs'
+import { normalizeAutomationSpec, normalizeSessionRetention } from './automation-spec.mjs'
 
 function createJob(partial = {}) {
   return {
@@ -94,4 +94,16 @@ test('normalizeAutomationSpec preserves session retention and lifecycle capabili
   })
   assert.equal(isolatedSpec.lifecycleCapable, true)
   assert.equal(mainSpec.lifecycleCapable, false)
+})
+
+test('normalizeSessionRetention rejects invalid boundary values and preserves positive limits', () => {
+  assert.equal(normalizeSessionRetention(null), null)
+  assert.equal(normalizeSessionRetention({}), null)
+  assert.equal(normalizeSessionRetention([]), null)
+  assert.equal(normalizeSessionRetention({ maxAgeDays: -1, maxRuns: NaN }), null)
+  assert.equal(normalizeSessionRetention({ maxAgeDays: 0, maxRuns: 0 }), null)
+  assert.deepEqual(normalizeSessionRetention({ maxAgeDays: 7.2, maxRuns: 3.8 }), {
+    maxAgeDays: 7,
+    maxRuns: 4,
+  })
 })

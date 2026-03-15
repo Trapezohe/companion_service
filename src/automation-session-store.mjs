@@ -27,6 +27,7 @@ let lastSweepSummary = {
     missing_session: 0,
     run_meta_expired: 0,
     retention_max_age: 0,
+    retention_max_runs: 0,
   },
   removedBindings: [],
 }
@@ -38,6 +39,12 @@ function clone(value) {
 function normalizeTimestamp(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < 0) return null
+  return Math.floor(parsed)
+}
+
+function normalizePositiveCount(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
   return Math.floor(parsed)
 }
 
@@ -104,8 +111,8 @@ function normalizeBindingMeta(meta = {}) {
 
 function normalizeRetention(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const maxAgeDays = normalizeTimestamp(value.maxAgeDays)
-  const maxRuns = normalizeTimestamp(value.maxRuns)
+  const maxAgeDays = normalizePositiveCount(value.maxAgeDays)
+  const maxRuns = normalizePositiveCount(value.maxRuns)
   if (maxAgeDays === null && maxRuns === null) return null
   return {
     maxAgeDays,
@@ -263,6 +270,15 @@ function hasRunReference(binding, runs) {
   })
 }
 
+function countRunReferences(binding, runs) {
+  return runs.filter((run) => {
+    const meta = run?.meta && typeof run.meta === 'object' ? run.meta : {}
+    return meta.sessionTarget === binding.key
+      || meta.acpSessionId === binding.sessionId
+      || meta.sessionId === binding.sessionId
+  }).length
+}
+
 export async function sweepAutomationSessionBindings(input = {}) {
   await ensureLoaded()
   const sweptAt = normalizeTimestamp(input.now) ?? Date.now()
@@ -286,6 +302,7 @@ export async function sweepAutomationSessionBindings(input = {}) {
     missing_session: 0,
     run_meta_expired: 0,
     retention_max_age: 0,
+    retention_max_runs: 0,
   }
   const removedBindings = []
 
@@ -300,6 +317,8 @@ export async function sweepAutomationSessionBindings(input = {}) {
       const cutoff = retention?.maxAgeDays ? sweptAt - (retention.maxAgeDays * DAY_MS) : null
       if (cutoff !== null && binding.updatedAt < cutoff) {
         reason = 'retention_max_age'
+      } else if (retention?.maxRuns && countRunReferences({ key, sessionId: binding.sessionId }, runs) > retention.maxRuns) {
+        reason = 'retention_max_runs'
       } else if (!hasRunReference({ key, sessionId: binding.sessionId }, runs)) {
         reason = 'run_meta_expired'
       }
@@ -390,6 +409,7 @@ export async function clearAutomationSessionStoreForTests() {
       missing_session: 0,
       run_meta_expired: 0,
       retention_max_age: 0,
+      retention_max_runs: 0,
     },
     removedBindings: [],
   }

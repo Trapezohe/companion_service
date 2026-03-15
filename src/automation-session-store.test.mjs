@@ -139,3 +139,35 @@ test('sweepAutomationSessionBindings removes missing, expired, and retention-hit
     assert.deepEqual(bindings.map((binding) => binding.key), ['persistent:healthy'])
   })
 })
+
+test('sweepAutomationSessionBindings removes bindings that exceed retention maxRuns', async () => {
+  await withFreshStore(async (store) => {
+    const now = 1_700_000_000_000
+    await store.setAutomationSessionBinding('persistent:max-runs-hit', 'acp-max-runs', { updatedAt: now })
+    await store.setAutomationSessionBinding('persistent:max-runs-ok', 'acp-max-runs-ok', { updatedAt: now })
+
+    const summary = await store.sweepAutomationSessionBindings({
+      now,
+      retentionByKey: {
+        'persistent:max-runs-hit': { maxRuns: 2 },
+        'persistent:max-runs-ok': { maxRuns: 3 },
+      },
+      getSessionById: (sessionId) => ({ sessionId, state: 'idle' }),
+      listRuns: async () => ({
+        runs: [
+          { runId: 'run-1', meta: { sessionTarget: 'persistent:max-runs-hit', acpSessionId: 'acp-max-runs' } },
+          { runId: 'run-2', meta: { sessionTarget: 'persistent:max-runs-hit', acpSessionId: 'acp-max-runs' } },
+          { runId: 'run-3', meta: { sessionTarget: 'persistent:max-runs-hit', acpSessionId: 'acp-max-runs' } },
+          { runId: 'run-4', meta: { sessionTarget: 'persistent:max-runs-ok', acpSessionId: 'acp-max-runs-ok' } },
+          { runId: 'run-5', meta: { sessionTarget: 'persistent:max-runs-ok', acpSessionId: 'acp-max-runs-ok' } },
+        ],
+      }),
+    })
+
+    assert.equal(summary.removed, 1)
+    assert.equal(summary.reasons.retention_max_runs, 1)
+
+    const bindings = await store.listAutomationSessionBindings()
+    assert.deepEqual(bindings.map((binding) => binding.key), ['persistent:max-runs-ok'])
+  })
+})
