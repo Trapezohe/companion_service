@@ -344,6 +344,44 @@ test('deliverAutomationRunResult closes notification-only runs with a terminal s
   })
 })
 
+test('deliverAutomationRunResult closes failed runs with a terminal stepState', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-terminal-failed',
+      type: 'cron',
+      state: 'failed',
+      summary: 'Automation failed',
+      meta: {
+        taskId: 'task-terminal-failed',
+        taskName: 'Failed report',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+      },
+    })
+
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-terminal-failed',
+      terminalState: 'failed',
+    }, {
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Failure summary ready.' },
+        ],
+      }),
+    })
+
+    assert.equal(delivery.mode, 'skipped')
+    assert.equal(delivery.reason, 'terminal_state_not_deliverable')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.taskState, 'failed')
+    assert.equal(updated?.meta?.stepState, 'done')
+    assert.equal(updated?.meta?.lifecycleTerminalState, 'failed')
+    assert.match(String(updated?.meta?.lifecycleSummary || ''), /Failure summary ready\./)
+  })
+})
+
 test('deliverAutomationRunResult queues remote channel deliveries with target metadata preserved', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     const outbox = await import('./automation-outbox.mjs')

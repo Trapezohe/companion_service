@@ -104,6 +104,6 @@ test('normalizeSessionRetention rejects invalid boundary values and preserves po
   assert.equal(normalizeSessionRetention({ maxAgeDays: 0, maxRuns: 0 }), null)
   assert.deepEqual(normalizeSessionRetention({ maxAgeDays: 7.2, maxRuns: 3.8 }), {
     maxAgeDays: 7,
-    maxRuns: 4,
+    maxRuns: 3,
   })
 })

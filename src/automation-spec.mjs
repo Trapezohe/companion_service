@@ -25,7 +25,7 @@ function normalizeDeliveryMode(raw) {
 }
 
 function normalizePositiveCount(raw) {
-  return Number.isFinite(raw) && Number(raw) > 0 ? Math.round(Number(raw)) : null
+  return Number.isFinite(raw) && Number(raw) > 0 ? Math.floor(Number(raw)) : null
 }
 
 export function normalizeSessionRetention(raw) {
