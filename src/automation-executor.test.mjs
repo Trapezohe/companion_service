@@ -176,6 +176,8 @@ test('deliverAutomationRunResult sends webhook deliveries directly and updates t
     })
 
     const fetchCalls = []
+    /** @type {AbortSignal | undefined} */
+    let capturedSignal
     const delivery = await executor.deliverAutomationRunResult({
       runId: run.runId,
       sessionId: 'acp-webhook',
@@ -189,6 +191,7 @@ test('deliverAutomationRunResult sends webhook deliveries directly and updates t
       }),
       fetchImpl: async (url, init) => {
         fetchCalls.push({ url, init })
+        capturedSignal = init?.signal
         return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       },
     })
@@ -196,6 +199,8 @@ test('deliverAutomationRunResult sends webhook deliveries directly and updates t
     assert.equal(delivery.mode, 'webhook')
     assert.equal(fetchCalls.length, 1)
     assert.equal(fetchCalls[0].url, 'https://hooks.example.com/automation')
+    assert.ok(capturedSignal instanceof AbortSignal)
+    assert.equal(capturedSignal.aborted, false)
 
     const updated = await runStore.getRunById(run.runId)
     assert.deepEqual(updated?.deliveryState, {

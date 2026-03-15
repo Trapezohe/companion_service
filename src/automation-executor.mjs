@@ -21,6 +21,16 @@ function normalizeTimeoutMs(value) {
     : undefined
 }
 
+function createDeliveryTimeoutSignal(timeoutMs = 15_000) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs)
+  }
+
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), timeoutMs).unref?.()
+  return controller.signal
+}
+
 function mergeRunMeta(run, extra = {}) {
   return {
     ...(run?.meta && typeof run.meta === 'object' ? run.meta : {}),
@@ -270,6 +280,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     try {
       const response = await deps.fetchImpl(url, {
         method: 'POST',
+        signal: createDeliveryTimeoutSignal(),
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
         },

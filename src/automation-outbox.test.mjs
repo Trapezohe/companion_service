@@ -93,3 +93,28 @@ test('automation outbox ack is idempotent and removes only acknowledged items', 
     assert.deepEqual(listed.items.map((item) => item.id), ['outbox-1'])
   })
 })
+
+test('automation outbox serializes concurrent enqueue writes without losing items', async () => {
+  await withFreshStore(async (outbox) => {
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) => outbox.enqueueAutomationOutboxItem({
+        id: `outbox-${index}`,
+        runId: `run-${index}`,
+        taskId: `task-${index}`,
+        taskName: `Task ${index}`,
+        mode: 'chat',
+        text: `Delivery ${index}`,
+        target: null,
+        createdAt: index + 1,
+      })),
+    )
+
+    await outbox.loadAutomationOutboxStore()
+    const listed = await outbox.listAutomationOutboxItems()
+    assert.equal(listed.total, 8)
+    assert.deepEqual(
+      listed.items.map((item) => item.id),
+      ['outbox-7', 'outbox-6', 'outbox-5', 'outbox-4', 'outbox-3', 'outbox-2', 'outbox-1', 'outbox-0'],
+    )
+  })
+})

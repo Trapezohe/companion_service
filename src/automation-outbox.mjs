@@ -29,6 +29,7 @@ function OUTBOX_BACKUP_FILE() {
 let store = { items: [] }
 let loaded = false
 let loadingPromise = null
+let persistPromise = null
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -163,7 +164,12 @@ async function ensureLoaded() {
 async function saveStore() {
   await ensureLoaded()
   store.items = sortNewestFirst(store.items)
-  await writeStoreSnapshot(store)
+  const snapshot = clone(store)
+  const nextWrite = async () => writeStoreSnapshot(snapshot)
+  persistPromise = (persistPromise || Promise.resolve())
+    .catch(() => undefined)
+    .then(nextWrite)
+  await persistPromise
 }
 
 export async function enqueueAutomationOutboxItem(input) {
@@ -220,6 +226,7 @@ export async function ackAutomationOutboxItems(ids = []) {
 export async function clearAutomationOutboxForTests() {
   store = { items: [] }
   loaded = true
+  persistPromise = null
   await ensureConfigDir()
   await writeStoreSnapshot(store)
 }
