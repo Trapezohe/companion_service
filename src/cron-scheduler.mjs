@@ -1,16 +1,18 @@
 /**
  * Companion cron scheduler — setTimeout-based persistent timer.
  *
- * When a timer fires, the companion does NOT execute AI (it can't).
- * Instead, it marks the task as "pending" in the cron store.
- * The extension polls /api/cron/pending on startup and catches up.
+ * When a timer fires:
+ * - extension_chat jobs keep the legacy pending replay path
+ * - companion_acp jobs execute immediately through the ACP runtime
  */
 
 import { getJobs, addPendingRun, upsertJob } from './cron-store.mjs'
 import { createRun, updateRun } from './run-store.mjs'
+import { executeAutomationJob } from './automation-executor.mjs'
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const timers = new Map()
+let schedulerOptions = {}
 
 /**
  * Compute delay in ms until the next occurrence of a schedule.
@@ -59,7 +61,77 @@ function computeDelay(schedule) {
   return delayMinutes * 60_000 - nowSec * 1000
 }
 
-function scheduleJob(job) {
+function getAutomationExecutor(options = {}) {
+  return typeof options.automationExecutor === 'function'
+    ? options.automationExecutor
+    : executeAutomationJob
+}
+
+async function queuePendingRun(job) {
+  const run = await createRun({
+    type: 'cron',
+    state: 'queued',
+    summary: `Cron timer fired, queuing for extension: ${job.name}`,
+    meta: {
+      taskId: job.id,
+      taskName: job.name,
+      scheduleKind: job.schedule?.kind || 'unknown',
+    },
+  }).catch(() => null)
+
+  try {
+    const pending = await addPendingRun(job.id)
+    if (run?.runId) {
+      await updateRun(run.runId, {
+        state: 'done',
+        finishedAt: Date.now(),
+        summary: `Marked pending for extension catch-up: ${job.name}`,
+        meta: {
+          ...(run.meta && typeof run.meta === 'object' ? run.meta : {}),
+          pendingId: pending.pendingId,
+          missedAt: pending.missedAt,
+        },
+      }).catch(() => undefined)
+    }
+  } catch (err) {
+    console.error(`[cron-companion] Failed to mark pending for ${job.id}:`, err.message)
+    if (run?.runId) {
+      await updateRun(run.runId, {
+        state: 'failed',
+        finishedAt: Date.now(),
+        summary: `Failed to mark pending: ${job.name}`,
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined)
+    }
+  }
+}
+
+async function executeCompanionAutomation(job, options = {}) {
+  const automationExecutor = getAutomationExecutor(options)
+  try {
+    return await automationExecutor(job)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[cron-companion] Failed to execute automation job ${job.id}:`, message)
+    await createRun({
+      type: 'cron',
+      state: 'failed',
+      finishedAt: Date.now(),
+      summary: `Companion automation failed before run startup: ${job.name}`,
+      error: message,
+      meta: {
+        taskId: job.id,
+        taskName: job.name,
+        scheduleKind: job.schedule?.kind || 'unknown',
+        executionMode: 'companion_acp',
+        startupFailed: true,
+      },
+    }).catch(() => undefined)
+    return null
+  }
+}
+
+function scheduleJob(job, options = schedulerOptions) {
   if (!job.enabled) return
 
   const delay = computeDelay(job.schedule)
@@ -67,45 +139,15 @@ function scheduleJob(job) {
   void upsertJob(job).catch(() => undefined)
 
   const timer = setTimeout(async () => {
-    console.log(`[cron-companion] Timer fired for "${job.name}" (${job.id}), marking as pending`)
-    const run = await createRun({
-      type: 'cron',
-      state: 'queued',
-      summary: `Cron timer fired, queuing for extension: ${job.name}`,
-      meta: {
-        taskId: job.id,
-        taskName: job.name,
-        scheduleKind: job.schedule?.kind || 'unknown',
-      },
-    }).catch(() => null)
-
-    try {
-      const pending = await addPendingRun(job.id)
-      if (run?.runId) {
-        await updateRun(run.runId, {
-          state: 'done',
-          finishedAt: Date.now(),
-          summary: `Marked pending for extension catch-up: ${job.name}`,
-          meta: {
-            ...(run.meta && typeof run.meta === 'object' ? run.meta : {}),
-            pendingId: pending.pendingId,
-            missedAt: pending.missedAt,
-          },
-        }).catch(() => undefined)
-      }
-    } catch (err) {
-      console.error(`[cron-companion] Failed to mark pending for ${job.id}:`, err.message)
-      if (run?.runId) {
-        await updateRun(run.runId, {
-          state: 'failed',
-          finishedAt: Date.now(),
-          summary: `Failed to mark pending: ${job.name}`,
-          error: err instanceof Error ? err.message : String(err),
-        }).catch(() => undefined)
-      }
+    if (job.executor === 'companion_acp') {
+      console.log(`[cron-companion] Timer fired for "${job.name}" (${job.id}), executing via companion ACP`)
+      await executeCompanionAutomation(job, options)
+    } else {
+      console.log(`[cron-companion] Timer fired for "${job.name}" (${job.id}), marking as pending`)
+      await queuePendingRun(job)
     }
     // Re-schedule for next occurrence
-    scheduleJob(job)
+    scheduleJob(job, options)
   }, delay)
 
   // Prevent timer from keeping the process alive
@@ -117,11 +159,12 @@ function scheduleJob(job) {
   console.log(`[cron-companion] Scheduled "${job.name}" — next: ${nextRun.toLocaleString()}`)
 }
 
-export function startCronScheduler() {
+export function startCronScheduler(options = {}) {
+  schedulerOptions = { ...options }
   const jobs = getJobs()
   for (const job of jobs) {
     if (job.enabled) {
-      scheduleJob(job)
+      scheduleJob(job, schedulerOptions)
     }
   }
   console.log(`[cron-companion] Scheduler started with ${jobs.filter((j) => j.enabled).length} job(s)`)
@@ -132,13 +175,14 @@ export function stopCronScheduler() {
     clearTimeout(timer)
   }
   timers.clear()
+  schedulerOptions = {}
   console.log('[cron-companion] Scheduler stopped')
 }
 
-export function rescheduleJob(job) {
+export function rescheduleJob(job, options = {}) {
   unscheduleJob(job.id)
   if (job.enabled) {
-    scheduleJob(job)
+    scheduleJob(job, { ...schedulerOptions, ...options })
   }
 }
 

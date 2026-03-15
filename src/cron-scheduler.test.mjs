@@ -136,6 +136,70 @@ test('rescheduleJob clears existing timer before scheduling a new one', async ()
   })
 })
 
+
+
+test('timer firings keep extension_chat jobs on pending replay even when automation executor is available', async () => {
+  await withTempHome(async ({ cronStore, cronScheduler, scheduled }) => {
+    const automationCalls = []
+
+    await cronStore.upsertJob({
+      id: 'job-extension-chat',
+      name: 'Extension Chat Job',
+      prompt: 'summarize',
+      enabled: true,
+      executor: 'extension_chat',
+      sessionTarget: 'isolated',
+      agentType: null,
+      schedule: { kind: 'interval', minutes: 1 },
+    })
+
+    cronScheduler.startCronScheduler({
+      automationExecutor: async (job) => {
+        automationCalls.push(job.id)
+        return { mode: 'companion_acp' }
+      },
+    })
+    assert.equal(scheduled.length, 1)
+
+    await scheduled[0].fn()
+
+    const pending = cronStore.getPendingRuns()
+    assert.equal(pending.length, 1)
+    assert.deepEqual(automationCalls, [])
+  })
+})
+
+test('timer firings route companion_acp jobs to automation executor instead of pending replay', async () => {
+  await withTempHome(async ({ cronStore, cronScheduler, scheduled }) => {
+    const automationCalls = []
+
+    await cronStore.upsertJob({
+      id: 'job-companion-acp',
+      name: 'Companion ACP Job',
+      prompt: 'summarize',
+      enabled: true,
+      executor: 'companion_acp',
+      sessionTarget: 'isolated',
+      agentType: 'codex',
+      schedule: { kind: 'interval', minutes: 1 },
+    })
+
+    cronScheduler.startCronScheduler({
+      automationExecutor: async (job) => {
+        automationCalls.push(job.id)
+        return { mode: 'companion_acp', sessionId: 'acp-1', runId: 'run-1' }
+      },
+    })
+    assert.equal(scheduled.length, 1)
+
+    await scheduled[0].fn()
+
+    const pending = cronStore.getPendingRuns()
+    assert.equal(pending.length, 0)
+    assert.deepEqual(automationCalls, ['job-companion-acp'])
+  })
+})
+
 test('timer firings retain occurrence-level pendingIds and record them in cron runs', async () => {
   await withTempHome(async ({ cronStore, cronScheduler, runStore, scheduled }) => {
     await cronStore.upsertJob({

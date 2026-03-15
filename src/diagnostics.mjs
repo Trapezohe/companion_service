@@ -16,6 +16,7 @@ import { getBrowserLedgerDiagnostics } from './browser-ledger.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
 import { getJobs } from './cron-store.mjs'
+import { listAutomationSessionBindings } from './automation-session-store.mjs'
 import {
   NATIVE_HOST_NAMES,
   getConfiguredExtensionIds,
@@ -82,6 +83,20 @@ function buildAcpIngressSummary({ runs, approvals, acpSessions }) {
     recentRuns: recentAcpRuns.length,
     failedRuns: recentAcpRuns.filter((run) => run.state === 'failed').length,
     pendingApprovals: approvals.length,
+  }
+}
+
+async function buildAutomationExecutionSummary(acpSessions) {
+  const bindings = await listAutomationSessionBindings().catch(() => [])
+  const automationSessions = Array.isArray(acpSessions?.sessions)
+    ? acpSessions.sessions.filter((session) => session.origin === 'automation')
+    : []
+
+  return {
+    persistentBindings: bindings.length,
+    activeAcpSessions: automationSessions.length,
+    runningAcpSessions: automationSessions.filter((session) => session.state === 'running').length,
+    recentBindings: bindings.slice(0, 10),
   }
 }
 
@@ -190,6 +205,7 @@ export async function buildDiagnosticsPayload(params) {
   const nativeHostRegistration = await checkNativeHostRegistration(config)
   const memoryShadow = await getMemoryShadowStatus().catch(() => null)
   const automationSummary = summarizeAutomationSpecs(getJobs())
+  const automationExecution = await buildAutomationExecutionSummary(acpSessions)
 
   const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
   const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
@@ -214,7 +230,10 @@ export async function buildDiagnosticsPayload(params) {
       servers,
     },
     nativeHostRegistration,
-    automation: automationSummary,
+    automation: {
+      ...automationSummary,
+      execution: automationExecution,
+    },
     runs: {
       recentFailed: runs.runs.filter((run) => run.state === 'failed').slice(0, 5),
     },

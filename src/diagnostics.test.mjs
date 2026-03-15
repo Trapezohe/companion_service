@@ -19,6 +19,11 @@ import {
   syncBrowserArtifact,
   syncBrowserSession,
 } from './browser-ledger.mjs'
+import { cleanupAllAcpSessions, createAcpSession } from './acp-session.mjs'
+import {
+  clearAutomationSessionStoreForTests,
+  setAutomationSessionBinding,
+} from './automation-session-store.mjs'
 
 const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
 const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-diagnostics-test-'))
@@ -29,6 +34,8 @@ after(async () => {
   await clearApprovalStoreForTests().catch(() => undefined)
   await clearMemoryShadowStoreForTests().catch(() => undefined)
   await clearBrowserLedgerForTests().catch(() => undefined)
+  await clearAutomationSessionStoreForTests().catch(() => undefined)
+  cleanupAllAcpSessions()
   if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
   else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
   await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
@@ -275,6 +282,48 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.browser.operator.drilldownAvailable, true)
   assert.equal(payload.browser.operator.routes.drilldown, '/api/browser/drilldown')
   assert.deepEqual(payload.browser.operator.eventWindowModes, ['tail'])
+})
+
+test('buildDiagnosticsPayload summarizes automation execution bindings and active automation sessions', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await clearAutomationSessionStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    await clearAutomationSessionStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  const automationSession = createAcpSession({
+    agentType: 'codex',
+    origin: 'automation',
+  })
+  createAcpSession({
+    agentType: 'codex',
+    origin: 'interactive',
+  })
+  await setAutomationSessionBinding('persistent:daily-brief', automationSession.sessionId)
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  assert.equal(payload.automation.execution.persistentBindings, 1)
+  assert.equal(payload.automation.execution.activeAcpSessions, 1)
+  assert.equal(payload.automation.execution.runningAcpSessions, 0)
+  assert.equal(payload.automation.execution.recentBindings[0].key, 'persistent:daily-brief')
+  assert.equal(payload.automation.execution.recentBindings[0].sessionId, automationSession.sessionId)
 })
 
 
