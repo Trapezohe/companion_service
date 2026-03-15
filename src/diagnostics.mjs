@@ -16,7 +16,10 @@ import { getBrowserLedgerDiagnostics } from './browser-ledger.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
 import { getJobs } from './cron-store.mjs'
-import { listAutomationSessionBindings } from './automation-session-store.mjs'
+import {
+  getAutomationSessionSweepSummary,
+  listAutomationSessionBindings,
+} from './automation-session-store.mjs'
 import { listAutomationOutboxItems } from './automation-outbox.mjs'
 import {
   NATIVE_HOST_NAMES,
@@ -89,12 +92,16 @@ function buildAcpIngressSummary({ runs, approvals, acpSessions }) {
 
 async function buildAutomationExecutionSummary(acpSessions) {
   const bindings = await listAutomationSessionBindings().catch(() => [])
+  const sweep = getAutomationSessionSweepSummary()
   const automationSessions = Array.isArray(acpSessions?.sessions)
     ? acpSessions.sessions.filter((session) => session.origin === 'automation')
     : []
 
   return {
     persistentBindings: bindings.length,
+    cleanedBindings: sweep.removed || 0,
+    lastSweepAt: sweep.sweptAt,
+    lastSweepReasons: sweep.reasons,
     activeAcpSessions: automationSessions.length,
     runningAcpSessions: automationSessions.filter((session) => session.state === 'running').length,
     recentBindings: bindings.slice(0, 10),
