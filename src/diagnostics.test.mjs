@@ -268,6 +268,12 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.automation.totalJobs, 0)
   assert.equal(payload.automation.companionExecutableJobs, 0)
   assert.equal(payload.automation.outboxDeliveries, 0)
+  assert.deepEqual(payload.automation.featureFlags, {
+    scheduledWriteGuardV22: false,
+    persistentBudgetV22: false,
+    workflowKernelV22: false,
+    watcherPolicyV23: false,
+  })
   assert.equal(payload.mediaNormalizationSummary.enabled, true)
   assert.equal(payload.mediaNormalizationSummary.available, true)
   assert.equal(payload.mediaNormalizationSummary.engine, 'test-engine')
@@ -360,6 +366,33 @@ test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', 
     executor: 'companion_acp',
     agentType: 'codex',
     sessionTarget: 'persistent:research-loop',
+    scheduledWritePolicy: {
+      mode: 'allowlist',
+      allowedTools: ['write_file'],
+      allowedPaths: ['/tmp/reports'],
+      allowedCommandPrefixes: null,
+      enforcement: 'prompt_only',
+    },
+    workflow: {
+      template: 'research_synthesis',
+      state: null,
+    },
+    watcher: {
+      policy: {
+        mode: 'change_only',
+        minNotifyIntervalMinutes: 30,
+      },
+      state: null,
+    },
+    sessionBudget: {
+      policy: {
+        mode: 'deep_research',
+        maxContextBudget: 24000,
+        dayRollupEnabled: true,
+        compactAfterRuns: 6,
+      },
+      ledger: null,
+    },
     sessionRetention: {
       maxAgeDays: 14,
       maxRuns: 30,
@@ -382,6 +415,10 @@ test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', 
 
   assert.equal(payload.automation.totalJobs, 2)
   assert.equal(payload.automation.lifecycleCapableJobs, 1)
+  assert.equal(payload.automation.allowlistScheduledWrites, 1)
+  assert.equal(payload.automation.workflowCapableJobs, 1)
+  assert.equal(payload.automation.watcherConfiguredJobs, 1)
+  assert.equal(payload.automation.budgetManagedJobs, 1)
 })
 
 

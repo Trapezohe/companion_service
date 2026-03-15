@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { normalizeAutomationSpec, normalizeSessionRetention } from './automation-spec.mjs'
+import {
+  normalizeAutomationSpec,
+  normalizeSessionRetention,
+  summarizeAutomationSpecs,
+} from './automation-spec.mjs'
 
 function createJob(partial = {}) {
   return {
@@ -106,4 +110,120 @@ test('normalizeSessionRetention rejects invalid boundary values and preserves po
     maxAgeDays: 7,
     maxRuns: 3,
   })
+})
+
+test('normalizeAutomationSpec carries next-phase contract fields and downgrades companion write enforcement to prompt_only', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:research-loop',
+    scheduledWritePolicy: {
+      mode: 'allowlist',
+      allowedTools: ['write_file', 'run_local_command'],
+      allowedPaths: ['/tmp/reports'],
+      allowedCommandPrefixes: ['git status'],
+      enforcement: 'extension_hard',
+    },
+    workflow: {
+      template: 'research_synthesis',
+      state: null,
+    },
+    watcher: {
+      policy: {
+        mode: 'change_only',
+        minNotifyIntervalMinutes: 60,
+      },
+      state: null,
+    },
+    sessionBudget: {
+      policy: {
+        mode: 'deep_research',
+        maxContextBudget: 24000,
+        dayRollupEnabled: true,
+        compactAfterRuns: 6,
+      },
+      ledger: null,
+    },
+  }))
+
+  assert.deepEqual(spec.scheduledWritePolicy, {
+    mode: 'allowlist',
+    allowedTools: ['write_file', 'run_local_command'],
+    allowedPaths: ['/tmp/reports'],
+    allowedCommandPrefixes: ['git status'],
+    enforcement: 'prompt_only',
+  })
+  assert.deepEqual(spec.workflow, {
+    template: 'research_synthesis',
+    state: null,
+  })
+  assert.deepEqual(spec.watcher, {
+    policy: {
+      mode: 'change_only',
+      minNotifyIntervalMinutes: 60,
+    },
+    state: null,
+  })
+  assert.deepEqual(spec.sessionBudget, {
+    policy: {
+      mode: 'deep_research',
+      maxContextBudget: 24000,
+      dayRollupEnabled: true,
+      compactAfterRuns: 6,
+    },
+    ledger: null,
+  })
+})
+
+test('summarizeAutomationSpecs exposes next-phase capability counts', () => {
+  const summary = summarizeAutomationSpecs([
+    createJob({
+      id: 'job-allowlist',
+      scheduledWritePolicy: {
+        mode: 'allowlist',
+        allowedTools: ['write_file'],
+        allowedPaths: ['/tmp/reports'],
+        allowedCommandPrefixes: null,
+        enforcement: 'extension_hard',
+      },
+    }),
+    createJob({
+      id: 'job-workflow',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      sessionTarget: 'persistent:research-loop',
+      scheduledWritePolicy: {
+        mode: 'allowlist',
+        allowedTools: ['run_local_command'],
+        allowedPaths: null,
+        allowedCommandPrefixes: ['git status'],
+        enforcement: 'prompt_only',
+      },
+      workflow: {
+        template: 'research_synthesis',
+        state: null,
+      },
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+        },
+        state: null,
+      },
+      sessionBudget: {
+        policy: {
+          mode: 'lean',
+          maxContextBudget: 8000,
+          dayRollupEnabled: true,
+          compactAfterRuns: 4,
+        },
+        ledger: null,
+      },
+    }),
+  ])
+
+  assert.equal(summary.allowlistScheduledWrites, 2)
+  assert.equal(summary.workflowCapableJobs, 1)
+  assert.equal(summary.watcherConfiguredJobs, 1)
+  assert.equal(summary.budgetManagedJobs, 1)
 })

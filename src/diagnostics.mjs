@@ -27,6 +27,13 @@ import {
   getNativeHostManifestTargets,
 } from './native-host.mjs'
 
+const AUTOMATION_FEATURE_FLAGS = {
+  scheduledWriteGuardV22: false,
+  persistentBudgetV22: false,
+  workflowKernelV22: false,
+  watcherPolicyV23: false,
+}
+
 async function exists(target) {
   try {
     await access(target)
@@ -289,6 +296,7 @@ export async function buildDiagnosticsPayload(params) {
     nativeHostRegistration,
     automation: {
       ...automationSummary,
+      featureFlags: AUTOMATION_FEATURE_FLAGS,
       execution: automationExecution,
       outbox: automationOutbox,
       recentLifecyclePhases: automationLifecyclePhases,
