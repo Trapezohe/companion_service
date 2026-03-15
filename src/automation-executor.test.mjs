@@ -109,7 +109,8 @@ test('executeAutomationJob starts isolated companion_acp runs without writing pe
     assert.equal(createdSessions.length, 1)
     assert.deepEqual(attached, [{ sessionId: 'acp-1', runId: result.runId }])
     assert.equal(enqueued.length, 1)
-    assert.equal(enqueued[0].input.prompt, 'summarize')
+    assert.match(enqueued[0].input.prompt, /^summarize/)
+    assert.match(enqueued[0].input.prompt, /Scheduled write policy: read_only\./)
 
     const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
     assert.equal(runs.runs.length, 1)
@@ -123,6 +124,45 @@ test('executeAutomationJob starts isolated companion_acp runs without writing pe
 
     const link = await runStore.getSessionRunLink('acp-1')
     assert.equal(link?.runId, result.runId)
+  })
+})
+
+test('executeAutomationJob marks companion allowlists as prompt-only guidance in the ACP prompt', async () => {
+  await withFreshState(async ({ executor }) => {
+    const enqueued = []
+    const sessions = new Map()
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      scheduledWritePolicy: {
+        mode: 'allowlist',
+        allowedTools: ['write_file'],
+        allowedPaths: ['/tmp/reports'],
+        allowedCommandPrefixes: ['git status'],
+        enforcement: 'extension_hard',
+      },
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-write-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      setSessionRunLink: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-write-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(enqueued.length, 1)
+    assert.match(enqueued[0].input.prompt, /Scheduled write policy: allowlist \(prompt_only\)\./)
+    assert.match(enqueued[0].input.prompt, /cannot hard-enforce tool usage in v2\.2a/)
+    assert.match(enqueued[0].input.prompt, /Allowed path prefixes: \/tmp\/reports\./)
+    assert.match(enqueued[0].input.prompt, /Allowed command prefixes: git status\./)
   })
 })
 

@@ -31,9 +31,28 @@ function normalizeAutomationProfile(value) {
     : 'general'
 }
 
-function buildAutomationPrompt(job) {
+function buildScheduledWritePolicyPrompt(spec) {
+  const policy = spec?.scheduledWritePolicy
+  if (!policy || policy.mode !== 'allowlist') {
+    return [
+      'Scheduled write policy: read_only.',
+      'Do not use write_file, run_local_command, or run_local_command_session in this unattended run.',
+    ].join('\n')
+  }
+
+  return [
+    'Scheduled write policy: allowlist (prompt_only).',
+    'This companion path cannot hard-enforce tool usage in v2.2a. Treat the allowlist below as a hard operator instruction anyway.',
+    policy.allowedTools.length > 0 ? `Allowed tools: ${policy.allowedTools.join(', ')}.` : 'No write tools are pre-approved.',
+    policy.allowedPaths?.length ? `Allowed path prefixes: ${policy.allowedPaths.join(', ')}.` : '',
+    policy.allowedCommandPrefixes?.length ? `Allowed command prefixes: ${policy.allowedCommandPrefixes.join(', ')}.` : '',
+  ].filter(Boolean).join('\n')
+}
+
+function buildAutomationPrompt(job, spec) {
   const basePrompt = typeof job?.prompt === 'string' ? job.prompt : ''
   const automationProfile = normalizeAutomationProfile(job?.automationProfile)
+  const writePolicyPrompt = buildScheduledWritePolicyPrompt(spec)
 
   if (automationProfile === 'research_report') {
     return [
@@ -41,6 +60,8 @@ function buildAutomationPrompt(job) {
       '',
       'Use section headings in this order: Summary, Evidence, Next Steps.',
       'Keep the report evidence-based and rely on read-only research where possible.',
+      '',
+      writePolicyPrompt,
     ].join('\n').trim()
   }
 
@@ -50,10 +71,16 @@ function buildAutomationPrompt(job) {
       '',
       'Use section headings in this order: What Changed, Why It Matters, Action.',
       'Focus on whether the detected change is actionable enough to alert the user.',
+      '',
+      writePolicyPrompt,
     ].join('\n').trim()
   }
 
-  return basePrompt
+  return [
+    basePrompt,
+    '',
+    writePolicyPrompt,
+  ].join('\n').trim()
 }
 
 function createDeliveryTimeoutSignal(timeoutMs = 15_000) {
@@ -233,7 +260,7 @@ export async function executeAutomationJob(job, overrides = {}) {
     })
 
     await deps.enqueuePrompt(sessionId, {
-      prompt: buildAutomationPrompt(job),
+      prompt: buildAutomationPrompt(job, spec),
       origin: 'automation',
       inputProvenance: buildInputProvenance(job, spec, queuedRun.runId),
       timeoutMs: normalizeTimeoutMs(job?.timeoutMs),
