@@ -44,6 +44,7 @@ import {
   ackPendingRuns,
 } from './cron-store.mjs'
 import { rescheduleJob, unscheduleJob } from './cron-scheduler.mjs'
+import { normalizeAutomationSpec } from './automation-spec.mjs'
 import { extractSkillAssets, removeSkillAssets } from './skill-assets.mjs'
 import {
   createRun,
@@ -1476,9 +1477,10 @@ export function createCompanionServer({
       try {
         const body = await readJsonBody(req)
         if (!body.id) return sendJson(res, 400, { error: '"id" is required.' })
+        const automation = normalizeAutomationSpec(body)
         await upsertJob(body)
         rescheduleJob(body)
-        return sendJson(res, 200, { ok: true, id: body.id })
+        return sendJson(res, 200, { ok: true, id: body.id, automation })
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }

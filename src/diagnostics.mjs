@@ -7,6 +7,7 @@ import {
   getConfigPath,
   getPidPath,
 } from './config.mjs'
+import { summarizeAutomationSpecs } from './automation-spec.mjs'
 import { listRuns } from './run-store.mjs'
 import { listPendingApprovals } from './approval-store.mjs'
 import { listAcpSessions } from './acp-session.mjs'
@@ -14,6 +15,7 @@ import { getMemoryShadowStatus } from './memory-shadow-store.mjs'
 import { getBrowserLedgerDiagnostics } from './browser-ledger.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
+import { getJobs } from './cron-store.mjs'
 import {
   NATIVE_HOST_NAMES,
   getConfiguredExtensionIds,
@@ -187,6 +189,7 @@ export async function buildDiagnosticsPayload(params) {
   const servers = params.mcpManager?.getServers?.() || []
   const nativeHostRegistration = await checkNativeHostRegistration(config)
   const memoryShadow = await getMemoryShadowStatus().catch(() => null)
+  const automationSummary = summarizeAutomationSpecs(getJobs())
 
   const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
   const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
@@ -211,6 +214,7 @@ export async function buildDiagnosticsPayload(params) {
       servers,
     },
     nativeHostRegistration,
+    automation: automationSummary,
     runs: {
       recentFailed: runs.runs.filter((run) => run.state === 'failed').slice(0, 5),
     },
@@ -243,6 +247,8 @@ export async function buildDiagnosticsPayload(params) {
     failedRuns: payload.runs.recentFailed.length,
     pendingApprovals: payload.approvals.pending.length,
     acpSessions: payload.acp.totalSessions,
+    automationJobs: payload.automation.totalJobs,
+    automationUnsupported: payload.automation.unsupportedCompanionJobs.length,
     mcpServers: payload.mcp.connectedServers,
     capabilityFeatures: payload.capabilitySummary.availableFeatures.length,
     memoryShadowGeneration: payload.memoryShadow?.mirroredGeneration || null,
