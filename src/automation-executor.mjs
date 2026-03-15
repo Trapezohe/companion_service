@@ -28,7 +28,16 @@ function mergeRunMeta(run, extra = {}) {
   }
 }
 
+function cloneDeliveryTarget(job) {
+  const target = job?.delivery?.target
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    return null
+  }
+  return JSON.parse(JSON.stringify(target))
+}
+
 function buildAutomationMeta(job, spec, extra = {}) {
+  const target = cloneDeliveryTarget(job)
   return {
     taskId: typeof job?.id === 'string' ? job.id : '',
     taskName: typeof job?.name === 'string' ? job.name : '',
@@ -36,6 +45,7 @@ function buildAutomationMeta(job, spec, extra = {}) {
     sessionTarget: spec.sessionTarget,
     agentType: spec.agentType,
     deliveryMode: spec.delivery.mode,
+    ...(target ? { target } : {}),
     ...extra,
   }
 }
