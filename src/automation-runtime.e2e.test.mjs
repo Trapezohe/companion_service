@@ -20,6 +20,7 @@ function createJob(partial = {}) {
     agentType: null,
     model: null,
     timeoutMs: null,
+    automationProfile: 'general',
     delivery: { mode: 'notification', notification: true, chat: false, target: null },
     ...partial,
   }
@@ -91,6 +92,24 @@ test('automation runtime keeps browser-open extension_chat jobs on the legacy pe
     }))
 
     assert.equal(result.mode, 'extension_pending')
+    const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
+    assert.equal(runs.runs.length, 0)
+  })
+})
+
+test('automation runtime keeps report-oriented extension_chat jobs on the legacy pending path', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const researchResult = await executor.executeAutomationJob(createJob({
+      id: 'job-report-extension',
+      automationProfile: 'research_report',
+    }))
+    const watcherResult = await executor.executeAutomationJob(createJob({
+      id: 'job-watcher-extension',
+      automationProfile: 'watcher_digest',
+    }))
+
+    assert.equal(researchResult.mode, 'extension_pending')
+    assert.equal(watcherResult.mode, 'extension_pending')
     const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
     assert.equal(runs.runs.length, 0)
   })
@@ -211,5 +230,67 @@ test('automation runtime reuses persistent companion sessions across repeated ru
     assert.equal(first.sessionId, second.sessionId)
     assert.equal(second.reusedSession, true)
     assert.equal(created, 1)
+  })
+})
+
+test('automation runtime injects research report headings into companion prompts', async () => {
+  await withFreshState(async ({ executor, acp }) => {
+    let capturedPrompt = ''
+
+    const launched = await executor.executeAutomationJob(createJob({
+      id: 'job-report-companion',
+      name: 'Research loop',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      automationProfile: 'research_report',
+      sessionTarget: 'isolated',
+    }), {
+      createAcpSession: () => acp.createAcpSession({ agentType: 'codex', origin: 'automation' }),
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId, input) => {
+        capturedPrompt = String(input?.prompt || '')
+        return { ok: true, sessionId, turnId: 'turn-report-1' }
+      },
+    })
+
+    assert.equal(launched.mode, 'companion_acp')
+    assert.match(capturedPrompt, /Summary/)
+    assert.match(capturedPrompt, /Evidence/)
+    assert.match(capturedPrompt, /Next Steps/)
+  })
+})
+
+test('automation runtime injects watcher digest headings into persistent companion prompts', async () => {
+  await withFreshState(async ({ executor }) => {
+    const sessions = new Map()
+    let capturedPrompt = ''
+
+    const deps = {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-watcher-1', state: 'idle', origin: 'automation' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: (sessionId, runId) => ({ sessionId, runId }),
+      enqueuePrompt: async (sessionId, input) => {
+        capturedPrompt = String(input?.prompt || '')
+        return { ok: true, sessionId, turnId: 'turn-watcher-1' }
+      },
+    }
+
+    const launched = await executor.executeAutomationJob(createJob({
+      id: 'job-watcher-companion',
+      name: 'Watcher loop',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      automationProfile: 'watcher_digest',
+      sessionTarget: 'persistent:watcher-loop',
+    }), deps)
+
+    assert.equal(launched.mode, 'companion_acp')
+    assert.match(capturedPrompt, /What Changed/)
+    assert.match(capturedPrompt, /Why It Matters/)
+    assert.match(capturedPrompt, /Action/)
   })
 })

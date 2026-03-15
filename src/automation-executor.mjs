@@ -25,6 +25,37 @@ function normalizeTimeoutMs(value) {
     : undefined
 }
 
+function normalizeAutomationProfile(value) {
+  return value === 'research_report' || value === 'watcher_digest'
+    ? value
+    : 'general'
+}
+
+function buildAutomationPrompt(job) {
+  const basePrompt = typeof job?.prompt === 'string' ? job.prompt : ''
+  const automationProfile = normalizeAutomationProfile(job?.automationProfile)
+
+  if (automationProfile === 'research_report') {
+    return [
+      basePrompt,
+      '',
+      'Use section headings in this order: Summary, Evidence, Next Steps.',
+      'Keep the report evidence-based and rely on read-only research where possible.',
+    ].join('\n').trim()
+  }
+
+  if (automationProfile === 'watcher_digest') {
+    return [
+      basePrompt,
+      '',
+      'Use section headings in this order: What Changed, Why It Matters, Action.',
+      'Focus on whether the detected change is actionable enough to alert the user.',
+    ].join('\n').trim()
+  }
+
+  return basePrompt
+}
+
 function createDeliveryTimeoutSignal(timeoutMs = 15_000) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(timeoutMs)
@@ -58,6 +89,7 @@ function buildAutomationMeta(job, spec, extra = {}) {
     executionMode: spec.executor === 'companion_acp' ? 'companion_acp' : 'extension_pending',
     sessionTarget: spec.sessionTarget,
     agentType: spec.agentType,
+    automationProfile: normalizeAutomationProfile(job?.automationProfile),
     deliveryMode: spec.delivery.mode,
     taskState: 'queued',
     stepState: 'launch',
@@ -184,7 +216,7 @@ export async function executeAutomationJob(job, overrides = {}) {
     })
 
     await deps.enqueuePrompt(sessionId, {
-      prompt: typeof job?.prompt === 'string' ? job.prompt : '',
+      prompt: buildAutomationPrompt(job),
       origin: 'automation',
       inputProvenance: buildInputProvenance(job, spec, queuedRun.runId),
       timeoutMs: normalizeTimeoutMs(job?.timeoutMs),
