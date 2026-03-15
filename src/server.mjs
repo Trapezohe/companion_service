@@ -45,6 +45,11 @@ import {
 } from './cron-store.mjs'
 import { rescheduleJob, unscheduleJob } from './cron-scheduler.mjs'
 import { normalizeAutomationSpec } from './automation-spec.mjs'
+import {
+  ackAutomationOutboxItems,
+  listAutomationOutboxItems,
+  loadAutomationOutboxStore,
+} from './automation-outbox.mjs'
 import { extractSkillAssets, removeSkillAssets } from './skill-assets.mjs'
 import {
   createRun,
@@ -77,6 +82,7 @@ import {
   listAcpSessions,
   setAcpSessionEventHook,
   setAcpSessionTransitionHook,
+  listAcpEvents,
 } from './acp-session.mjs'
 import { buildDiagnosticsPayload, runCompanionSelfCheck } from './diagnostics.mjs'
 import {
@@ -91,6 +97,7 @@ import {
 } from './memory-shadow-publisher.mjs'
 import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
+import { deliverAutomationRunResult } from './automation-executor.mjs'
 
 // ── Auth rate limiter ──
 
@@ -665,6 +672,7 @@ export function createCompanionServer({
     loadApprovalStore().catch(() => undefined),
     loadMemoryShadowStore().catch(() => undefined),
     loadBrowserLedger().catch(() => undefined),
+    loadAutomationOutboxStore().catch(() => undefined),
   ]).then(async () => {
     await restoreSessionRunStateOnStartup(sessionRunIndex).catch(() => undefined)
   })
@@ -699,6 +707,13 @@ export function createCompanionServer({
       }),
     }).catch(() => undefined)
     if (mappedState === 'done' || mappedState === 'failed' || mappedState === 'cancelled') {
+      await deliverAutomationRunResult({
+        runId,
+        sessionId: event.sessionId,
+        terminalState: mappedState,
+      }, {
+        listAcpEvents,
+      }).catch(() => undefined)
       await clearSessionRunLink(event.sessionId).catch(() => undefined)
       sessionRunIndex.delete(event.sessionId)
     }
@@ -1512,6 +1527,31 @@ export function createCompanionServer({
         const body = await readJsonBody(req)
         const acked = await ackPendingRuns(body)
         return sendJson(res, 200, { ok: true, acked })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/api/automation/outbox') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const limit = Number(url.searchParams.get('limit'))
+      const offset = Number(url.searchParams.get('offset'))
+      const payload = await listAutomationOutboxItems({
+        ...(Number.isFinite(limit) ? { limit } : {}),
+        ...(Number.isFinite(offset) ? { offset } : {}),
+      })
+      return sendJson(res, 200, payload)
+    }
+
+    if (req.method === 'POST' && pathname === '/api/automation/outbox/ack') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const ids = Array.isArray(body?.ids) ? body.ids : []
+        const payload = await ackAutomationOutboxItems(ids)
+        return sendJson(res, 200, payload)
       } catch (err) {
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }

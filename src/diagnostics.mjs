@@ -17,6 +17,7 @@ import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
 import { getJobs } from './cron-store.mjs'
 import { listAutomationSessionBindings } from './automation-session-store.mjs'
+import { listAutomationOutboxItems } from './automation-outbox.mjs'
 import {
   NATIVE_HOST_NAMES,
   getConfiguredExtensionIds,
@@ -97,6 +98,29 @@ async function buildAutomationExecutionSummary(acpSessions) {
     activeAcpSessions: automationSessions.length,
     runningAcpSessions: automationSessions.filter((session) => session.state === 'running').length,
     recentBindings: bindings.slice(0, 10),
+  }
+}
+
+async function buildAutomationOutboxSummary() {
+  const listed = await listAutomationOutboxItems({ limit: 10, offset: 0 }).catch(() => ({
+    items: [],
+    total: 0,
+    limit: 10,
+    offset: 0,
+    hasMore: false,
+  }))
+  return {
+    depth: listed.total || 0,
+    recent: Array.isArray(listed.items)
+      ? listed.items.slice(0, 5).map((item) => ({
+          id: item.id,
+          runId: item.runId,
+          taskId: item.taskId,
+          taskName: item.taskName,
+          mode: item.mode,
+          createdAt: item.createdAt,
+        }))
+      : [],
   }
 }
 
@@ -206,6 +230,18 @@ export async function buildDiagnosticsPayload(params) {
   const memoryShadow = await getMemoryShadowStatus().catch(() => null)
   const automationSummary = summarizeAutomationSpecs(getJobs())
   const automationExecution = await buildAutomationExecutionSummary(acpSessions)
+  const automationOutbox = await buildAutomationOutboxSummary()
+  const automationFailures = runs.runs
+    .filter((run) => run.type === 'cron' && run.meta?.executionMode === 'companion_acp' && run.state === 'failed')
+    .slice(0, 5)
+    .map((run) => ({
+      runId: run.runId,
+      summary: run.summary,
+      error: run.error,
+      taskId: typeof run.meta?.taskId === 'string' ? run.meta.taskId : undefined,
+      taskName: typeof run.meta?.taskName === 'string' ? run.meta.taskName : undefined,
+      finishedAt: run.finishedAt,
+    }))
 
   const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
   const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
@@ -233,6 +269,8 @@ export async function buildDiagnosticsPayload(params) {
     automation: {
       ...automationSummary,
       execution: automationExecution,
+      outbox: automationOutbox,
+      recentFailures: automationFailures,
     },
     runs: {
       recentFailed: runs.runs.filter((run) => run.state === 'failed').slice(0, 5),

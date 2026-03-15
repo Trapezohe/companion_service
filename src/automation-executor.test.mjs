@@ -157,6 +157,144 @@ test('executeAutomationJob reuses persistent companion sessions across runs', as
   })
 })
 
+
+
+test('deliverAutomationRunResult sends webhook deliveries directly and updates the run ledger', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-webhook',
+      type: 'cron',
+      state: 'done',
+      summary: 'Automation finished',
+      meta: {
+        taskId: 'task-webhook',
+        taskName: 'Webhook report',
+        executionMode: 'companion_acp',
+        deliveryMode: 'webhook',
+        target: { url: 'https://hooks.example.com/automation' },
+      },
+    })
+
+    const fetchCalls = []
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-webhook',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Webhook payload ready.' },
+          { type: 'done', result: 'ignored' },
+        ],
+      }),
+      fetchImpl: async (url, init) => {
+        fetchCalls.push({ url, init })
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      },
+    })
+
+    assert.equal(delivery.mode, 'webhook')
+    assert.equal(fetchCalls.length, 1)
+    assert.equal(fetchCalls[0].url, 'https://hooks.example.com/automation')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.deepEqual(updated?.deliveryState, {
+      channel: 'webhook',
+      attempts: 1,
+      lastAttemptAt: updated?.deliveryState?.lastAttemptAt,
+    })
+  })
+})
+
+test('deliverAutomationRunResult queues chat deliveries into the automation outbox', async () => {
+  await withFreshState(async ({ executor, runStore, sessionStore }) => {
+    const outbox = await import('./automation-outbox.mjs')
+    await outbox.clearAutomationOutboxForTests()
+    const run = await runStore.createRun({
+      runId: 'run-chat',
+      type: 'cron',
+      state: 'done',
+      summary: 'Automation finished',
+      meta: {
+        taskId: 'task-chat',
+        taskName: 'Chat report',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+      },
+    })
+
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-chat',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Chat delivery ready.' },
+        ],
+      }),
+      enqueueAutomationOutboxItem: outbox.enqueueAutomationOutboxItem,
+    })
+
+    assert.equal(delivery.mode, 'outbox')
+    const listed = await outbox.listAutomationOutboxItems()
+    assert.equal(listed.items.length, 1)
+    assert.equal(listed.items[0].id, 'run-chat')
+    assert.equal(listed.items[0].mode, 'chat')
+    assert.equal(listed.items[0].text, 'Chat delivery ready.')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.deliveryState?.channel, 'outbox')
+  })
+})
+
+test('deliverAutomationRunResult queues remote channel deliveries with target metadata preserved', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const outbox = await import('./automation-outbox.mjs')
+    await outbox.clearAutomationOutboxForTests()
+    const run = await runStore.createRun({
+      runId: 'run-remote',
+      type: 'cron',
+      state: 'done',
+      summary: 'Automation finished',
+      meta: {
+        taskId: 'task-remote',
+        taskName: 'Remote report',
+        executionMode: 'companion_acp',
+        deliveryMode: 'remote_channel',
+        target: {
+          channelId: 'telegram',
+          authToken: 'bot-token',
+          bindingKey: 'chat:1',
+        },
+      },
+    })
+
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-remote',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Remote delivery ready.' },
+        ],
+      }),
+      enqueueAutomationOutboxItem: outbox.enqueueAutomationOutboxItem,
+    })
+
+    assert.equal(delivery.mode, 'outbox')
+    const listed = await outbox.listAutomationOutboxItems()
+    assert.equal(listed.items.length, 1)
+    assert.equal(listed.items[0].mode, 'remote_channel')
+    assert.deepEqual(listed.items[0].target, {
+      channelId: 'telegram',
+      authToken: 'bot-token',
+      bindingKey: 'chat:1',
+    })
+  })
+})
+
 test('executeAutomationJob rejects unsupported main-session companion jobs with a failed run', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     let createAcpSessionCalled = 0
