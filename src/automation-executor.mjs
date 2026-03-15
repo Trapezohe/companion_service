@@ -1,4 +1,8 @@
 import { normalizeAutomationSpec } from './automation-spec.mjs'
+import {
+  buildAutomationLifecycleSummary,
+  extractAutomationLifecycleText,
+} from './automation-lifecycle.mjs'
 import { resolvePersistentAutomationSession } from './automation-session-store.mjs'
 import {
   createAcpSession,
@@ -55,6 +59,8 @@ function buildAutomationMeta(job, spec, extra = {}) {
     sessionTarget: spec.sessionTarget,
     agentType: spec.agentType,
     deliveryMode: spec.delivery.mode,
+    taskState: 'queued',
+    stepState: 'launch',
     ...(target ? { target } : {}),
     ...extra,
   }
@@ -99,25 +105,6 @@ function getExecutorDeps(overrides = {}) {
   }
 }
 
-function extractAutomationText(events = [], fallbackSummary = '') {
-  const deltas = []
-  let doneResult = ''
-  for (const event of Array.isArray(events) ? events : []) {
-    if (event?.type === 'text_delta' && typeof event.text === 'string') {
-      deltas.push(event.text)
-      continue
-    }
-    if (event?.type === 'done' && typeof event.result === 'string' && event.result.trim()) {
-      doneResult = event.result.trim()
-    }
-  }
-
-  const fromDeltas = deltas.join('').trim()
-  if (fromDeltas) return fromDeltas
-  if (doneResult) return doneResult
-  return typeof fallbackSummary === 'string' ? fallbackSummary.trim() : ''
-}
-
 async function recordRejectedRun(job, spec, deps) {
   const reason = spec.unsupportedReason || 'unsupported_automation_job'
   const run = await deps.createRun({
@@ -128,6 +115,8 @@ async function recordRejectedRun(job, spec, deps) {
     error: reason,
     meta: buildAutomationMeta(job, spec, {
       unsupportedReason: reason,
+      taskState: 'failed',
+      stepState: 'launch',
     }),
   })
 
@@ -189,6 +178,8 @@ export async function executeAutomationJob(job, overrides = {}) {
       meta: buildAutomationMeta(job, spec, {
         acpSessionId: sessionId,
         reusedSession: sessionResolution.reused === true,
+        taskState: 'running',
+        stepState: 'execute',
       }),
     })
 
@@ -207,14 +198,16 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    await deps.updateRun(queuedRun.runId, {
-      state: 'failed',
-      summary: `Companion automation failed to start: ${job?.name || 'unnamed job'}`,
-      error: message,
-      meta: buildAutomationMeta(job, spec, {
-        startupFailed: true,
-      }),
-    })
+      await deps.updateRun(queuedRun.runId, {
+        state: 'failed',
+        summary: `Companion automation failed to start: ${job?.name || 'unnamed job'}`,
+        error: message,
+        meta: buildAutomationMeta(job, spec, {
+          startupFailed: true,
+          taskState: 'failed',
+          stepState: 'launch',
+        }),
+      })
     return {
       mode: 'failed',
       reason: 'startup_failed',
@@ -238,6 +231,25 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     return { mode: 'skipped', reason: 'run_not_found' }
   }
 
+  const finalTaskState = terminalState === 'done' ? 'done' : terminalState === 'retrying' ? 'retrying' : 'failed'
+  const events = sessionId
+    ? deps.listAcpEvents(sessionId, { after: 0, limit: 500 })?.events || []
+    : []
+  const lifecycleSummary = buildAutomationLifecycleSummary({
+    run,
+    events,
+    terminalState,
+  })
+  let currentRun = await deps.updateRun(runId, {
+    ...(lifecycleSummary ? { summary: lifecycleSummary } : {}),
+    meta: mergeRunMeta(run, {
+      taskState: finalTaskState,
+      stepState: 'summarize',
+      lifecycleSummary,
+      lifecycleTerminalState: terminalState || null,
+    }),
+  }) || run
+
   const deliveryMode = typeof run.meta?.deliveryMode === 'string' ? run.meta.deliveryMode : ''
   if (run.meta?.executionMode !== 'companion_acp' || !deliveryMode || deliveryMode === 'notification') {
     return { mode: 'skipped', reason: 'delivery_not_requested' }
@@ -248,17 +260,23 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
   }
 
   const deliveryAttemptAt = Date.now()
-  const events = sessionId
-    ? deps.listAcpEvents(sessionId, { after: 0, limit: 500 })?.events || []
-    : []
-  const text = extractAutomationText(events, run.summary || '')
+  const text = extractAutomationLifecycleText(events, run.summary || '')
   if (!text) {
     return { mode: 'skipped', reason: 'empty_delivery_payload' }
   }
 
-  const baseMeta = mergeRunMeta(run)
-  const target = run.meta?.target && typeof run.meta.target === 'object' && !Array.isArray(run.meta.target)
-    ? JSON.parse(JSON.stringify(run.meta.target))
+  currentRun = await deps.updateRun(runId, {
+    meta: mergeRunMeta(currentRun, {
+      taskState: 'done',
+      stepState: 'deliver',
+      lifecycleSummary,
+      lifecycleTerminalState: terminalState || null,
+    }),
+  }) || currentRun
+
+  const baseMeta = mergeRunMeta(currentRun)
+  const target = currentRun.meta?.target && typeof currentRun.meta.target === 'object' && !Array.isArray(currentRun.meta.target)
+    ? JSON.parse(JSON.stringify(currentRun.meta.target))
     : null
 
   if (deliveryMode === 'webhook') {
@@ -270,7 +288,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           attempts: 1,
           lastAttemptAt: deliveryAttemptAt,
         },
-        meta: mergeRunMeta(run, {
+        meta: mergeRunMeta(currentRun, {
           deliveryError: 'webhook_target_missing',
         }),
       })
@@ -303,7 +321,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           attempts: 1,
           lastAttemptAt: deliveryAttemptAt,
         },
-        meta: mergeRunMeta(run, {
+        meta: mergeRunMeta(currentRun, {
           deliveryError: null,
         }),
       })
@@ -316,7 +334,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           attempts: 1,
           lastAttemptAt: deliveryAttemptAt,
         },
-        meta: mergeRunMeta(run, {
+        meta: mergeRunMeta(currentRun, {
           deliveryError: message,
         }),
       })
@@ -345,7 +363,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
         attempts: 1,
         lastAttemptAt: deliveryAttemptAt,
       },
-      meta: mergeRunMeta(run, {
+      meta: mergeRunMeta(currentRun, {
         outboxItemId: item.id,
         deliveryError: null,
       }),
@@ -359,7 +377,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
         attempts: 1,
         lastAttemptAt: deliveryAttemptAt,
       },
-      meta: mergeRunMeta(run, {
+      meta: mergeRunMeta(currentRun, {
         deliveryError: message,
       }),
     })

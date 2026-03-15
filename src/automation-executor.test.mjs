@@ -76,11 +76,16 @@ test('executeAutomationJob starts isolated companion_acp runs without writing pe
     const attached = []
     const enqueued = []
     const sessions = new Map()
+    const createdRuns = []
 
     const result = await executor.executeAutomationJob(createJob({
       executor: 'companion_acp',
       agentType: 'codex',
     }), {
+      createRun: async (input) => {
+        createdRuns.push(input)
+        return runStore.createRun(input)
+      },
       createAcpSession: (input) => {
         const session = { sessionId: `acp-${createdSessions.length + 1}`, state: 'idle', ...input }
         createdSessions.push(input)
@@ -111,6 +116,10 @@ test('executeAutomationJob starts isolated companion_acp runs without writing pe
     assert.equal(runs.runs[0].state, 'running')
     assert.equal(runs.runs[0].meta?.executionMode, 'companion_acp')
     assert.equal(runs.runs[0].meta?.acpSessionId, 'acp-1')
+    assert.equal(createdRuns[0].meta?.taskState, 'queued')
+    assert.equal(createdRuns[0].meta?.stepState, 'launch')
+    assert.equal(runs.runs[0].meta?.taskState, 'running')
+    assert.equal(runs.runs[0].meta?.stepState, 'execute')
 
     const link = await runStore.getSessionRunLink('acp-1')
     assert.equal(link?.runId, result.runId)
@@ -250,6 +259,51 @@ test('deliverAutomationRunResult queues chat deliveries into the automation outb
 
     const updated = await runStore.getRunById(run.runId)
     assert.equal(updated?.deliveryState?.channel, 'outbox')
+  })
+})
+
+test('deliverAutomationRunResult writes lifecycle summary before entering deliver phase', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const phaseUpdates = []
+    const run = await runStore.createRun({
+      runId: 'run-lifecycle',
+      type: 'cron',
+      state: 'done',
+      summary: 'ACP session done',
+      meta: {
+        taskId: 'task-lifecycle',
+        taskName: 'Lifecycle report',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+      },
+    })
+
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-lifecycle',
+      terminalState: 'done',
+    }, {
+      updateRun: async (runId, patch) => {
+        if (patch?.meta?.stepState) {
+          phaseUpdates.push(patch.meta.stepState)
+        }
+        return runStore.updateRun(runId, patch)
+      },
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Lifecycle summary ready.' },
+        ],
+      }),
+      enqueueAutomationOutboxItem: async (item) => item,
+    })
+
+    assert.equal(delivery.mode, 'outbox')
+    assert.deepEqual(phaseUpdates.slice(0, 2), ['summarize', 'deliver'])
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.taskState, 'done')
+    assert.equal(updated?.meta?.stepState, 'deliver')
+    assert.match(String(updated?.meta?.lifecycleSummary || ''), /Lifecycle summary ready\./)
   })
 })
 

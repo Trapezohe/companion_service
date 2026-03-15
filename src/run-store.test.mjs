@@ -150,6 +150,33 @@ test('run store persists runs across module reload', async () => {
   })
 })
 
+test('run store preserves lifecycle phase meta across reload', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.createRun({
+      runId: 'run-lifecycle-meta',
+      type: 'cron',
+      state: 'done',
+      summary: 'persist lifecycle meta',
+      meta: {
+        taskState: 'done',
+        stepState: 'deliver',
+        lifecycleSummary: 'Lifecycle summary ready.',
+      },
+    })
+    await mod.flushRunStore()
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+
+    const fetched = await reloaded.getRunById('run-lifecycle-meta')
+    assert.ok(fetched)
+    assert.equal(fetched.meta?.taskState, 'done')
+    assert.equal(fetched.meta?.stepState, 'deliver')
+    assert.equal(fetched.meta?.lifecycleSummary, 'Lifecycle summary ready.')
+  })
+})
+
 test('run store persists session-to-run links across module reload', async () => {
   await withTempHome(async ({ mod }) => {
     await mod.setSessionRunLink('session-1', 'run-1', { type: 'session' })

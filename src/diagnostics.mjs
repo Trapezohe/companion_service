@@ -124,6 +124,19 @@ async function buildAutomationOutboxSummary() {
   }
 }
 
+function buildAutomationLifecyclePhaseSummary(runs) {
+  return runs.runs
+    .filter((run) => run.type === 'cron' && run.meta?.executionMode === 'companion_acp')
+    .slice(0, 5)
+    .map((run) => ({
+      runId: run.runId,
+      taskId: typeof run.meta?.taskId === 'string' ? run.meta.taskId : '',
+      taskName: typeof run.meta?.taskName === 'string' ? run.meta.taskName : '',
+      taskState: typeof run.meta?.taskState === 'string' ? run.meta.taskState : null,
+      stepState: typeof run.meta?.stepState === 'string' ? run.meta.stepState : null,
+    }))
+}
+
 async function buildMediaNormalizationSummary(params) {
   const enabled = params.supportedFeatures?.mediaNormalization === true
   let support = { available: false, engine: null, reason: enabled ? 'probe_unavailable' : 'feature_disabled' }
@@ -231,6 +244,7 @@ export async function buildDiagnosticsPayload(params) {
   const automationSummary = summarizeAutomationSpecs(getJobs())
   const automationExecution = await buildAutomationExecutionSummary(acpSessions)
   const automationOutbox = await buildAutomationOutboxSummary()
+  const automationLifecyclePhases = buildAutomationLifecyclePhaseSummary(runs)
   const automationFailures = runs.runs
     .filter((run) => run.type === 'cron' && run.meta?.executionMode === 'companion_acp' && run.state === 'failed')
     .slice(0, 5)
@@ -270,6 +284,7 @@ export async function buildDiagnosticsPayload(params) {
       ...automationSummary,
       execution: automationExecution,
       outbox: automationOutbox,
+      recentLifecyclePhases: automationLifecyclePhases,
       recentFailures: automationFailures,
     },
     runs: {
