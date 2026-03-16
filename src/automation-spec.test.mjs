@@ -56,6 +56,19 @@ test('normalizeAutomationSpec marks main-session companion execution as unsuppor
   assert.equal(spec.unsupportedReason, 'main_session_not_supported')
 })
 
+test('normalizeAutomationSpec rejects research workflows outside companion_acp', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    executor: 'extension_chat',
+    workflow: {
+      template: 'research_synthesis',
+      state: null,
+    },
+  }))
+
+  assert.equal(spec.supported, false)
+  assert.equal(spec.unsupportedReason, 'workflow_requires_companion_acp')
+})
+
 test('normalizeAutomationSpec routes chat and remote_channel delivery through the outbox', () => {
   const chatSpec = normalizeAutomationSpec(createJob({
     delivery: { mode: 'chat', notification: false, chat: true, target: null },

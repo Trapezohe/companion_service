@@ -177,6 +177,44 @@ test('run store preserves lifecycle phase meta across reload', async () => {
   })
 })
 
+test('run store preserves workflow step ledgers across reload', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.createRun({
+      runId: 'run-workflow-meta',
+      type: 'cron',
+      state: 'running',
+      summary: 'persist workflow meta',
+      meta: {
+        workflow: {
+          template: 'research_synthesis',
+          state: {
+            currentStepId: 'research',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'done', runId: 'run-workflow-meta', summary: 'Plan ready.' },
+              { id: 'research', kind: 'research', state: 'running', runId: 'run-workflow-meta', summary: null },
+              { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null },
+            ],
+            lastWorkflowSummary: 'Plan ready.',
+          },
+        },
+      },
+    })
+    await mod.flushRunStore()
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+
+    const fetched = await reloaded.getRunById('run-workflow-meta')
+    assert.ok(fetched)
+    assert.equal(fetched.meta?.workflow?.template, 'research_synthesis')
+    assert.equal(fetched.meta?.workflow?.state?.currentStepId, 'research')
+    assert.equal(fetched.meta?.workflow?.state?.steps?.[0]?.summary, 'Plan ready.')
+    assert.equal(fetched.meta?.workflow?.state?.steps?.[1]?.state, 'running')
+    assert.equal(fetched.meta?.workflow?.state?.lastWorkflowSummary, 'Plan ready.')
+  })
+})
+
 test('run store persists session-to-run links across module reload', async () => {
   await withTempHome(async ({ mod }) => {
     await mod.setSessionRunLink('session-1', 'run-1', { type: 'session' })

@@ -178,7 +178,9 @@ export function normalizeAutomationSpec(job) {
   const sessionBudget = normalizeSessionBudget(job?.sessionBudget)
 
   let unsupportedReason = null
-  if (executor === 'companion_acp' && !agentType) {
+  if (workflow.template !== 'single_turn' && executor !== 'companion_acp') {
+    unsupportedReason = 'workflow_requires_companion_acp'
+  } else if (executor === 'companion_acp' && !agentType) {
     unsupportedReason = 'agent_type_required'
   } else if (executor === 'companion_acp' && sessionTarget === 'main') {
     unsupportedReason = 'main_session_not_supported'

@@ -7,6 +7,12 @@ import {
   buildAutomationLifecycleSummary,
   extractAutomationLifecycleText,
 } from './automation-lifecycle.mjs'
+import {
+  advanceAutomationWorkflow,
+  buildAutomationWorkflowPrompt,
+  failAutomationWorkflowStep,
+  initializeAutomationWorkflow,
+} from './automation-workflow.mjs'
 import { resolvePersistentAutomationSession } from './automation-session-store.mjs'
 import {
   createAcpSession,
@@ -57,7 +63,7 @@ function buildScheduledWritePolicyPrompt(spec) {
   ].filter(Boolean).join('\n')
 }
 
-function buildAutomationPrompt(job, spec) {
+function buildAutomationBasePrompt(job, spec) {
   const basePrompt = typeof job?.prompt === 'string' ? job.prompt : ''
   const automationProfile = normalizeAutomationProfile(job?.automationProfile)
   const writePolicyPrompt = buildScheduledWritePolicyPrompt(spec)
@@ -138,6 +144,11 @@ function cloneSessionBudget(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function cloneWorkflow(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return JSON.parse(JSON.stringify(value))
+}
+
 function resolvePersistentBudgetSessionKey(sessionTarget) {
   return typeof sessionTarget === 'string' && sessionTarget.startsWith('persistent:')
     ? sessionTarget
@@ -147,6 +158,7 @@ function resolvePersistentBudgetSessionKey(sessionTarget) {
 function buildAutomationMeta(job, spec, extra = {}) {
   const target = cloneDeliveryTarget(job)
   const sessionBudget = cloneSessionBudget(spec.sessionBudget)
+  const workflow = cloneWorkflow(spec.workflow)
   return {
     taskId: typeof job?.id === 'string' ? job.id : '',
     taskName: typeof job?.name === 'string' ? job.name : '',
@@ -155,7 +167,10 @@ function buildAutomationMeta(job, spec, extra = {}) {
     agentType: spec.agentType,
     automationProfile: normalizeAutomationProfile(job?.automationProfile),
     deliveryMode: spec.delivery.mode,
+    trustClass: typeof job?.trustClass === 'string' ? job.trustClass : 'scheduled_trusted',
+    timeoutMs: normalizeTimeoutMs(job?.timeoutMs) ?? null,
     sessionBudget,
+    ...(workflow ? { workflow } : {}),
     taskState: 'queued',
     stepState: 'launch',
     ...(target ? { target } : {}),
@@ -217,6 +232,29 @@ function buildInputProvenance(job, spec, runId = null) {
   }
 }
 
+function buildInputProvenanceFromRun(run, runId = null) {
+  const meta = run?.meta && typeof run.meta === 'object' ? run.meta : {}
+  return {
+    source: 'cron',
+    executor: meta.executionMode === 'companion_acp' ? 'companion_acp' : 'extension_chat',
+    sessionTarget: typeof meta.sessionTarget === 'string' ? meta.sessionTarget : 'isolated',
+    taskId: typeof meta.taskId === 'string' ? meta.taskId : '',
+    taskName: typeof meta.taskName === 'string' ? meta.taskName : '',
+    trustClass: typeof meta.trustClass === 'string' ? meta.trustClass : 'scheduled_trusted',
+    ...(runId ? { runId } : {}),
+  }
+}
+
+function buildWorkflowExecutionSummary(run, workflowStep) {
+  const taskName = typeof run?.meta?.taskName === 'string' && run.meta.taskName.trim()
+    ? run.meta.taskName.trim()
+    : 'automation'
+  const stepKind = typeof workflowStep?.kind === 'string' && workflowStep.kind
+    ? workflowStep.kind
+    : 'step'
+  return `Companion automation executing: ${taskName} (${stepKind})`
+}
+
 function createAcpSessionFactory(job, spec, deps, runId) {
   return () => deps.createAcpSession({
     agentType: spec.agentType,
@@ -270,6 +308,10 @@ async function recordRejectedRun(job, spec, deps) {
 
 export async function executeAutomationJob(job, overrides = {}) {
   const spec = normalizeAutomationSpec(job)
+  const deps = getExecutorDeps(overrides)
+  if (!spec.supported) {
+    return recordRejectedRun(job, spec, deps)
+  }
   if (spec.executor === 'extension_chat') {
     return {
       mode: 'extension_pending',
@@ -277,20 +319,24 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   }
 
-  const deps = getExecutorDeps(overrides)
-  if (!spec.supported) {
-    return recordRejectedRun(job, spec, deps)
-  }
+  const workflow = initializeAutomationWorkflow(spec.workflow)
+  const automationPromptBase = buildAutomationBasePrompt(job, spec)
+  const automationPrompt = buildAutomationWorkflowPrompt({
+    workflow,
+    basePrompt: automationPromptBase,
+  })
 
   const queuedRun = await deps.createRun({
     type: 'cron',
     state: 'queued',
     summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
-    meta: buildAutomationMeta(job, spec),
+    meta: buildAutomationMeta(job, spec, {
+      workflow,
+      automationPromptBase,
+    }),
   })
 
   try {
-    const automationPrompt = buildAutomationPrompt(job, spec)
     const sessionResolution = spec.sessionTarget === 'isolated'
       ? {
           key: null,
@@ -320,6 +366,8 @@ export async function executeAutomationJob(job, overrides = {}) {
       meta: buildAutomationMeta(job, spec, {
         acpSessionId: sessionId,
         reusedSession: sessionResolution.reused === true,
+        workflow,
+        automationPromptBase,
         taskState: 'running',
         stepState: 'execute',
       }),
@@ -405,9 +453,84 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     sessionKey: currentRun.meta?.sessionTarget ?? run.meta?.sessionTarget ?? '',
     outputText: budgetOutputText,
   })
+  const text = extractAutomationLifecycleText(events, run.summary || '')
+  const workflowProgress = advanceAutomationWorkflow(currentRun.meta?.workflow ?? run.meta?.workflow ?? null, {
+    runId,
+    terminalState,
+    stepSummary: text || lifecycleSummary || run.summary || '',
+  })
 
-  const deliveryMode = typeof run.meta?.deliveryMode === 'string' ? run.meta.deliveryMode : ''
-  if (run.meta?.executionMode !== 'companion_acp' || !deliveryMode || deliveryMode === 'notification') {
+  if (workflowProgress.workflow.template === 'research_synthesis') {
+    currentRun = await deps.updateRun(runId, {
+      meta: mergeRunMeta(currentRun, {
+        workflow: workflowProgress.workflow,
+      }),
+    }) || currentRun
+
+    if (workflowProgress.continued) {
+      const automationPromptBase = typeof currentRun.meta?.automationPromptBase === 'string'
+        ? currentRun.meta.automationPromptBase
+        : typeof run.meta?.automationPromptBase === 'string'
+          ? run.meta.automationPromptBase
+          : ''
+      const nextPrompt = buildAutomationWorkflowPrompt({
+        workflow: workflowProgress.workflow,
+        basePrompt: automationPromptBase,
+      })
+
+      try {
+        if (!sessionId) {
+          throw new Error('workflow_continuation_requires_session')
+        }
+        await deps.enqueuePrompt(sessionId, {
+          prompt: nextPrompt,
+          origin: 'automation',
+          inputProvenance: buildInputProvenanceFromRun(currentRun, runId),
+          timeoutMs: normalizeTimeoutMs(currentRun.meta?.timeoutMs ?? run.meta?.timeoutMs),
+        })
+        currentRun = await deps.updateRun(runId, {
+          state: 'running',
+          summary: buildWorkflowExecutionSummary(currentRun, workflowProgress.nextStep),
+          meta: mergeRunMeta(currentRun, {
+            taskState: 'running',
+            stepState: 'execute',
+            workflow: workflowProgress.workflow,
+            lifecycleSummary,
+            lifecycleTerminalState: terminalState || null,
+          }),
+        }) || currentRun
+        return {
+          mode: 'workflow_continued',
+          runId,
+          sessionId,
+          nextStepId: workflowProgress.nextStep?.id || null,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const failedWorkflow = failAutomationWorkflowStep(workflowProgress.workflow, {
+          stepId: workflowProgress.nextStep?.id || null,
+          runId,
+          summary: message,
+        })
+        currentRun = await deps.updateRun(runId, {
+          state: 'failed',
+          summary: `Companion automation failed to continue: ${currentRun.meta?.taskName || 'unnamed job'}`,
+          error: message,
+          meta: mergeRunMeta(currentRun, {
+            taskState: 'failed',
+            stepState: 'done',
+            workflow: failedWorkflow,
+            lifecycleSummary,
+            lifecycleTerminalState: 'failed',
+          }),
+        }) || currentRun
+        return { mode: 'failed', reason: 'workflow_continue_failed', error: message }
+      }
+    }
+  }
+
+  const deliveryMode = typeof currentRun.meta?.deliveryMode === 'string' ? currentRun.meta.deliveryMode : ''
+  if (currentRun.meta?.executionMode !== 'companion_acp' || !deliveryMode || deliveryMode === 'notification') {
     currentRun = await finalizeTerminalRunStep(deps, runId, currentRun, {
       taskState: finalTaskState,
       lifecycleSummary,
@@ -426,7 +549,6 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
   }
 
   const deliveryAttemptAt = Date.now()
-  const text = extractAutomationLifecycleText(events, run.summary || '')
   if (!text) {
     currentRun = await finalizeTerminalRunStep(deps, runId, currentRun, {
       taskState: finalTaskState,

@@ -129,6 +129,73 @@ test('executeAutomationJob starts isolated companion_acp runs without writing pe
   })
 })
 
+test('executeAutomationJob rejects research workflows outside companion_acp', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'extension_chat',
+      workflow: {
+        template: 'research_synthesis',
+        state: null,
+      },
+    }))
+
+    assert.equal(result.mode, 'rejected')
+    assert.equal(result.reason, 'workflow_requires_companion_acp')
+
+    const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
+    assert.equal(runs.runs.length, 1)
+    assert.equal(runs.runs[0].state, 'failed')
+    assert.equal(runs.runs[0].meta?.unsupportedReason, 'workflow_requires_companion_acp')
+  })
+})
+
+test('executeAutomationJob seeds research_synthesis workflow state on companion runs', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+    const enqueued = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      workflow: {
+        template: 'research_synthesis',
+        state: null,
+      },
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-workflow-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-plan-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(enqueued.length, 1)
+    assert.match(enqueued[0].input.prompt, /Current workflow step: plan \(1\/3\)\./)
+
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
+    assert.equal(run?.meta?.workflow?.state?.currentStepId, 'plan')
+    assert.deepEqual(
+      run?.meta?.workflow?.state?.steps?.map((step) => ({
+        id: step.id,
+        state: step.state,
+      })),
+      [
+        { id: 'plan', state: 'running' },
+        { id: 'research', state: 'queued' },
+        { id: 'synthesize', state: 'queued' },
+      ],
+    )
+  })
+})
+
 test('executeAutomationJob marks companion allowlists as prompt-only guidance in the ACP prompt', async () => {
   await withFreshState(async ({ executor }) => {
     const enqueued = []
@@ -575,6 +642,123 @@ test('deliverAutomationRunResult queues remote channel deliveries with target me
       authToken: 'bot-token',
       bindingKey: 'chat:1',
     })
+  })
+})
+
+test('deliverAutomationRunResult advances research workflows across plan -> research -> synthesize before delivery', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-workflow',
+      type: 'cron',
+      state: 'running',
+      summary: 'Launching workflow',
+      meta: {
+        taskId: 'task-workflow',
+        taskName: 'Research workflow',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        automationPromptBase: 'Produce a research report.',
+        workflow: {
+          template: 'research_synthesis',
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null },
+              { id: 'research', kind: 'research', state: 'queued', runId: null, summary: null },
+              { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null },
+            ],
+            lastWorkflowSummary: null,
+          },
+        },
+      },
+    })
+
+    const enqueuedPrompts = []
+    const deliveredItems = []
+    const eventsByStep = [
+      [{ type: 'text_delta', text: 'Plan the scope.' }],
+      [{ type: 'text_delta', text: 'Collect evidence.' }],
+      [{ type: 'text_delta', text: 'Final report.' }],
+    ]
+
+    const first = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-workflow',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({ events: eventsByStep.shift() || [] }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: `turn-${enqueuedPrompts.length}` }
+      },
+      enqueueAutomationOutboxItem: async (item) => {
+        deliveredItems.push(item)
+        return item
+      },
+    })
+
+    assert.equal(first.mode, 'workflow_continued')
+    assert.equal(first.nextStepId, 'research')
+    assert.equal(enqueuedPrompts.length, 1)
+    assert.match(enqueuedPrompts[0].input.prompt, /Current workflow step: research \(2\/3\)\./)
+
+    let updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.state, 'running')
+    assert.equal(updated?.meta?.workflow?.state?.currentStepId, 'research')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.state, 'done')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.summary, 'Plan the scope.')
+
+    const second = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-workflow',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({ events: eventsByStep.shift() || [] }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: `turn-${enqueuedPrompts.length}` }
+      },
+      enqueueAutomationOutboxItem: async (item) => {
+        deliveredItems.push(item)
+        return item
+      },
+    })
+
+    assert.equal(second.mode, 'workflow_continued')
+    assert.equal(second.nextStepId, 'synthesize')
+    assert.equal(enqueuedPrompts.length, 2)
+    assert.match(enqueuedPrompts[1].input.prompt, /Current workflow step: synthesize \(3\/3\)\./)
+
+    updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.workflow?.state?.currentStepId, 'synthesize')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[1]?.state, 'done')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[1]?.summary, 'Collect evidence.')
+
+    const third = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-workflow',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({ events: eventsByStep.shift() || [] }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: `turn-${enqueuedPrompts.length}` }
+      },
+      enqueueAutomationOutboxItem: async (item) => {
+        deliveredItems.push(item)
+        return item
+      },
+    })
+
+    assert.equal(third.mode, 'outbox')
+    assert.equal(deliveredItems.length, 1)
+    assert.equal(deliveredItems[0].text, 'Final report.')
+
+    updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.workflow?.state?.currentStepId, null)
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[2]?.state, 'done')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[2]?.summary, 'Final report.')
+    assert.equal(updated?.meta?.workflow?.state?.lastWorkflowSummary, 'Final report.')
   })
 })
 

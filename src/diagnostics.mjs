@@ -148,6 +148,10 @@ function buildAutomationLifecyclePhaseSummary(runs) {
       taskName: typeof run.meta?.taskName === 'string' ? run.meta.taskName : '',
       taskState: typeof run.meta?.taskState === 'string' ? run.meta.taskState : null,
       stepState: typeof run.meta?.stepState === 'string' ? run.meta.stepState : null,
+      workflow:
+        run.meta?.workflow && typeof run.meta.workflow === 'object' && !Array.isArray(run.meta.workflow)
+          ? JSON.parse(JSON.stringify(run.meta.workflow))
+          : null,
     }))
 }
 

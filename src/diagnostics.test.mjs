@@ -421,6 +421,64 @@ test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', 
   assert.equal(payload.automation.budgetManagedJobs, 1)
 })
 
+test('buildDiagnosticsPayload exposes workflow step ledgers for recent companion automation runs', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await clearCronStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    await clearCronStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  await createRun({
+    runId: 'run-workflow-diagnostics',
+    type: 'cron',
+    state: 'running',
+    summary: 'workflow running',
+    meta: {
+      taskId: 'task-workflow',
+      taskName: 'Workflow task',
+      executionMode: 'companion_acp',
+      taskState: 'running',
+      stepState: 'execute',
+      workflow: {
+        template: 'research_synthesis',
+        state: {
+          currentStepId: 'research',
+          steps: [
+            { id: 'plan', kind: 'plan', state: 'done', runId: 'run-workflow-diagnostics', summary: 'Plan ready.' },
+            { id: 'research', kind: 'research', state: 'running', runId: 'run-workflow-diagnostics', summary: null },
+            { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null },
+          ],
+          lastWorkflowSummary: 'Plan ready.',
+        },
+      },
+    },
+  })
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  assert.equal(payload.automation.recentLifecyclePhases[0]?.runId, 'run-workflow-diagnostics')
+  assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.template, 'research_synthesis')
+  assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.currentStepId, 'research')
+  assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.steps?.[0]?.summary, 'Plan ready.')
+  assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.lastWorkflowSummary, 'Plan ready.')
+})
+
 
 test('buildDiagnosticsPayload surfaces mirrored checkpoint shadow status without promoting it to primary authority', async (t) => {
   await clearRunStoreForTests()
