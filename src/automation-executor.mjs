@@ -35,6 +35,7 @@ import {
   getAutomationBudgetLedger,
   setAutomationBudgetLedger,
 } from './automation-budget-store.mjs'
+import { patchJobWatcherState } from './cron-store.mjs'
 
 function normalizeTimeoutMs(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -319,6 +320,7 @@ function getExecutorDeps(overrides = {}) {
     enqueueAutomationOutboxItem,
     getAutomationBudgetLedger,
     setAutomationBudgetLedger,
+    patchJobWatcherState,
     fetchImpl: fetch,
     ...overrides,
   }
@@ -380,6 +382,16 @@ export async function executeAutomationJob(job, overrides = {}) {
       currentHash: observationHash,
       runId: queuedRun.runId,
     })
+  }
+
+  // Persist watcher state patch back to the job store immediately — before the
+  // ACP run starts — so the next timer fire sees the updated lastInvestigatedHash
+  // and does not re-escalate for the same observation.
+  if (watcherEscalation?.watcherStatePatch) {
+    const taskId = typeof spec.id === 'string' ? spec.id : ''
+    if (taskId) {
+      await deps.patchJobWatcherState(taskId, watcherEscalation.watcherStatePatch).catch(() => undefined)
+    }
   }
 
   let workflow = initializeAutomationWorkflow(spec.workflow)

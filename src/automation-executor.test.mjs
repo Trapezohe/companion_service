@@ -1039,6 +1039,7 @@ test('executeAutomationJob escalates watcher job to workflow when change is dete
   await withFreshState(async ({ executor, runStore }) => {
     const sessions = new Map()
     const enqueued = []
+    const patchCalls = []
 
     const result = await executor.executeAutomationJob(createJob({
       executor: 'companion_acp',
@@ -1067,6 +1068,10 @@ test('executeAutomationJob escalates watcher job to workflow when change is dete
         enqueued.push({ sessionId, input })
         return { ok: true, sessionId, turnId: 'turn-1' }
       },
+      patchJobWatcherState: async (taskId, patch) => {
+        patchCalls.push({ taskId, patch })
+        return true
+      },
     })
 
     assert.equal(result.mode, 'companion_acp')
@@ -1088,6 +1093,12 @@ test('executeAutomationJob escalates watcher job to workflow when change is dete
 
     // Workflow should be initialized with escalation template
     assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
+
+    // watcherStatePatch should be persisted back to the job store
+    assert.equal(patchCalls.length, 1)
+    assert.equal(patchCalls[0].taskId, 'job-1')
+    assert.equal(patchCalls[0].patch.lastInvestigatedHash, 'hash-new')
+    assert.equal(patchCalls[0].patch.lastEscalationRunId, result.runId)
   })
 })
 
