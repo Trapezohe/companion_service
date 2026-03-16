@@ -195,6 +195,23 @@ function countCriticalSessionQuality(jobs) {
   ).length
 }
 
+function countRollupBackedSessions(jobs) {
+  const specs = Array.isArray(jobs) ? jobs : []
+  return specs.filter((job) =>
+    job?.sessionBudget?.ledger?.lastCompactedAt != null,
+  ).length
+}
+
+function countRecentCompactions(jobs) {
+  const specs = Array.isArray(jobs) ? jobs : []
+  let total = 0
+  for (const job of specs) {
+    const count = job?.sessionBudget?.ledger?.compactionCount
+    if (typeof count === 'number' && count > 0) total += count
+  }
+  return total
+}
+
 async function buildAutomationBudgetHealthSummary() {
   const ledgers = await listAutomationBudgetLedgers().catch(() => [])
   const summary = {
@@ -372,6 +389,8 @@ export async function buildDiagnosticsPayload(params) {
       activeWorkflowTemplates: countActiveWorkflowTemplates(automationJobs),
       watcherEscalationsPending: countWatcherEscalationsPending(automationJobs),
       criticalSessionQuality: countCriticalSessionQuality(automationJobs),
+      rollupBackedSessions: countRollupBackedSessions(automationJobs),
+      recentCompactions: countRecentCompactions(automationJobs),
       budgetHealth: automationBudgetHealth,
       execution: automationExecution,
       outbox: automationOutbox,

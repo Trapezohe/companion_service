@@ -631,6 +631,9 @@ test('buildDiagnosticsPayload exposes v2.3 feature flags and orchestration templ
   assert.equal(payload.automation.watcherEscalationsPending, 1)
   // v2.3 critical session quality
   assert.equal(payload.automation.criticalSessionQuality, 1)
+  // v2.3 rollup-backed and compaction counters
+  assert.equal(typeof payload.automation.rollupBackedSessions, 'number')
+  assert.equal(typeof payload.automation.recentCompactions, 'number')
 })
 
 test('buildDiagnosticsPayload surfaces mirrored checkpoint shadow status without promoting it to primary authority', async (t) => {
