@@ -450,3 +450,87 @@ test('automation diagnostics summarize prompt-only write guards, active workflow
     assert.equal(typeof payload.automation.recentCompactions, 'number')
   })
 })
+
+test('automation runtime escalates watcher job to workflow when observation hash changes', async () => {
+  await withFreshState(async ({ executor, runStore, acp }) => {
+    const enqueued = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          lastObservationHash: 'hash-v2',
+          lastInvestigatedHash: 'hash-v1',
+        },
+      },
+    }), {
+      createAcpSession: () => acp.createAcpSession({ agentType: 'codex', origin: 'automation' }),
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-watcher-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(enqueued.length, 1)
+
+    // Prompt must reference the escalated research_synthesis workflow
+    assert.match(enqueued[0].input.prompt, /research_synthesis/)
+
+    // Run metadata records watcher escalation
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation?.shouldEscalate, true)
+    assert.equal(run?.meta?.watcherEscalation?.reason, 'change_detected')
+    assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
+    assert.equal(run?.meta?.watcherStatePatch?.lastInvestigatedHash, 'hash-v2')
+  })
+})
+
+test('automation runtime does not escalate watcher when observation hash is unchanged', async () => {
+  await withFreshState(async ({ executor, runStore, acp }) => {
+    const enqueued = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_decision',
+        },
+        state: {
+          lastObservationHash: 'hash-same',
+          lastInvestigatedHash: 'hash-same',
+        },
+      },
+    }), {
+      createAcpSession: () => acp.createAcpSession({ agentType: 'codex', origin: 'automation' }),
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-watcher-2' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+
+    // No escalation — prompt should NOT reference research_decision workflow
+    const prompt = enqueued[0].input.prompt
+    assert.ok(!prompt.includes('research_decision') || prompt.includes('single_turn'))
+
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation?.shouldEscalate, false)
+    assert.equal(run?.meta?.watcherEscalation?.reason, 'already_investigated')
+    assert.equal(run?.meta?.workflow?.template, 'single_turn')
+  })
+})

@@ -94,10 +94,9 @@ export function listRecipeSteps() {
  *
  * @param {object} params
  * @param {string} params.stepKind - The workflow step kind
- * @param {string} params.automationProfile - The automation profile name
  * @returns {{ sections: string[], guidance: string[], toolBias: object, handoffSchema: string[] }|null}
  */
-export function buildRecipeGuidance({ stepKind, automationProfile = 'general' } = {}) {
+export function buildRecipeGuidance({ stepKind } = {}) {
   const recipe = getRecipeStep(stepKind)
   if (!recipe) return null
   return {

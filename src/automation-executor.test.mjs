@@ -1034,3 +1034,103 @@ test('deliverAutomationRunResult returns workflow_needs_retry when step fails wi
     assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.retry?.attempt, 1)
   })
 })
+
+test('executeAutomationJob escalates watcher job to workflow when change is detected', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+    const enqueued = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          lastObservationHash: 'hash-new',
+          lastInvestigatedHash: 'hash-old',
+        },
+      },
+    }), {
+      createAcpSession: (input) => {
+        const session = { sessionId: 'acp-watcher-1', state: 'idle', ...input }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (id) => sessions.get(id) ?? null,
+      attachAcpSessionRunId: () => ({}),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(enqueued.length, 1)
+
+    // The prompt should contain research_synthesis workflow markers
+    const prompt = enqueued[0].input.prompt
+    assert.match(prompt, /research_synthesis/)
+
+    // Run metadata should record escalation details
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation?.shouldEscalate, true)
+    assert.equal(run?.meta?.watcherEscalation?.escalationTemplate, 'research_synthesis')
+    assert.equal(run?.meta?.watcherEscalation?.reason, 'change_detected')
+    assert.ok(run?.meta?.watcherStatePatch)
+    assert.equal(run?.meta?.watcherStatePatch?.lastInvestigatedHash, 'hash-new')
+
+    // Workflow should be initialized with escalation template
+    assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
+  })
+})
+
+test('executeAutomationJob skips watcher escalation when hash is already investigated', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+    const enqueued = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          lastObservationHash: 'hash-same',
+          lastInvestigatedHash: 'hash-same',
+        },
+      },
+    }), {
+      createAcpSession: (input) => {
+        const session = { sessionId: 'acp-watcher-2', state: 'idle', ...input }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (id) => sessions.get(id) ?? null,
+      attachAcpSessionRunId: () => ({}),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+
+    // Should NOT escalate — same hash already investigated
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation?.shouldEscalate, false)
+    assert.equal(run?.meta?.watcherEscalation?.reason, 'already_investigated')
+
+    // Workflow should remain single_turn (no escalation override)
+    assert.equal(run?.meta?.workflow?.template, 'single_turn')
+  })
+})

@@ -15,6 +15,7 @@ import {
   resumeAutomationWorkflowRetry,
 } from './automation-workflow.mjs'
 import { isMultiTurnTemplate } from './automation-workflow-templates.mjs'
+import { evaluateWatcherEscalation } from './automation-watcher.mjs'
 import { resolvePersistentAutomationSession } from './automation-session-store.mjs'
 import {
   createAcpSession,
@@ -358,7 +359,27 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   }
 
-  const workflow = initializeAutomationWorkflow(spec.workflow)
+  let workflow = initializeAutomationWorkflow(spec.workflow)
+
+  // Watcher escalation: if the job carries a watcher policy with escalation
+  // enabled and the observation hash is new, upgrade workflow to the escalation
+  // template so the run investigates the change instead of just notifying.
+  let watcherEscalation = null
+  if (spec.watcher?.policy) {
+    watcherEscalation = evaluateWatcherEscalation({
+      watcherPolicy: spec.watcher.policy,
+      watcherState: spec.watcher.state,
+      currentHash: spec.watcher.state?.lastObservationHash ?? '',
+      runId: '',
+    })
+    if (watcherEscalation.shouldEscalate && watcherEscalation.escalationTemplate) {
+      workflow = initializeAutomationWorkflow({
+        ...spec.workflow,
+        template: watcherEscalation.escalationTemplate,
+      })
+    }
+  }
+
   const automationPromptBase = buildAutomationBasePrompt(job, spec)
   const automationPrompt = buildAutomationWorkflowPrompt({
     workflow,
@@ -372,6 +393,14 @@ export async function executeAutomationJob(job, overrides = {}) {
     meta: buildAutomationMeta(job, spec, {
       workflow,
       automationPromptBase,
+      ...(watcherEscalation ? {
+        watcherEscalation: {
+          shouldEscalate: watcherEscalation.shouldEscalate,
+          escalationTemplate: watcherEscalation.escalationTemplate,
+          reason: watcherEscalation.reason,
+        },
+        watcherStatePatch: watcherEscalation.watcherStatePatch,
+      } : {}),
     }),
   })
 
@@ -409,6 +438,14 @@ export async function executeAutomationJob(job, overrides = {}) {
         automationPromptBase,
         taskState: 'running',
         stepState: 'execute',
+        ...(watcherEscalation ? {
+          watcherEscalation: {
+            shouldEscalate: watcherEscalation.shouldEscalate,
+            escalationTemplate: watcherEscalation.escalationTemplate,
+            reason: watcherEscalation.reason,
+          },
+          watcherStatePatch: watcherEscalation.watcherStatePatch,
+        } : {}),
       }),
     })
 
