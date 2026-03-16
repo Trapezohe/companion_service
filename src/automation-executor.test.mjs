@@ -952,6 +952,39 @@ test('deliverAutomationRunResult advances research_decision workflows through al
   })
 })
 
+test('executeAutomationJob injects recipe section headings in workflow prompts', async () => {
+  await withFreshState(async ({ executor }) => {
+    const sessions = new Map()
+    const enqueued = []
+
+    await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      workflow: {
+        template: 'research_synthesis',
+        state: null,
+      },
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-recipe-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-recipe-1' }
+      },
+    })
+
+    assert.equal(enqueued.length, 1)
+    // Recipe sections for plan step should be in the prompt
+    assert.match(enqueued[0].input.prompt, /Scope, Evidence Targets, Execution Order/)
+    assert.match(enqueued[0].input.prompt, /Define the research scope/)
+  })
+})
+
 test('deliverAutomationRunResult returns workflow_needs_retry when step fails with retry policy', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     const run = await runStore.createRun({

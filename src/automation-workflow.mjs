@@ -1,4 +1,5 @@
 import { isMultiTurnTemplate, buildInitialSteps } from './automation-workflow-templates.mjs'
+import { buildRecipeGuidance } from './automation-recipe-pack.mjs'
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -278,10 +279,21 @@ export function buildAutomationWorkflowPrompt({
     ? `This is retry attempt ${currentStep.retry.attempt}. Previous error: ${currentStep.retry.lastError}. Adjust your approach accordingly.`
     : null
 
+  // Include recipe guidance for the current step kind
+  const recipe = buildRecipeGuidance({ stepKind: currentStep.kind })
+  const recipeSections = recipe
+    ? `Use section headings in this order: ${recipe.sections.join(', ')}.`
+    : null
+  const recipeGuidanceLines = recipe
+    ? recipe.guidance.map((line) => `- ${line}`)
+    : []
+
   return [
     `Workflow template: ${currentWorkflow.template}.`,
     `Current workflow step: ${currentStep.kind} (${currentIndex + 1}/${currentWorkflow.state.steps.length}).`,
     getWorkflowStepInstruction(currentStep.kind),
+    recipeSections,
+    ...recipeGuidanceLines,
     handoff,
     retryContext,
     '',

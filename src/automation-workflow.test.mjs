@@ -334,6 +334,43 @@ test('buildAutomationWorkflowPrompt includes handoff from previous step', () => 
   assert.match(prompt, /Previous step handoff: Key findings: A, B, C/)
 })
 
+test('buildAutomationWorkflowPrompt includes recipe section headings and guidance for plan step', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  const prompt = buildAutomationWorkflowPrompt({
+    workflow,
+    basePrompt: 'Research AI agents.',
+  })
+
+  // Recipe sections for plan step
+  assert.match(prompt, /Scope, Evidence Targets, Execution Order/)
+  // Recipe guidance lines
+  assert.match(prompt, /Define the research scope/)
+  assert.match(prompt, /Order execution steps by dependency/)
+})
+
+test('buildAutomationWorkflowPrompt includes recipe guidance for compare step', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_decision',
+    state: null,
+  })
+  workflow.state.steps[0].state = 'done'
+  workflow.state.steps[1].state = 'running'
+  workflow.state.currentStepId = 'compare'
+
+  const prompt = buildAutomationWorkflowPrompt({
+    workflow,
+    basePrompt: 'Compare options.',
+  })
+
+  // Recipe sections for compare step
+  assert.match(prompt, /Comparison Matrix, Agreements, Contradictions/)
+  assert.match(prompt, /Compare findings side by side/)
+})
+
 test('buildAutomationWorkflowPrompt includes retry context when step has retry info', () => {
   const workflow = initializeAutomationWorkflow({
     template: 'research_synthesis',
