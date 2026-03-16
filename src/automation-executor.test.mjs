@@ -36,8 +36,9 @@ async function getSharedModules() {
 
       const runStore = await import('./run-store.mjs')
       const sessionStore = await import('./automation-session-store.mjs')
+      const budgetStore = await import('./automation-budget-store.mjs')
       const executor = await import('./automation-executor.mjs')
-      return { tempDir, runStore, sessionStore, executor }
+      return { tempDir, runStore, sessionStore, budgetStore, executor }
     })()
   }
 
@@ -45,10 +46,11 @@ async function getSharedModules() {
 }
 
 async function withFreshState(run) {
-  const { runStore, sessionStore, executor } = await getSharedModules()
+  const { runStore, sessionStore, budgetStore, executor } = await getSharedModules()
   await runStore.clearRunStoreForTests()
   await sessionStore.clearAutomationSessionStoreForTests()
-  await run({ runStore, sessionStore, executor })
+  await budgetStore.clearAutomationBudgetStoreForTests()
+  await run({ runStore, sessionStore, budgetStore, executor })
 }
 
 test('executeAutomationJob keeps extension_chat jobs on legacy pending path', async () => {
@@ -208,6 +210,48 @@ test('executeAutomationJob reuses persistent companion sessions across runs', as
 
 
 
+test('executeAutomationJob records a persistent budget snapshot for companion budget-managed sessions', async () => {
+  await withFreshState(async ({ executor, runStore, budgetStore }) => {
+    const sessions = new Map()
+
+    const result = await executor.executeAutomationJob(createJob({
+      id: 'job-budget',
+      name: 'Budgeted report',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      sessionTarget: 'persistent:budget-loop',
+      sessionBudget: {
+        policy: {
+          mode: 'default',
+          maxContextBudget: 120,
+          dayRollupEnabled: true,
+          compactAfterRuns: null,
+        },
+        ledger: null,
+      },
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-budget-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      setSessionRunLink: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => ({ ok: true, sessionId, input }),
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.budgetSnapshot?.ledger?.approxInputTokens > 0, true)
+    assert.equal(run?.meta?.budgetSnapshot?.sessionKey, 'persistent:budget-loop')
+
+    const ledger = await budgetStore.getAutomationBudgetLedger('persistent:budget-loop')
+    assert.equal(ledger?.approxInputTokens > 0, true)
+    assert.equal(ledger?.approxOutputTokens, 0)
+  })
+})
+
 test('deliverAutomationRunResult sends webhook deliveries directly and updates the run ledger', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     const run = await runStore.createRun({
@@ -299,6 +343,71 @@ test('deliverAutomationRunResult queues chat deliveries into the automation outb
 
     const updated = await runStore.getRunById(run.runId)
     assert.equal(updated?.deliveryState?.channel, 'outbox')
+  })
+})
+
+test('deliverAutomationRunResult updates the persistent budget snapshot with output usage', async () => {
+  await withFreshState(async ({ executor, runStore, budgetStore }) => {
+    await budgetStore.setAutomationBudgetLedger('persistent:budget-loop', {
+      approxInputTokens: 18,
+      approxOutputTokens: 0,
+      compactionCount: 0,
+      lastRollupAt: null,
+      health: 'healthy',
+    })
+
+    const run = await runStore.createRun({
+      runId: 'run-budget-delivery',
+      type: 'cron',
+      state: 'done',
+      summary: 'Automation finished',
+      meta: {
+        taskId: 'task-budget-delivery',
+        taskName: 'Budget delivery',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        sessionTarget: 'persistent:budget-loop',
+        sessionBudget: {
+          policy: {
+            mode: 'default',
+            maxContextBudget: 120,
+            dayRollupEnabled: true,
+            compactAfterRuns: null,
+          },
+          ledger: null,
+        },
+        budgetSnapshot: {
+          sessionKey: 'persistent:budget-loop',
+          ledger: {
+            approxInputTokens: 18,
+            approxOutputTokens: 0,
+            compactionCount: 0,
+            lastRollupAt: null,
+            health: 'healthy',
+          },
+        },
+      },
+    })
+
+    const delivery = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-budget-delivery',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({
+        events: [
+          { type: 'text_delta', text: 'Budget-aware delivery payload ready.' },
+        ],
+      }),
+      enqueueAutomationOutboxItem: async (item) => item,
+    })
+
+    assert.equal(delivery.mode, 'outbox')
+    const updatedRun = await runStore.getRunById(run.runId)
+    assert.equal(updatedRun?.meta?.budgetSnapshot?.ledger?.approxOutputTokens > 0, true)
+
+    const ledger = await budgetStore.getAutomationBudgetLedger('persistent:budget-loop')
+    assert.equal(ledger?.approxOutputTokens > 0, true)
   })
 })
 

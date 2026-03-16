@@ -1,5 +1,9 @@
 import { normalizeAutomationSpec } from './automation-spec.mjs'
 import {
+  buildAutomationBudgetSnapshot,
+  deriveAutomationBudgetLedgerUpdate,
+} from './automation-budget.mjs'
+import {
   buildAutomationLifecycleSummary,
   extractAutomationLifecycleText,
 } from './automation-lifecycle.mjs'
@@ -18,6 +22,10 @@ import {
   setSessionRunLink,
 } from './run-store.mjs'
 import { enqueueAutomationOutboxItem } from './automation-outbox.mjs'
+import {
+  getAutomationBudgetLedger,
+  setAutomationBudgetLedger,
+} from './automation-budget-store.mjs'
 
 function normalizeTimeoutMs(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -125,8 +133,20 @@ function cloneDeliveryTarget(job) {
   return JSON.parse(JSON.stringify(target))
 }
 
+function cloneSessionBudget(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return JSON.parse(JSON.stringify(value))
+}
+
+function resolvePersistentBudgetSessionKey(sessionTarget) {
+  return typeof sessionTarget === 'string' && sessionTarget.startsWith('persistent:')
+    ? sessionTarget
+    : ''
+}
+
 function buildAutomationMeta(job, spec, extra = {}) {
   const target = cloneDeliveryTarget(job)
+  const sessionBudget = cloneSessionBudget(spec.sessionBudget)
   return {
     taskId: typeof job?.id === 'string' ? job.id : '',
     taskName: typeof job?.name === 'string' ? job.name : '',
@@ -135,11 +155,54 @@ function buildAutomationMeta(job, spec, extra = {}) {
     agentType: spec.agentType,
     automationProfile: normalizeAutomationProfile(job?.automationProfile),
     deliveryMode: spec.delivery.mode,
+    sessionBudget,
     taskState: 'queued',
     stepState: 'launch',
     ...(target ? { target } : {}),
     ...extra,
   }
+}
+
+async function refreshBudgetSnapshotForRun(deps, run, {
+  sessionBudget,
+  sessionKey,
+  promptText = '',
+  outputText = '',
+  compactionCountDelta = 0,
+  rollupAt = null,
+}) {
+  const budgetConfig = cloneSessionBudget(sessionBudget ?? run?.meta?.sessionBudget)
+  if (!budgetConfig?.policy) return run
+
+  const persistentKey = resolvePersistentBudgetSessionKey(sessionKey || run?.meta?.sessionTarget)
+  const persistedLedger = persistentKey ? await deps.getAutomationBudgetLedger(persistentKey).catch(() => null) : null
+  const ledger = deriveAutomationBudgetLedgerUpdate({
+    sessionBudget: {
+      ...budgetConfig,
+      ledger: persistedLedger ?? budgetConfig.ledger ?? null,
+    },
+    promptText,
+    outputText,
+    compactionCountDelta,
+    rollupAt,
+  })
+  if (!ledger) return run
+
+  if (persistentKey) {
+    await deps.setAutomationBudgetLedger(persistentKey, ledger)
+  }
+
+  return deps.updateRun(run.runId, {
+    meta: mergeRunMeta(run, {
+      sessionBudget: {
+        ...budgetConfig,
+        ledger,
+      },
+      budgetSnapshot: persistentKey
+        ? buildAutomationBudgetSnapshot(persistentKey, ledger)
+        : { sessionKey: null, ledger },
+    }),
+  }) || run
 }
 
 function buildInputProvenance(job, spec, runId = null) {
@@ -176,6 +239,8 @@ function getExecutorDeps(overrides = {}) {
     setSessionRunLink,
     resolvePersistentAutomationSession,
     enqueueAutomationOutboxItem,
+    getAutomationBudgetLedger,
+    setAutomationBudgetLedger,
     fetchImpl: fetch,
     ...overrides,
   }
@@ -225,6 +290,7 @@ export async function executeAutomationJob(job, overrides = {}) {
   })
 
   try {
+    const automationPrompt = buildAutomationPrompt(job, spec)
     const sessionResolution = spec.sessionTarget === 'isolated'
       ? {
           key: null,
@@ -260,10 +326,18 @@ export async function executeAutomationJob(job, overrides = {}) {
     })
 
     await deps.enqueuePrompt(sessionId, {
-      prompt: buildAutomationPrompt(job, spec),
+      prompt: automationPrompt,
       origin: 'automation',
       inputProvenance: buildInputProvenance(job, spec, queuedRun.runId),
       timeoutMs: normalizeTimeoutMs(job?.timeoutMs),
+    })
+
+    await refreshBudgetSnapshotForRun(deps, {
+      ...(await deps.getRunById(queuedRun.runId) || queuedRun),
+    }, {
+      sessionBudget: spec.sessionBudget,
+      sessionKey: spec.sessionTarget,
+      promptText: automationPrompt,
     })
 
     return {
@@ -325,6 +399,12 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
       lifecycleTerminalState: terminalState || null,
     }),
   }) || run
+  const budgetOutputText = extractAutomationLifecycleText(events, run.summary || '') || lifecycleSummary || run.summary || ''
+  currentRun = await refreshBudgetSnapshotForRun(deps, currentRun, {
+    sessionBudget: currentRun.meta?.sessionBudget ?? run.meta?.sessionBudget ?? null,
+    sessionKey: currentRun.meta?.sessionTarget ?? run.meta?.sessionTarget ?? '',
+    outputText: budgetOutputText,
+  })
 
   const deliveryMode = typeof run.meta?.deliveryMode === 'string' ? run.meta.deliveryMode : ''
   if (run.meta?.executionMode !== 'companion_acp' || !deliveryMode || deliveryMode === 'notification') {

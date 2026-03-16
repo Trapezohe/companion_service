@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { clearAutomationBudgetLedger } from './automation-budget-store.mjs'
 
 const FILE_MODE = 0o600
 const BLOCKED_REUSE_STATES = new Set(['error', 'timeout', 'cancelled'])
@@ -332,6 +333,9 @@ export async function sweepAutomationSessionBindings(input = {}) {
   }
 
   if (removedBindings.length > 0) {
+    await Promise.all(
+      removedBindings.map((binding) => clearAutomationBudgetLedger(binding.key).catch(() => false)),
+    )
     await persistStore()
   }
 

@@ -4,6 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
 import { rmSync } from 'node:fs'
+import {
+  clearAutomationBudgetStoreForTests,
+  getAutomationBudgetLedger,
+  setAutomationBudgetLedger,
+} from './automation-budget-store.mjs'
 
 let sharedPromise = null
 
@@ -27,6 +32,7 @@ async function getSharedModules() {
 async function withFreshStore(run) {
   const { store } = await getSharedModules()
   await store.clearAutomationSessionStoreForTests()
+  await clearAutomationBudgetStoreForTests()
   await run(store)
 }
 
@@ -137,6 +143,33 @@ test('sweepAutomationSessionBindings removes missing, expired, and retention-hit
 
     const bindings = await store.listAutomationSessionBindings()
     assert.deepEqual(bindings.map((binding) => binding.key), ['persistent:healthy'])
+  })
+})
+
+test('sweepAutomationSessionBindings also clears the matching persistent budget ledger', async () => {
+  await withFreshStore(async (store) => {
+    const now = 1_700_000_000_000
+    await store.setAutomationSessionBinding('persistent:budget-hit', 'acp-budget-hit', { updatedAt: now - (10 * 24 * 60 * 60 * 1000) })
+    await setAutomationBudgetLedger('persistent:budget-hit', {
+      approxInputTokens: 20,
+      approxOutputTokens: 10,
+      compactionCount: 1,
+      lastRollupAt: now - (10 * 24 * 60 * 60 * 1000),
+      health: 'warning',
+    })
+
+    const summary = await store.sweepAutomationSessionBindings({
+      now,
+      retentionByKey: {
+        'persistent:budget-hit': { maxAgeDays: 7 },
+      },
+      getSessionById: (sessionId) => ({ sessionId, state: 'idle' }),
+      listRuns: async () => ({ runs: [{ runId: 'run-1', meta: { sessionTarget: 'persistent:budget-hit', acpSessionId: 'acp-budget-hit' } }] }),
+    })
+
+    assert.equal(summary.removed, 1)
+    assert.equal(summary.reasons.retention_max_age, 1)
+    assert.equal(await getAutomationBudgetLedger('persistent:budget-hit'), null)
   })
 })
 
