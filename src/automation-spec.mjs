@@ -72,18 +72,35 @@ function normalizeScheduledWritePolicy(raw, executor) {
   }
 }
 
+function normalizeWorkflowTemplate(raw) {
+  return raw === 'research_synthesis' || raw === 'research_decision' ? raw : 'single_turn'
+}
+
+function normalizeWorkflowPolicy(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const maxStepAttempts = normalizePositiveCount(raw.maxStepAttempts)
+  const retryBackoffMinutes = normalizePositiveCount(raw.retryBackoffMinutes)
+  if (maxStepAttempts === null && retryBackoffMinutes === null) return null
+  return { maxStepAttempts, retryBackoffMinutes }
+}
+
 function normalizeWorkflow(raw) {
   // Workflow always normalizes to a stable single_turn shape so downstream diagnostics
   // and prompt builders do not need null checks for the default case.
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ...DEFAULT_WORKFLOW }
+    return { ...DEFAULT_WORKFLOW, policy: null }
   }
   return {
-    template: raw.template === 'research_synthesis' ? 'research_synthesis' : 'single_turn',
+    template: normalizeWorkflowTemplate(raw.template),
+    policy: normalizeWorkflowPolicy(raw.policy),
     state: raw.state && typeof raw.state === 'object' && !Array.isArray(raw.state)
       ? raw.state
       : null,
   }
+}
+
+function normalizeEscalationTemplate(raw) {
+  return raw === 'research_synthesis' || raw === 'research_decision' ? raw : null
 }
 
 function normalizeWatcherPolicy(raw) {
@@ -91,6 +108,8 @@ function normalizeWatcherPolicy(raw) {
   return {
     mode: raw.mode === 'change_only' ? 'change_only' : 'disabled',
     minNotifyIntervalMinutes: normalizePositiveCount(raw.minNotifyIntervalMinutes),
+    escalateWithWorkflow: raw.escalateWithWorkflow === true,
+    escalationTemplate: normalizeEscalationTemplate(raw.escalationTemplate),
   }
 }
 
@@ -109,6 +128,13 @@ function normalizeWatcherState(raw) {
         ? raw.lastClassifiedState
         : null,
     lastDeliveredAt: Number.isFinite(raw.lastDeliveredAt) ? Number(raw.lastDeliveredAt) : null,
+    lastEscalationRunId: typeof raw.lastEscalationRunId === 'string' && raw.lastEscalationRunId
+      ? raw.lastEscalationRunId
+      : null,
+    lastEscalationAt: Number.isFinite(raw.lastEscalationAt) ? Number(raw.lastEscalationAt) : null,
+    lastInvestigatedHash: typeof raw.lastInvestigatedHash === 'string' && raw.lastInvestigatedHash
+      ? raw.lastInvestigatedHash
+      : null,
   }
 }
 
@@ -130,6 +156,10 @@ function normalizeSessionBudgetPolicy(raw) {
   }
 }
 
+function normalizeCompactionReason(raw) {
+  return raw === 'day_rollup' || raw === 'budget_critical' || raw === 'run_threshold' ? raw : null
+}
+
 function normalizeSessionBudgetLedger(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   return {
@@ -137,6 +167,8 @@ function normalizeSessionBudgetLedger(raw) {
     approxOutputTokens: Number.isFinite(raw.approxOutputTokens) ? Math.max(0, Math.round(Number(raw.approxOutputTokens))) : 0,
     compactionCount: Number.isFinite(raw.compactionCount) ? Math.max(0, Math.round(Number(raw.compactionCount))) : 0,
     lastRollupAt: Number.isFinite(raw.lastRollupAt) ? Number(raw.lastRollupAt) : null,
+    lastCompactedAt: Number.isFinite(raw.lastCompactedAt) ? Number(raw.lastCompactedAt) : null,
+    lastCompactionReason: normalizeCompactionReason(raw.lastCompactionReason),
     health: raw.health === 'warning' || raw.health === 'critical' ? raw.health : 'healthy',
   }
 }
@@ -226,7 +258,8 @@ export function summarizeAutomationSpecs(jobs) {
       ).length,
     },
     workflowCapableJobs: specs.filter(
-      (spec) => spec.executor === 'companion_acp' && spec.workflow?.template === 'research_synthesis',
+      (spec) => spec.executor === 'companion_acp'
+        && (spec.workflow?.template === 'research_synthesis' || spec.workflow?.template === 'research_decision'),
     ).length,
     watcherConfiguredJobs: specs.filter((spec) => spec.watcher?.policy?.mode === 'change_only').length,
     budgetManagedJobs: specs.filter((spec) => Boolean(spec.sessionBudget?.policy)).length,

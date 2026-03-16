@@ -33,6 +33,10 @@ const AUTOMATION_FEATURE_FLAGS = {
   persistentBudgetV22: true,
   workflowKernelV22: true,
   watcherPolicyV23: true,
+  orchestrationRegistryV23: false,
+  watcherEscalationV23: false,
+  sessionQualityRollupV23: false,
+  recipeLayerV23: false,
 }
 
 async function exists(target) {
@@ -159,9 +163,36 @@ function countActiveWorkflowRuns(runs) {
     if (run.type !== 'cron' || run.meta?.executionMode !== 'companion_acp') return false
     const workflow = run.meta?.workflow
     if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) return false
-    if (workflow.template !== 'research_synthesis') return false
+    if (workflow.template !== 'research_synthesis' && workflow.template !== 'research_decision') return false
     return run.state === 'queued' || run.state === 'running' || run.state === 'retrying'
   }).length
+}
+
+function countActiveWorkflowTemplates(jobs) {
+  const specs = Array.isArray(jobs) ? jobs : []
+  const counts = {}
+  for (const job of specs) {
+    const template = job?.workflow?.template
+    if (template && template !== 'single_turn') {
+      counts[template] = (counts[template] || 0) + 1
+    }
+  }
+  return counts
+}
+
+function countWatcherEscalationsPending(jobs) {
+  const specs = Array.isArray(jobs) ? jobs : []
+  return specs.filter((job) =>
+    job?.watcher?.policy?.escalateWithWorkflow === true
+    && job?.watcher?.policy?.mode === 'change_only',
+  ).length
+}
+
+function countCriticalSessionQuality(jobs) {
+  const specs = Array.isArray(jobs) ? jobs : []
+  return specs.filter((job) =>
+    job?.sessionBudget?.ledger?.health === 'critical',
+  ).length
 }
 
 async function buildAutomationBudgetHealthSummary() {
@@ -292,7 +323,8 @@ export async function buildDiagnosticsPayload(params) {
   const servers = params.mcpManager?.getServers?.() || []
   const nativeHostRegistration = await checkNativeHostRegistration(config)
   const memoryShadow = await getMemoryShadowStatus().catch(() => null)
-  const automationSummary = summarizeAutomationSpecs(getJobs())
+  const automationJobs = getJobs()
+  const automationSummary = summarizeAutomationSpecs(automationJobs)
   const automationExecution = await buildAutomationExecutionSummary(acpSessions)
   const automationOutbox = await buildAutomationOutboxSummary()
   const automationLifecyclePhases = buildAutomationLifecyclePhaseSummary(runs)
@@ -337,6 +369,9 @@ export async function buildDiagnosticsPayload(params) {
       ...automationSummary,
       featureFlags: AUTOMATION_FEATURE_FLAGS,
       activeWorkflowRuns,
+      activeWorkflowTemplates: countActiveWorkflowTemplates(automationJobs),
+      watcherEscalationsPending: countWatcherEscalationsPending(automationJobs),
+      criticalSessionQuality: countCriticalSessionQuality(automationJobs),
       budgetHealth: automationBudgetHealth,
       execution: automationExecution,
       outbox: automationOutbox,
