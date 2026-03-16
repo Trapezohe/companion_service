@@ -877,3 +877,127 @@ test('executeAutomationJob rejects unsupported main-session companion jobs with 
     assert.equal(runs.runs[0].meta?.unsupportedReason, 'main_session_not_supported')
   })
 })
+
+test('deliverAutomationRunResult advances research_decision workflows through all 4 steps', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-decision-workflow',
+      type: 'cron',
+      state: 'running',
+      summary: 'Launching decision workflow',
+      meta: {
+        taskId: 'task-decision',
+        taskName: 'Decision workflow',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        automationPromptBase: 'Decide on the best approach.',
+        workflow: {
+          template: 'research_decision',
+          policy: null,
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'compare', kind: 'compare', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'decide', kind: 'decide', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'write', kind: 'write', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+            ],
+            lastWorkflowSummary: null,
+            lastContinuationAt: null,
+            terminalState: null,
+          },
+        },
+      },
+    })
+
+    const enqueuedPrompts = []
+    const stepTexts = ['Plan done.', 'Compare done.', 'Decide done.', 'Final output.']
+    let stepIndex = 0
+
+    const deps = {
+      listAcpEvents: () => ({ events: [{ type: 'text_delta', text: stepTexts[stepIndex++] || '' }] }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: `turn-${enqueuedPrompts.length}` }
+      },
+      enqueueAutomationOutboxItem: async (item) => item,
+    }
+
+    // Steps 1-3 should continue
+    for (let i = 0; i < 3; i++) {
+      const result = await executor.deliverAutomationRunResult({
+        runId: run.runId,
+        sessionId: 'acp-decision',
+        terminalState: 'done',
+      }, deps)
+      assert.equal(result.mode, 'workflow_continued', `step ${i} should continue`)
+    }
+
+    assert.equal(enqueuedPrompts.length, 3)
+    assert.match(enqueuedPrompts[0].input.prompt, /compare/)
+    assert.match(enqueuedPrompts[1].input.prompt, /decide/)
+    assert.match(enqueuedPrompts[2].input.prompt, /write/)
+
+    // Step 4 (write) should deliver
+    const final = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-decision',
+      terminalState: 'done',
+    }, deps)
+    assert.equal(final.mode, 'outbox')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.workflow?.state?.terminalState, 'done')
+    assert.equal(updated?.meta?.workflow?.state?.currentStepId, null)
+  })
+})
+
+test('deliverAutomationRunResult returns workflow_needs_retry when step fails with retry policy', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-needs-retry',
+      type: 'cron',
+      state: 'running',
+      summary: 'Running workflow',
+      meta: {
+        taskId: 'task-retry',
+        taskName: 'Retryable workflow',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        automationPromptBase: 'Research with retry.',
+        workflow: {
+          template: 'research_synthesis',
+          policy: { maxStepAttempts: 3, retryBackoffMinutes: 1 },
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'research', kind: 'research', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+            ],
+            lastWorkflowSummary: null,
+            lastContinuationAt: null,
+            terminalState: null,
+          },
+        },
+      },
+    })
+
+    const result = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-retry',
+      terminalState: 'failed',
+    }, {
+      listAcpEvents: () => ({ events: [{ type: 'text_delta', text: 'timeout error' }] }),
+    })
+
+    assert.equal(result.mode, 'workflow_needs_retry')
+    assert.equal(result.currentStepId, 'plan')
+    assert.equal(result.retryAttempt, 1)
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.taskState, 'retrying')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.state, 'needs_retry')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.retry?.attempt, 1)
+  })
+})

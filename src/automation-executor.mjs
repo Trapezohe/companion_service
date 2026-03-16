@@ -12,7 +12,9 @@ import {
   buildAutomationWorkflowPrompt,
   failAutomationWorkflowStep,
   initializeAutomationWorkflow,
+  resumeAutomationWorkflowRetry,
 } from './automation-workflow.mjs'
+import { isMultiTurnTemplate } from './automation-workflow-templates.mjs'
 import { resolvePersistentAutomationSession } from './automation-session-store.mjs'
 import {
   createAcpSession,
@@ -495,9 +497,10 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     runId,
     terminalState,
     stepSummary: lifecycleText || lifecycleSummary || currentRun.summary || run.summary || '',
+    handoffSummary: lifecycleText || lifecycleSummary || '',
   })
 
-  if (workflowProgress.workflow.template === 'research_synthesis') {
+  if (isMultiTurnTemplate(workflowProgress.workflow.template)) {
     currentRun = await deps.updateRun(runId, {
       meta: mergeRunMeta(currentRun, {
         workflow: workflowProgress.workflow,
@@ -567,6 +570,27 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           }),
         }) || currentRun
         return { mode: 'failed', reason: 'workflow_continue_failed', error: message }
+      }
+    }
+
+    if (workflowProgress.needsRetry) {
+      currentRun = await deps.updateRun(runId, {
+        state: 'failed',
+        summary: `Companion automation step needs retry: ${currentRun.meta?.taskName || 'unnamed job'}`,
+        meta: mergeRunMeta(currentRun, {
+          taskState: 'retrying',
+          stepState: 'done',
+          workflow: workflowProgress.workflow,
+          lifecycleSummary,
+          lifecycleTerminalState: terminalState || null,
+        }),
+      }) || currentRun
+      return {
+        mode: 'workflow_needs_retry',
+        runId,
+        sessionId,
+        currentStepId: workflowProgress.currentStep?.id || null,
+        retryAttempt: workflowProgress.currentStep?.retry?.attempt || 0,
       }
     }
   }
