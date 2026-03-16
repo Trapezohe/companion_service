@@ -28,6 +28,10 @@ import {
   clearCronStoreForTests,
   upsertJob,
 } from './cron-store.mjs'
+import {
+  clearAutomationBudgetStoreForTests,
+  setAutomationBudgetLedger,
+} from './automation-budget-store.mjs'
 
 const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
 const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-diagnostics-test-'))
@@ -40,6 +44,7 @@ after(async () => {
   await clearBrowserLedgerForTests().catch(() => undefined)
   await clearAutomationSessionStoreForTests().catch(() => undefined)
   await clearCronStoreForTests().catch(() => undefined)
+  await clearAutomationBudgetStoreForTests().catch(() => undefined)
   cleanupAllAcpSessions()
   if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
   else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
@@ -345,11 +350,13 @@ test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', 
   await clearRunStoreForTests()
   await clearApprovalStoreForTests()
   await clearCronStoreForTests()
+  await clearAutomationBudgetStoreForTests()
   cleanupAllAcpSessions()
   t.after(async () => {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
     await clearCronStoreForTests()
+    await clearAutomationBudgetStoreForTests()
     cleanupAllAcpSessions()
   })
 
@@ -358,6 +365,13 @@ test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', 
     name: 'Main task',
     executor: 'extension_chat',
     sessionTarget: 'main',
+    scheduledWritePolicy: {
+      mode: 'allowlist',
+      allowedTools: ['write_file'],
+      allowedPaths: ['/tmp/reports'],
+      allowedCommandPrefixes: null,
+      enforcement: 'extension_hard',
+    },
     delivery: { mode: 'notification' },
   })
   await upsertJob({
@@ -415,21 +429,25 @@ test('buildDiagnosticsPayload exposes lifecycle-capable automation job counts', 
 
   assert.equal(payload.automation.totalJobs, 2)
   assert.equal(payload.automation.lifecycleCapableJobs, 1)
-  assert.equal(payload.automation.allowlistScheduledWrites, 1)
+  assert.equal(payload.automation.allowlistScheduledWrites, 2)
   assert.equal(payload.automation.workflowCapableJobs, 1)
   assert.equal(payload.automation.watcherConfiguredJobs, 1)
   assert.equal(payload.automation.budgetManagedJobs, 1)
+  assert.equal(payload.automation.scheduledWriteEnforcements.extensionHard, 1)
+  assert.equal(payload.automation.scheduledWriteEnforcements.promptOnly, 1)
 })
 
 test('buildDiagnosticsPayload exposes workflow step ledgers for recent companion automation runs', async (t) => {
   await clearRunStoreForTests()
   await clearApprovalStoreForTests()
   await clearCronStoreForTests()
+  await clearAutomationBudgetStoreForTests()
   cleanupAllAcpSessions()
   t.after(async () => {
     await clearRunStoreForTests()
     await clearApprovalStoreForTests()
     await clearCronStoreForTests()
+    await clearAutomationBudgetStoreForTests()
     cleanupAllAcpSessions()
   })
 
@@ -473,10 +491,67 @@ test('buildDiagnosticsPayload exposes workflow step ledgers for recent companion
   })
 
   assert.equal(payload.automation.recentLifecyclePhases[0]?.runId, 'run-workflow-diagnostics')
+  assert.equal(payload.automation.activeWorkflowRuns, 1)
   assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.template, 'research_synthesis')
   assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.currentStepId, 'research')
   assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.steps?.[0]?.summary, 'Plan ready.')
   assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.lastWorkflowSummary, 'Plan ready.')
+})
+
+test('buildDiagnosticsPayload summarizes companion budget health across tracked persistent sessions', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await clearCronStoreForTests()
+  await clearAutomationBudgetStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    await clearCronStoreForTests()
+    await clearAutomationBudgetStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  await setAutomationBudgetLedger('persistent:healthy-loop', {
+    approxInputTokens: 1200,
+    approxOutputTokens: 900,
+    compactionCount: 1,
+    lastRollupAt: 1_700_000_000_000,
+    health: 'healthy',
+  })
+  await setAutomationBudgetLedger('persistent:warning-loop', {
+    approxInputTokens: 2400,
+    approxOutputTokens: 1600,
+    compactionCount: 4,
+    lastRollupAt: 1_700_000_100_000,
+    health: 'warning',
+  })
+  await setAutomationBudgetLedger('persistent:critical-loop', {
+    approxInputTokens: 3400,
+    approxOutputTokens: 2600,
+    compactionCount: 8,
+    lastRollupAt: 1_700_000_200_000,
+    health: 'critical',
+  })
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  assert.equal(payload.automation.budgetHealth.trackedSessions, 3)
+  assert.equal(payload.automation.budgetHealth.healthy, 1)
+  assert.equal(payload.automation.budgetHealth.warning, 1)
+  assert.equal(payload.automation.budgetHealth.critical, 1)
+  assert.equal(payload.automation.budgetHealth.lastRollupAt, 1_700_000_200_000)
 })
 
 

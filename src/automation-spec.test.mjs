@@ -256,6 +256,8 @@ test('summarizeAutomationSpecs exposes next-phase capability counts', () => {
   ])
 
   assert.equal(summary.allowlistScheduledWrites, 2)
+  assert.equal(summary.scheduledWriteEnforcements.extensionHard, 1)
+  assert.equal(summary.scheduledWriteEnforcements.promptOnly, 1)
   assert.equal(summary.workflowCapableJobs, 1)
   assert.equal(summary.watcherConfiguredJobs, 1)
   assert.equal(summary.budgetManagedJobs, 1)

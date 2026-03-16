@@ -215,6 +215,16 @@ export function summarizeAutomationSpecs(jobs) {
     companionExecutableJobs: specs.filter((spec) => spec.executor === 'companion_acp' && spec.supported).length,
     lifecycleCapableJobs: specs.filter((spec) => spec.lifecycleCapable).length,
     allowlistScheduledWrites: specs.filter((spec) => spec.scheduledWritePolicy?.mode === 'allowlist').length,
+    scheduledWriteEnforcements: {
+      extensionHard: specs.filter(
+        (spec) => spec.scheduledWritePolicy?.mode === 'allowlist'
+          && spec.scheduledWritePolicy?.enforcement === 'extension_hard',
+      ).length,
+      promptOnly: specs.filter(
+        (spec) => spec.scheduledWritePolicy?.mode === 'allowlist'
+          && spec.scheduledWritePolicy?.enforcement === 'prompt_only',
+      ).length,
+    },
     workflowCapableJobs: specs.filter(
       (spec) => spec.executor === 'companion_acp' && spec.workflow?.template === 'research_synthesis',
     ).length,

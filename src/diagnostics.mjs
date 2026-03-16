@@ -21,6 +21,7 @@ import {
   listAutomationSessionBindings,
 } from './automation-session-store.mjs'
 import { listAutomationOutboxItems } from './automation-outbox.mjs'
+import { listAutomationBudgetLedgers } from './automation-budget-store.mjs'
 import {
   NATIVE_HOST_NAMES,
   getConfiguredExtensionIds,
@@ -63,8 +64,6 @@ async function resolveExecutable(command) {
   }
   return false
 }
-
-
 
 function buildCapabilitySummary(supportedFeatures = {}) {
   const featureEntries = Object.entries({
@@ -153,6 +152,40 @@ function buildAutomationLifecyclePhaseSummary(runs) {
           ? JSON.parse(JSON.stringify(run.meta.workflow))
           : null,
     }))
+}
+
+function countActiveWorkflowRuns(runs) {
+  return runs.runs.filter((run) => {
+    if (run.type !== 'cron' || run.meta?.executionMode !== 'companion_acp') return false
+    const workflow = run.meta?.workflow
+    if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) return false
+    if (workflow.template !== 'research_synthesis') return false
+    return run.state === 'queued' || run.state === 'running' || run.state === 'retrying'
+  }).length
+}
+
+async function buildAutomationBudgetHealthSummary() {
+  const ledgers = await listAutomationBudgetLedgers().catch(() => [])
+  const summary = {
+    trackedSessions: ledgers.length,
+    healthy: 0,
+    warning: 0,
+    critical: 0,
+    lastRollupAt: null,
+  }
+
+  for (const entry of ledgers) {
+    const health = entry?.ledger?.health === 'warning' || entry?.ledger?.health === 'critical'
+      ? entry.ledger.health
+      : 'healthy'
+    summary[health] += 1
+    const rollupAt = Number.isFinite(entry?.ledger?.lastRollupAt) ? Number(entry.ledger.lastRollupAt) : null
+    if (rollupAt && (!summary.lastRollupAt || rollupAt > summary.lastRollupAt)) {
+      summary.lastRollupAt = rollupAt
+    }
+  }
+
+  return summary
 }
 
 async function buildMediaNormalizationSummary(params) {
@@ -263,6 +296,8 @@ export async function buildDiagnosticsPayload(params) {
   const automationExecution = await buildAutomationExecutionSummary(acpSessions)
   const automationOutbox = await buildAutomationOutboxSummary()
   const automationLifecyclePhases = buildAutomationLifecyclePhaseSummary(runs)
+  const automationBudgetHealth = await buildAutomationBudgetHealthSummary()
+  const activeWorkflowRuns = countActiveWorkflowRuns(runs)
   const automationFailures = runs.runs
     .filter((run) => run.type === 'cron' && run.meta?.executionMode === 'companion_acp' && run.state === 'failed')
     .slice(0, 5)
@@ -301,6 +336,8 @@ export async function buildDiagnosticsPayload(params) {
     automation: {
       ...automationSummary,
       featureFlags: AUTOMATION_FEATURE_FLAGS,
+      activeWorkflowRuns,
+      budgetHealth: automationBudgetHealth,
       execution: automationExecution,
       outbox: automationOutbox,
       recentLifecyclePhases: automationLifecyclePhases,

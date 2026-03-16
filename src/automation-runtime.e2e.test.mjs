@@ -41,7 +41,9 @@ async function getSharedModules() {
       const executor = await import('./automation-executor.mjs')
       const diagnostics = await import('./diagnostics.mjs')
       const acp = await import('./acp-session.mjs')
-      return { runStore, sessionStore, outbox, executor, diagnostics, acp }
+      const cronStore = await import('./cron-store.mjs')
+      const budgetStore = await import('./automation-budget-store.mjs')
+      return { runStore, sessionStore, outbox, executor, diagnostics, acp, cronStore, budgetStore }
     })()
   }
 
@@ -49,12 +51,14 @@ async function getSharedModules() {
 }
 
 async function withFreshState(run) {
-  const { runStore, sessionStore, outbox, acp, executor, diagnostics } = await getSharedModules()
+  const { runStore, sessionStore, outbox, acp, executor, diagnostics, cronStore, budgetStore } = await getSharedModules()
   await runStore.clearRunStoreForTests()
   await sessionStore.clearAutomationSessionStoreForTests()
   await outbox.clearAutomationOutboxForTests()
+  await cronStore.clearCronStoreForTests()
+  await budgetStore.clearAutomationBudgetStoreForTests()
   acp.cleanupAllAcpSessions()
-  await run({ runStore, sessionStore, outbox, acp, executor, diagnostics })
+  await run({ runStore, sessionStore, outbox, acp, executor, diagnostics, cronStore, budgetStore })
 }
 
 const BASE_FEATURES = {
@@ -292,5 +296,62 @@ test('automation runtime injects watcher digest headings into persistent compani
     assert.match(capturedPrompt, /What Changed/)
     assert.match(capturedPrompt, /Why It Matters/)
     assert.match(capturedPrompt, /Action/)
+  })
+})
+
+test('automation diagnostics summarize prompt-only write guards, active workflows, and budget alerts', async () => {
+  await withFreshState(async ({ executor, diagnostics, acp, cronStore, budgetStore }) => {
+    const job = createJob({
+      id: 'job-workflow-budget',
+      name: 'Workflow loop',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      sessionTarget: 'persistent:workflow-loop',
+      automationProfile: 'deep_research_brief',
+      scheduledWritePolicy: {
+        mode: 'allowlist',
+        allowedTools: ['write_file'],
+        allowedPaths: ['/tmp/reports'],
+        allowedCommandPrefixes: null,
+        enforcement: 'prompt_only',
+      },
+      workflow: {
+        template: 'research_synthesis',
+        state: null,
+      },
+      sessionBudget: {
+        policy: {
+          mode: 'deep_research',
+          maxContextBudget: 24000,
+          dayRollupEnabled: true,
+          compactAfterRuns: 6,
+        },
+        ledger: null,
+      },
+      delivery: { mode: 'chat', notification: false, chat: true, target: null },
+    })
+
+    await cronStore.upsertJob(job)
+    await budgetStore.setAutomationBudgetLedger('persistent:workflow-loop', {
+      approxInputTokens: 18000,
+      approxOutputTokens: 4000,
+      compactionCount: 4,
+      lastRollupAt: 1_700_000_000_000,
+      health: 'warning',
+    })
+
+    await executor.executeAutomationJob(job, {
+      createAcpSession: () => acp.createAcpSession({ agentType: 'codex', origin: 'automation' }),
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId) => ({ ok: true, sessionId, turnId: 'turn-workflow-1' }),
+    })
+
+    const payload = await buildDiagnostics(diagnostics)
+    assert.equal(payload.automation.workflowCapableJobs, 1)
+    assert.equal(payload.automation.activeWorkflowRuns, 1)
+    assert.equal(payload.automation.scheduledWriteEnforcements.extensionHard, 0)
+    assert.equal(payload.automation.scheduledWriteEnforcements.promptOnly, 1)
+    assert.equal(payload.automation.budgetHealth.warning, 1)
+    assert.equal(payload.automation.budgetHealth.critical, 0)
   })
 })
