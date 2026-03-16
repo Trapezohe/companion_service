@@ -25,6 +25,9 @@ const WORKFLOW_TEMPLATES = {
   },
 }
 
+Object.values(WORKFLOW_TEMPLATES).forEach((t) => Object.freeze(t.steps.forEach((s) => Object.freeze(s))) || Object.freeze(t))
+Object.freeze(WORKFLOW_TEMPLATES)
+
 const MULTI_TURN_TEMPLATES = new Set(Object.keys(WORKFLOW_TEMPLATES))
 
 export function getWorkflowTemplate(templateName) {

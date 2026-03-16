@@ -21,7 +21,7 @@ function findCurrentStepIndex(state) {
     ? state.steps.findIndex((step) => step?.id === state.currentStepId)
     : -1
   if (byCurrentId >= 0) return byCurrentId
-  return state.steps.findIndex((step) => step?.state === 'running' || step?.state === 'queued')
+  return state.steps.findIndex((step) => step?.state === 'running' || step?.state === 'queued' || step?.state === 'needs_retry')
 }
 
 function normalizePolicy(raw) {
@@ -120,7 +120,7 @@ export function advanceAutomationWorkflow(workflow, {
       currentStep.retry = {
         attempt: currentAttempt + 1,
         lastError: normalizedSummary || 'step failed',
-        nextRetryAt: now + retryBackoff * 60_000 * Math.pow(2, currentAttempt),
+        nextRetryAt: now + Math.min(retryBackoff * 60_000 * Math.pow(2, currentAttempt), 60 * 60_000),
       }
       return makeResult(template, policy, state, {
         currentStep: clone(currentStep),
