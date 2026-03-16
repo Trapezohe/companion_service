@@ -168,12 +168,15 @@ test('normalizeAutomationSpec carries next-phase contract fields and downgrades 
   })
   assert.deepEqual(spec.workflow, {
     template: 'research_synthesis',
+    policy: null,
     state: null,
   })
   assert.deepEqual(spec.watcher, {
     policy: {
       mode: 'change_only',
       minNotifyIntervalMinutes: 60,
+      escalateWithWorkflow: false,
+      escalationTemplate: null,
     },
     state: null,
   })
@@ -206,6 +209,140 @@ test('normalizeAutomationSpec clears allowlist details when scheduled write mode
     allowedCommandPrefixes: null,
     enforcement: 'extension_hard',
   })
+})
+
+// ── v2.3 contract extension tests ──
+
+test('normalizeAutomationSpec projects v2.3 workflow.policy and research_decision template', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:decision-loop',
+    workflow: {
+      template: 'research_decision',
+      policy: {
+        maxStepAttempts: 3,
+        retryBackoffMinutes: 5,
+      },
+      state: null,
+    },
+  }))
+
+  assert.equal(spec.workflow.template, 'research_decision')
+  assert.deepEqual(spec.workflow.policy, {
+    maxStepAttempts: 3,
+    retryBackoffMinutes: 5,
+  })
+  assert.equal(spec.supported, true)
+})
+
+test('normalizeAutomationSpec defaults workflow.policy to null for legacy tasks', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:v22-loop',
+    workflow: {
+      template: 'research_synthesis',
+      state: null,
+    },
+  }))
+
+  assert.equal(spec.workflow.policy, null)
+})
+
+test('normalizeAutomationSpec projects v2.3 watcher escalation fields with safe defaults', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:watcher-loop',
+    watcher: {
+      policy: {
+        mode: 'change_only',
+        minNotifyIntervalMinutes: 60,
+        escalateWithWorkflow: true,
+        escalationTemplate: 'research_synthesis',
+      },
+      state: {
+        lastObservationHash: 'h1',
+        lastObservationSummary: 's1',
+        lastClassifiedState: 'changed',
+        lastDeliveredAt: 1234,
+        lastEscalationRunId: 'run-esc-1',
+        lastEscalationAt: 5000,
+        lastInvestigatedHash: 'h1',
+      },
+    },
+  }))
+
+  assert.equal(spec.watcher.policy.escalateWithWorkflow, true)
+  assert.equal(spec.watcher.policy.escalationTemplate, 'research_synthesis')
+  assert.equal(spec.watcher.state.lastEscalationRunId, 'run-esc-1')
+  assert.equal(spec.watcher.state.lastEscalationAt, 5000)
+  assert.equal(spec.watcher.state.lastInvestigatedHash, 'h1')
+})
+
+test('normalizeAutomationSpec defaults watcher escalation to disabled for legacy tasks', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    watcher: {
+      policy: { mode: 'change_only', minNotifyIntervalMinutes: 30 },
+      state: null,
+    },
+  }))
+
+  assert.equal(spec.watcher.policy.escalateWithWorkflow, false)
+  assert.equal(spec.watcher.policy.escalationTemplate, null)
+})
+
+test('normalizeAutomationSpec projects v2.3 session budget compaction metadata', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    sessionBudget: {
+      policy: { mode: 'default', maxContextBudget: null, dayRollupEnabled: true, compactAfterRuns: null },
+      ledger: {
+        approxInputTokens: 1200,
+        approxOutputTokens: 900,
+        compactionCount: 2,
+        lastRollupAt: 1_700_000,
+        health: 'warning',
+        lastCompactedAt: 1_600_000,
+        lastCompactionReason: 'day_rollup',
+      },
+    },
+  }))
+
+  assert.equal(spec.sessionBudget.ledger.lastCompactedAt, 1_600_000)
+  assert.equal(spec.sessionBudget.ledger.lastCompactionReason, 'day_rollup')
+})
+
+test('normalizeAutomationSpec defaults compaction metadata to null for legacy ledgers', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    sessionBudget: {
+      policy: { mode: 'default', maxContextBudget: null, dayRollupEnabled: true, compactAfterRuns: null },
+      ledger: {
+        approxInputTokens: 100,
+        approxOutputTokens: 50,
+        compactionCount: 0,
+        lastRollupAt: null,
+        health: 'healthy',
+      },
+    },
+  }))
+
+  assert.equal(spec.sessionBudget.ledger.lastCompactedAt, null)
+  assert.equal(spec.sessionBudget.ledger.lastCompactionReason, null)
+})
+
+test('summarizeAutomationSpecs counts research_decision as workflow-capable', () => {
+  const summary = summarizeAutomationSpecs([
+    createJob({
+      id: 'job-decision',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      sessionTarget: 'persistent:decision-loop',
+      workflow: { template: 'research_decision', state: null },
+    }),
+  ])
+
+  assert.equal(summary.workflowCapableJobs, 1)
 })
 
 test('summarizeAutomationSpecs exposes next-phase capability counts', () => {

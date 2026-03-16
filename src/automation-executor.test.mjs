@@ -877,3 +877,313 @@ test('executeAutomationJob rejects unsupported main-session companion jobs with 
     assert.equal(runs.runs[0].meta?.unsupportedReason, 'main_session_not_supported')
   })
 })
+
+test('deliverAutomationRunResult advances research_decision workflows through all 4 steps', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-decision-workflow',
+      type: 'cron',
+      state: 'running',
+      summary: 'Launching decision workflow',
+      meta: {
+        taskId: 'task-decision',
+        taskName: 'Decision workflow',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        automationPromptBase: 'Decide on the best approach.',
+        workflow: {
+          template: 'research_decision',
+          policy: null,
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'compare', kind: 'compare', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'decide', kind: 'decide', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'write', kind: 'write', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+            ],
+            lastWorkflowSummary: null,
+            lastContinuationAt: null,
+            terminalState: null,
+          },
+        },
+      },
+    })
+
+    const enqueuedPrompts = []
+    const stepTexts = ['Plan done.', 'Compare done.', 'Decide done.', 'Final output.']
+    let stepIndex = 0
+
+    const deps = {
+      listAcpEvents: () => ({ events: [{ type: 'text_delta', text: stepTexts[stepIndex++] || '' }] }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: `turn-${enqueuedPrompts.length}` }
+      },
+      enqueueAutomationOutboxItem: async (item) => item,
+    }
+
+    // Steps 1-3 should continue
+    for (let i = 0; i < 3; i++) {
+      const result = await executor.deliverAutomationRunResult({
+        runId: run.runId,
+        sessionId: 'acp-decision',
+        terminalState: 'done',
+      }, deps)
+      assert.equal(result.mode, 'workflow_continued', `step ${i} should continue`)
+    }
+
+    assert.equal(enqueuedPrompts.length, 3)
+    assert.match(enqueuedPrompts[0].input.prompt, /compare/)
+    assert.match(enqueuedPrompts[1].input.prompt, /decide/)
+    assert.match(enqueuedPrompts[2].input.prompt, /write/)
+
+    // Step 4 (write) should deliver
+    const final = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-decision',
+      terminalState: 'done',
+    }, deps)
+    assert.equal(final.mode, 'outbox')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.workflow?.state?.terminalState, 'done')
+    assert.equal(updated?.meta?.workflow?.state?.currentStepId, null)
+  })
+})
+
+test('executeAutomationJob injects recipe section headings in workflow prompts', async () => {
+  await withFreshState(async ({ executor }) => {
+    const sessions = new Map()
+    const enqueued = []
+
+    await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      workflow: {
+        template: 'research_synthesis',
+        state: null,
+      },
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-recipe-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-recipe-1' }
+      },
+    })
+
+    assert.equal(enqueued.length, 1)
+    // Recipe sections for plan step should be in the prompt
+    assert.match(enqueued[0].input.prompt, /Scope, Evidence Targets, Execution Order/)
+    assert.match(enqueued[0].input.prompt, /Define the research scope/)
+  })
+})
+
+test('deliverAutomationRunResult returns workflow_needs_retry when step fails with retry policy', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-needs-retry',
+      type: 'cron',
+      state: 'running',
+      summary: 'Running workflow',
+      meta: {
+        taskId: 'task-retry',
+        taskName: 'Retryable workflow',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        automationPromptBase: 'Research with retry.',
+        workflow: {
+          template: 'research_synthesis',
+          policy: { maxStepAttempts: 3, retryBackoffMinutes: 1 },
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'research', kind: 'research', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+              { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+            ],
+            lastWorkflowSummary: null,
+            lastContinuationAt: null,
+            terminalState: null,
+          },
+        },
+      },
+    })
+
+    const result = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-retry',
+      terminalState: 'failed',
+    }, {
+      listAcpEvents: () => ({ events: [{ type: 'text_delta', text: 'timeout error' }] }),
+    })
+
+    assert.equal(result.mode, 'workflow_needs_retry')
+    assert.equal(result.currentStepId, 'plan')
+    assert.equal(result.retryAttempt, 1)
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.taskState, 'retrying')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.state, 'needs_retry')
+    assert.equal(updated?.meta?.workflow?.state?.steps?.[0]?.retry?.attempt, 1)
+  })
+})
+
+test('executeAutomationJob escalates watcher job to workflow when change is detected', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+    const enqueued = []
+    const patchCalls = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          lastObservationHash: 'hash-new',
+          lastInvestigatedHash: 'hash-old',
+        },
+      },
+    }), {
+      createAcpSession: (input) => {
+        const session = { sessionId: 'acp-watcher-1', state: 'idle', ...input }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (id) => sessions.get(id) ?? null,
+      attachAcpSessionRunId: () => ({}),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-1' }
+      },
+      patchJobWatcherState: async (taskId, patch) => {
+        patchCalls.push({ taskId, patch })
+        return true
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(enqueued.length, 1)
+
+    // The prompt should contain research_synthesis workflow markers
+    const prompt = enqueued[0].input.prompt
+    assert.match(prompt, /research_synthesis/)
+
+    // Run metadata should record escalation details
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation?.shouldEscalate, true)
+    assert.equal(run?.meta?.watcherEscalation?.escalationTemplate, 'research_synthesis')
+    assert.equal(run?.meta?.watcherEscalation?.reason, 'change_detected')
+    assert.ok(run?.meta?.watcherStatePatch)
+    assert.equal(run?.meta?.watcherStatePatch?.lastInvestigatedHash, 'hash-new')
+    // runId should be backfilled with the real run ID (not null)
+    assert.equal(run?.meta?.watcherStatePatch?.lastEscalationRunId, result.runId)
+
+    // Workflow should be initialized with escalation template
+    assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
+
+    // watcherStatePatch should be persisted back to the job store
+    assert.equal(patchCalls.length, 1)
+    assert.equal(patchCalls[0].taskId, 'job-1')
+    assert.equal(patchCalls[0].patch.lastInvestigatedHash, 'hash-new')
+    assert.equal(patchCalls[0].patch.lastEscalationRunId, result.runId)
+  })
+})
+
+test('executeAutomationJob skips watcher escalation when hash is already investigated', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+    const enqueued = []
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          lastObservationHash: 'hash-same',
+          lastInvestigatedHash: 'hash-same',
+        },
+      },
+    }), {
+      createAcpSession: (input) => {
+        const session = { sessionId: 'acp-watcher-2', state: 'idle', ...input }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (id) => sessions.get(id) ?? null,
+      attachAcpSessionRunId: () => ({}),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+
+    // Should NOT escalate — same hash already investigated
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation?.shouldEscalate, false)
+    assert.equal(run?.meta?.watcherEscalation?.reason, 'already_investigated')
+
+    // Workflow should remain single_turn (no escalation override)
+    assert.equal(run?.meta?.workflow?.template, 'single_turn')
+  })
+})
+
+test('executeAutomationJob skips watcher escalation when observation hash is empty', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          // No observation hash yet — first run before baseline is established
+          lastObservationHash: null,
+          lastInvestigatedHash: null,
+        },
+      },
+    }), {
+      createAcpSession: (input) => {
+        const session = { sessionId: 'acp-watcher-3', state: 'idle', ...input }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (id) => sessions.get(id) ?? null,
+      attachAcpSessionRunId: () => ({}),
+      enqueuePrompt: async () => ({ ok: true, sessionId: 'acp-watcher-3', turnId: 'turn-1' }),
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+
+    // No escalation — empty observation hash means no concrete observation to investigate
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation, undefined)
+    assert.equal(run?.meta?.workflow?.template, 'single_turn')
+  })
+})

@@ -196,3 +196,57 @@ test('upsertJob preserves nextRunAt metadata', async () => {
     assert.equal(jobs[0].nextRunAt, 123456)
   })
 })
+
+test('patchJobWatcherState merges state patch into existing job watcher state', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.upsertJob({
+      id: 'watcher-job-1',
+      name: 'Watcher job',
+      enabled: true,
+      schedule: { kind: 'interval', minutes: 60 },
+      watcher: {
+        policy: { mode: 'change_only', escalateWithWorkflow: true, escalationTemplate: 'research_synthesis' },
+        state: { lastObservationHash: 'hash-new', lastInvestigatedHash: 'hash-old', lastEscalationRunId: null },
+      },
+    })
+
+    const patched = await mod.patchJobWatcherState('watcher-job-1', {
+      lastInvestigatedHash: 'hash-new',
+      lastEscalationRunId: 'run-42',
+      lastEscalationAt: 1700000000000,
+    })
+    assert.equal(patched, true)
+
+    const jobs = mod.getJobs()
+    const job = jobs.find((j) => j.id === 'watcher-job-1')
+    assert.equal(job.watcher.state.lastInvestigatedHash, 'hash-new')
+    assert.equal(job.watcher.state.lastEscalationRunId, 'run-42')
+    assert.equal(job.watcher.state.lastEscalationAt, 1700000000000)
+    // Original field preserved
+    assert.equal(job.watcher.state.lastObservationHash, 'hash-new')
+  })
+})
+
+test('patchJobWatcherState returns false for unknown job', async () => {
+  await withTempHome(async ({ mod }) => {
+    const result = await mod.patchJobWatcherState('nonexistent-job', { lastInvestigatedHash: 'hash' })
+    assert.equal(result, false)
+  })
+})
+
+test('patchJobWatcherState initializes watcher.state if missing', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.upsertJob({
+      id: 'bare-job',
+      name: 'Bare',
+      enabled: true,
+      schedule: { kind: 'interval', minutes: 30 },
+    })
+
+    const patched = await mod.patchJobWatcherState('bare-job', { lastInvestigatedHash: 'hash-abc' })
+    assert.equal(patched, true)
+
+    const jobs = mod.getJobs()
+    assert.equal(jobs.find((j) => j.id === 'bare-job').watcher.state.lastInvestigatedHash, 'hash-abc')
+  })
+})

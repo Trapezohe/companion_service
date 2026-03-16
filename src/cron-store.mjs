@@ -235,6 +235,30 @@ export async function ackPendingRuns(input) {
   return removed
 }
 
+/**
+ * Merge a partial watcher state patch into a job's watcher.state.
+ * Used by the executor to persist escalation decisions (lastInvestigatedHash,
+ * lastEscalationRunId, lastEscalationAt) back to the job store so subsequent
+ * timer fires see updated state and skip duplicate escalation.
+ *
+ * @param {string} taskId
+ * @param {object} statePatch
+ * @returns {Promise<boolean>}
+ */
+export async function patchJobWatcherState(taskId, statePatch) {
+  if (!taskId || !statePatch || typeof statePatch !== 'object') return false
+  const idx = store.jobs.findIndex((j) => j.id === taskId)
+  if (idx < 0) return false
+
+  const job = store.jobs[idx]
+  if (!job.watcher || typeof job.watcher !== 'object') job.watcher = {}
+  if (!job.watcher.state || typeof job.watcher.state !== 'object') job.watcher.state = {}
+
+  Object.assign(job.watcher.state, statePatch)
+  await saveStore()
+  return true
+}
+
 export async function clearCronStoreForTests() {
   store = { jobs: [], pending: [] }
   await saveStore()

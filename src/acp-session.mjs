@@ -12,6 +12,7 @@ import {
   parseAgentLine as parseAgentLineFromEvents,
   synthesizeTerminalEvent as synthesizeTerminalEventFromEvents,
 } from './acp-events.mjs'
+import { signalChildProcessTree } from './runtime.mjs'
 import {
   classifyNoOutputDiagnostic as classifyNoOutputDiagnosticFromModule,
   emitNoOutputDiagnosticIfNeeded as emitNoOutputDiagnosticIfNeededFromModule,
@@ -623,9 +624,9 @@ export function cancelAcpSession(sessionId) {
       return
     }
 
-    try { session.child.kill('SIGTERM') } catch { /* ignore */ }
+    try { signalChildProcessTree(session.child, 'SIGTERM') } catch { /* ignore */ }
     const killTimer = setTimeout(() => {
-      try { if (!session.child.killed) session.child.kill('SIGKILL') } catch { /* ignore */ }
+      try { if (!session.child.killed) signalChildProcessTree(session.child, 'SIGKILL') } catch { /* ignore */ }
     }, CANCEL_KILL_DELAY_MS)
     if (killTimer.unref) killTimer.unref()
 
@@ -682,7 +683,7 @@ export function cleanupAllAcpSessions() {
     if (session.timeoutRef) clearTimeout(session.timeoutRef)
     clearNoOutputWatchdog(session)
     if (session.child && session.child.exitCode === null) {
-      try { session.child.kill('SIGTERM') } catch { /* ignore */ }
+      try { signalChildProcessTree(session.child, 'SIGTERM') } catch { /* ignore */ }
     }
   }
   acpSessions.clear()

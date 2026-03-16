@@ -31,6 +31,7 @@ New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 Copy-Item (Join-Path $root "packaging/windows/run-install.cmd") (Join-Path $sourceDir "run-install.cmd")
+Copy-Item (Join-Path $root "packaging/windows/license.rtf") (Join-Path $sourceDir "license.rtf")
 $psTemplate = Get-Content (Join-Path $root "packaging/windows/install-companion.ps1") -Raw
 $psRendered = $psTemplate -replace "__COMPANION_VERSION__", $Version
 Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRendered -Encoding UTF8
@@ -59,6 +60,7 @@ if ($plan.builder -eq "wix") {
   }
 
   wix build `
+    -ext WixToolset.UI.wixext `
     -define ProductVersion=$Version `
     -define InstallerSourceDir=$sourceDir `
     -o $msiPath `

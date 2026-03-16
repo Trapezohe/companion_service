@@ -12,7 +12,10 @@ import {
   buildAutomationWorkflowPrompt,
   failAutomationWorkflowStep,
   initializeAutomationWorkflow,
+  resumeAutomationWorkflowRetry,
 } from './automation-workflow.mjs'
+import { isMultiTurnTemplate } from './automation-workflow-templates.mjs'
+import { evaluateWatcherEscalation } from './automation-watcher.mjs'
 import { resolvePersistentAutomationSession } from './automation-session-store.mjs'
 import {
   createAcpSession,
@@ -32,6 +35,7 @@ import {
   getAutomationBudgetLedger,
   setAutomationBudgetLedger,
 } from './automation-budget-store.mjs'
+import { patchJobWatcherState } from './cron-store.mjs'
 
 function normalizeTimeoutMs(value) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -316,6 +320,7 @@ function getExecutorDeps(overrides = {}) {
     enqueueAutomationOutboxItem,
     getAutomationBudgetLedger,
     setAutomationBudgetLedger,
+    patchJobWatcherState,
     fetchImpl: fetch,
     ...overrides,
   }
@@ -356,20 +361,66 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   }
 
-  const workflow = initializeAutomationWorkflow(spec.workflow)
+  const queuedRun = await deps.createRun({
+    type: 'cron',
+    state: 'queued',
+    summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
+    meta: buildAutomationMeta(job, spec),
+  })
+
+  // Watcher escalation runs after createRun() so we have a real runId for the
+  // state patch. We also guard against empty currentHash — without a concrete
+  // observation there is nothing to investigate.
+  const observationHash = typeof spec.watcher?.state?.lastObservationHash === 'string'
+    ? spec.watcher.state.lastObservationHash
+    : ''
+  let watcherEscalation = null
+  if (spec.watcher?.policy && observationHash) {
+    watcherEscalation = evaluateWatcherEscalation({
+      watcherPolicy: spec.watcher.policy,
+      watcherState: spec.watcher.state,
+      currentHash: observationHash,
+      runId: queuedRun.runId,
+    })
+  }
+
+  // Persist watcher state patch back to the job store immediately — before the
+  // ACP run starts — so the next timer fire sees the updated lastInvestigatedHash
+  // and does not re-escalate for the same observation.
+  if (watcherEscalation?.watcherStatePatch) {
+    const taskId = typeof spec.id === 'string' ? spec.id : ''
+    if (taskId) {
+      await deps.patchJobWatcherState(taskId, watcherEscalation.watcherStatePatch).catch(() => undefined)
+    }
+  }
+
+  let workflow = initializeAutomationWorkflow(spec.workflow)
+  if (watcherEscalation?.shouldEscalate && watcherEscalation.escalationTemplate) {
+    workflow = initializeAutomationWorkflow({
+      ...spec.workflow,
+      template: watcherEscalation.escalationTemplate,
+    })
+  }
+
   const automationPromptBase = buildAutomationBasePrompt(job, spec)
   const automationPrompt = buildAutomationWorkflowPrompt({
     workflow,
     basePrompt: automationPromptBase,
   })
 
-  const queuedRun = await deps.createRun({
-    type: 'cron',
-    state: 'queued',
-    summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
-    meta: buildAutomationMeta(job, spec, {
+  // Persist workflow + escalation metadata now that we have all computed values.
+  await deps.updateRun(queuedRun.runId, {
+    meta: mergeRunMeta(queuedRun, {
       workflow,
       automationPromptBase,
+      ...(watcherEscalation ? {
+        watcherEscalation: {
+          shouldEscalate: watcherEscalation.shouldEscalate,
+          escalationTemplate: watcherEscalation.escalationTemplate,
+          reason: watcherEscalation.reason,
+        },
+        watcherStatePatch: watcherEscalation.watcherStatePatch,
+      } : {}),
     }),
   })
 
@@ -407,6 +458,14 @@ export async function executeAutomationJob(job, overrides = {}) {
         automationPromptBase,
         taskState: 'running',
         stepState: 'execute',
+        ...(watcherEscalation ? {
+          watcherEscalation: {
+            shouldEscalate: watcherEscalation.shouldEscalate,
+            escalationTemplate: watcherEscalation.escalationTemplate,
+            reason: watcherEscalation.reason,
+          },
+          watcherStatePatch: watcherEscalation.watcherStatePatch,
+        } : {}),
       }),
     })
 
@@ -495,9 +554,10 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     runId,
     terminalState,
     stepSummary: lifecycleText || lifecycleSummary || currentRun.summary || run.summary || '',
+    handoffSummary: lifecycleText || lifecycleSummary || '',
   })
 
-  if (workflowProgress.workflow.template === 'research_synthesis') {
+  if (isMultiTurnTemplate(workflowProgress.workflow.template)) {
     currentRun = await deps.updateRun(runId, {
       meta: mergeRunMeta(currentRun, {
         workflow: workflowProgress.workflow,
@@ -567,6 +627,27 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           }),
         }) || currentRun
         return { mode: 'failed', reason: 'workflow_continue_failed', error: message }
+      }
+    }
+
+    if (workflowProgress.needsRetry) {
+      currentRun = await deps.updateRun(runId, {
+        state: 'failed',
+        summary: `Companion automation step needs retry: ${currentRun.meta?.taskName || 'unnamed job'}`,
+        meta: mergeRunMeta(currentRun, {
+          taskState: 'retrying',
+          stepState: 'done',
+          workflow: workflowProgress.workflow,
+          lifecycleSummary,
+          lifecycleTerminalState: terminalState || null,
+        }),
+      }) || currentRun
+      return {
+        mode: 'workflow_needs_retry',
+        runId,
+        sessionId,
+        currentStepId: workflowProgress.currentStep?.id || null,
+        retryAttempt: workflowProgress.currentStep?.retry?.attempt || 0,
       }
     }
   }

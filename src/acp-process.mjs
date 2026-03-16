@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { signalChildProcessTree } from './runtime.mjs'
 import { createInterface } from 'node:readline'
 import { prepareAgentSpawnEnvironment } from './acp-auth.mjs'
 
@@ -191,9 +192,9 @@ export function spawnAgentChild(session, opts, deps) {
       applySessionState(session, 'timeout', { reason: 'timeout', timeoutMs: effectiveTimeout })
       session.finishedAt = now()
       clearNoOutputWatchdog(session)
-      try { child.kill('SIGTERM') } catch {}
+      try { signalChildProcessTree(child, 'SIGTERM') } catch {}
       setTimeout(() => {
-        try { if (!child.killed) child.kill('SIGKILL') } catch {}
+        try { if (!child.killed) signalChildProcessTree(child, 'SIGKILL') } catch {}
       }, cancelKillDelayMs)
     }, effectiveTimeout)
     if (session.timeoutRef.unref) session.timeoutRef.unref()

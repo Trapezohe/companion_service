@@ -278,6 +278,10 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
     persistentBudgetV22: true,
     workflowKernelV22: true,
     watcherPolicyV23: true,
+    orchestrationRegistryV23: false,
+    watcherEscalationV23: false,
+    sessionQualityRollupV23: false,
+    recipeLayerV23: false,
   })
   assert.equal(payload.mediaNormalizationSummary.enabled, true)
   assert.equal(payload.mediaNormalizationSummary.available, true)
@@ -554,6 +558,83 @@ test('buildDiagnosticsPayload summarizes companion budget health across tracked 
   assert.equal(payload.automation.budgetHealth.lastRollupAt, 1_700_000_200_000)
 })
 
+
+test('buildDiagnosticsPayload exposes v2.3 feature flags and orchestration template counts', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  await clearCronStoreForTests()
+  await clearAutomationBudgetStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    await clearCronStoreForTests()
+    await clearAutomationBudgetStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  await upsertJob({
+    id: 'job-decision',
+    name: 'Decision task',
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:decision-loop',
+    workflow: { template: 'research_decision', state: null },
+    watcher: {
+      policy: {
+        mode: 'change_only',
+        minNotifyIntervalMinutes: 30,
+        escalateWithWorkflow: true,
+        escalationTemplate: 'research_synthesis',
+      },
+      state: null,
+    },
+    sessionBudget: {
+      policy: { mode: 'default', maxContextBudget: null, dayRollupEnabled: true, compactAfterRuns: null },
+      ledger: { approxInputTokens: 3400, approxOutputTokens: 2600, compactionCount: 8, lastRollupAt: null, health: 'critical' },
+    },
+    delivery: { mode: 'notification' },
+  })
+  await upsertJob({
+    id: 'job-synthesis',
+    name: 'Synthesis task',
+    executor: 'companion_acp',
+    agentType: 'codex',
+    sessionTarget: 'persistent:synthesis-loop',
+    workflow: { template: 'research_synthesis', state: null },
+    delivery: { mode: 'notification' },
+  })
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  // v2.3 feature flags
+  assert.equal(payload.automation.featureFlags.orchestrationRegistryV23, false)
+  assert.equal(payload.automation.featureFlags.watcherEscalationV23, false)
+  assert.equal(payload.automation.featureFlags.sessionQualityRollupV23, false)
+  assert.equal(payload.automation.featureFlags.recipeLayerV23, false)
+  // v2.3 orchestration template counts
+  assert.equal(typeof payload.automation.activeWorkflowTemplates, 'object')
+  assert.equal(payload.automation.activeWorkflowTemplates.research_synthesis, 1)
+  assert.equal(payload.automation.activeWorkflowTemplates.research_decision, 1)
+  // v2.3 watcher escalation pending
+  assert.equal(payload.automation.watcherEscalationsPending, 1)
+  // v2.3 critical session quality
+  assert.equal(payload.automation.criticalSessionQuality, 1)
+  // v2.3 rollup-backed and compaction counters
+  assert.equal(typeof payload.automation.rollupBackedSessions, 'number')
+  assert.equal(typeof payload.automation.recentCompactions, 'number')
+})
 
 test('buildDiagnosticsPayload surfaces mirrored checkpoint shadow status without promoting it to primary authority', async (t) => {
   await clearRunStoreForTests()
