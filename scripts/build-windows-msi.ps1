@@ -60,6 +60,7 @@ if ($plan.builder -eq "wix") {
   }
 
   wix build `
+    -arch x64 `
     -ext WixToolset.UI.wixext `
     -define ProductVersion=$Version `
     -define InstallerSourceDir=$sourceDir `

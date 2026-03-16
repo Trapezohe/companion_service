@@ -136,13 +136,39 @@ function Bootstrap-Companion {
 
   Ensure-NpmGlobalBinOnPath
 
-  Write-InstallerLog "Running: npm install -g trapezohe-companion@$version"
-  & npm install -g "trapezohe-companion@$version" 2>&1 | ForEach-Object { Write-InstallerLog "  npm: $_" }
+  # Clean previous global install to avoid stale state on reinstall/upgrade
+  $existingCli = Get-Command trapezohe-companion -ErrorAction SilentlyContinue
+  if ($existingCli) {
+    Write-InstallerLog "Removing previous global install before reinstall..."
+    & npm uninstall -g trapezohe-companion 2>&1 | ForEach-Object { Write-InstallerLog "  npm-uninstall: $_" }
+  }
+
+  # Determine install source: bundled .tgz (preferred) or npm registry fallback
+  $bundledTgz = Join-Path $PSScriptRoot "trapezohe-companion-package.tgz"
+  if (Test-Path $bundledTgz) {
+    # Copy tgz to a path without spaces/parens to avoid cmd.exe parsing issues
+    # (e.g. "C:\Program Files (x86)\..." breaks npm's internal shell escaping)
+    $safeTgz = Join-Path $env:TEMP "trapezohe-companion-package.tgz"
+    Copy-Item $bundledTgz $safeTgz -Force
+    $npmInstallTarget = $safeTgz
+    Write-InstallerLog "Using bundled package (copied to safe path): $safeTgz"
+  } else {
+    $npmInstallTarget = "trapezohe-companion@$version"
+    Write-InstallerLog "No bundled package found; installing from npm registry: $npmInstallTarget"
+  }
+
+  Write-InstallerLog "Running: npm install -g $npmInstallTarget"
+  & npm install -g $npmInstallTarget 2>&1 | ForEach-Object { Write-InstallerLog "  npm: $_" }
   if ($LASTEXITCODE -ne 0) {
     Write-InstallerLog "npm install failed with exit code $LASTEXITCODE. Installation continues for manual retry."
     return $false
   }
   Write-InstallerLog "npm install -g succeeded."
+
+  # Clean up temp copy
+  if ($safeTgz -and (Test-Path $safeTgz)) {
+    Remove-Item $safeTgz -Force -ErrorAction SilentlyContinue
+  }
 
   Ensure-NpmGlobalBinOnPath
 
