@@ -1,3 +1,5 @@
+import { isMultiTurnTemplate, buildInitialSteps } from './automation-workflow-templates.mjs'
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
@@ -9,7 +11,8 @@ function compactText(raw, maxLength = 320) {
 }
 
 function normalizeTemplate(raw) {
-  return raw === 'research_synthesis' ? 'research_synthesis' : 'single_turn'
+  if (typeof raw === 'string' && isMultiTurnTemplate(raw)) return raw
+  return 'single_turn'
 }
 
 function findCurrentStepIndex(state) {
@@ -21,37 +24,54 @@ function findCurrentStepIndex(state) {
   return state.steps.findIndex((step) => step?.state === 'running' || step?.state === 'queued')
 }
 
-function buildResearchWorkflowState() {
-  return {
-    currentStepId: 'plan',
-    steps: [
-      { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null },
-      { id: 'research', kind: 'research', state: 'queued', runId: null, summary: null },
-      { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null },
-    ],
-    lastWorkflowSummary: null,
-  }
+function normalizePolicy(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const maxStepAttempts = Number.isFinite(raw.maxStepAttempts) && raw.maxStepAttempts > 0
+    ? Math.floor(raw.maxStepAttempts)
+    : null
+  const retryBackoffMinutes = Number.isFinite(raw.retryBackoffMinutes) && raw.retryBackoffMinutes > 0
+    ? Math.floor(raw.retryBackoffMinutes)
+    : null
+  if (maxStepAttempts === null && retryBackoffMinutes === null) return null
+  return { maxStepAttempts, retryBackoffMinutes }
 }
 
 export function initializeAutomationWorkflow(workflow) {
   const template = normalizeTemplate(workflow?.template)
-  if (template !== 'research_synthesis') {
-    return {
-      template: 'single_turn',
-      state: null,
-    }
+  const policy = normalizePolicy(workflow?.policy)
+
+  if (!isMultiTurnTemplate(template)) {
+    return { template: 'single_turn', policy: null, state: null }
   }
 
   if (workflow?.state && typeof workflow.state === 'object' && !Array.isArray(workflow.state)) {
-    return {
-      template,
-      state: clone(workflow.state),
-    }
+    return { template, policy, state: clone(workflow.state) }
   }
 
+  const steps = buildInitialSteps(template)
   return {
     template,
-    state: buildResearchWorkflowState(),
+    policy,
+    state: {
+      currentStepId: steps[0]?.id || null,
+      steps,
+      lastWorkflowSummary: null,
+      lastContinuationAt: null,
+      terminalState: null,
+    },
+  }
+}
+
+function makeResult(template, policy, state, overrides) {
+  return {
+    workflow: { template, policy, state },
+    currentStep: null,
+    nextStep: null,
+    continued: false,
+    completed: true,
+    failed: false,
+    needsRetry: false,
+    ...overrides,
   }
 }
 
@@ -59,84 +79,133 @@ export function advanceAutomationWorkflow(workflow, {
   runId = null,
   terminalState = '',
   stepSummary = '',
+  handoffSummary = '',
 } = {}) {
   const currentWorkflow = initializeAutomationWorkflow(workflow)
-  if (currentWorkflow.template !== 'research_synthesis' || !currentWorkflow.state) {
-    return {
-      workflow: currentWorkflow,
-      currentStep: null,
-      nextStep: null,
-      continued: false,
-      completed: true,
+  const { template, policy } = currentWorkflow
+  if (!isMultiTurnTemplate(template) || !currentWorkflow.state) {
+    return makeResult(template, policy, currentWorkflow.state, {
       failed: Boolean(terminalState) && terminalState !== 'done',
-    }
+    })
   }
 
   const state = clone(currentWorkflow.state)
   const currentIndex = findCurrentStepIndex(state)
   if (currentIndex < 0) {
-    return {
-      workflow: { template: currentWorkflow.template, state },
-      currentStep: null,
-      nextStep: null,
-      continued: false,
-      completed: true,
+    state.terminalState = state.terminalState || 'done'
+    return makeResult(template, policy, state, {
       failed: Boolean(terminalState) && terminalState !== 'done',
-    }
+    })
   }
 
+  const now = Date.now()
   const currentStep = state.steps[currentIndex]
   const normalizedSummary = compactText(stepSummary)
+  const normalizedHandoff = compactText(handoffSummary)
   currentStep.runId = typeof runId === 'string' && runId ? runId : currentStep.runId || null
   currentStep.summary = normalizedSummary
+  currentStep.finishedAt = now
+  if (!currentStep.startedAt) currentStep.startedAt = now
   state.lastWorkflowSummary = normalizedSummary
 
+  // Step failed
   if (terminalState && terminalState !== 'done') {
-    currentStep.state = 'failed'
-    state.currentStepId = null
-    return {
-      workflow: {
-        template: currentWorkflow.template,
-        state,
-      },
-      currentStep: clone(currentStep),
-      nextStep: null,
-      continued: false,
-      completed: true,
-      failed: true,
+    const maxAttempts = policy?.maxStepAttempts || 0
+    const retryBackoff = policy?.retryBackoffMinutes || 5
+    const currentAttempt = currentStep.retry?.attempt || 0
+
+    if (maxAttempts > 0 && currentAttempt + 1 < maxAttempts) {
+      // Enter needs_retry — will be resumed on next cron trigger
+      currentStep.state = 'needs_retry'
+      currentStep.retry = {
+        attempt: currentAttempt + 1,
+        lastError: normalizedSummary || 'step failed',
+        nextRetryAt: now + retryBackoff * 60_000 * Math.pow(2, currentAttempt),
+      }
+      return makeResult(template, policy, state, {
+        currentStep: clone(currentStep),
+        completed: false,
+        failed: false,
+        needsRetry: true,
+      })
     }
+
+    // No more retries — terminal failure
+    currentStep.state = 'failed'
+    if (currentStep.retry) {
+      currentStep.retry.lastError = normalizedSummary || currentStep.retry.lastError
+      currentStep.retry.nextRetryAt = null
+    }
+    state.currentStepId = null
+    state.terminalState = 'failed'
+    return makeResult(template, policy, state, {
+      currentStep: clone(currentStep),
+      failed: true,
+    })
   }
 
+  // Step succeeded
   currentStep.state = 'done'
+  if (normalizedHandoff) {
+    currentStep.handoffSummary = normalizedHandoff
+  }
+
   const nextStep = state.steps[currentIndex + 1] || null
   if (!nextStep) {
     state.currentStepId = null
-    return {
-      workflow: {
-        template: currentWorkflow.template,
-        state,
-      },
+    state.terminalState = 'done'
+    return makeResult(template, policy, state, {
       currentStep: clone(currentStep),
-      nextStep: null,
-      continued: false,
-      completed: true,
       failed: false,
-    }
+    })
   }
 
   nextStep.state = 'running'
   nextStep.runId = typeof runId === 'string' && runId ? runId : nextStep.runId || null
+  nextStep.startedAt = now
   state.currentStepId = nextStep.id
-  return {
-    workflow: {
-      template: currentWorkflow.template,
-      state,
-    },
+  state.lastContinuationAt = now
+  return makeResult(template, policy, state, {
     currentStep: clone(currentStep),
     nextStep: clone(nextStep),
     continued: true,
     completed: false,
     failed: false,
+  })
+}
+
+export function resumeAutomationWorkflowRetry(workflow, { runId = null } = {}) {
+  const currentWorkflow = initializeAutomationWorkflow(workflow)
+  if (!isMultiTurnTemplate(currentWorkflow.template) || !currentWorkflow.state) {
+    return { workflow: currentWorkflow, resumed: false, step: null }
+  }
+
+  const state = clone(currentWorkflow.state)
+  const now = Date.now()
+
+  // Find step in needs_retry state whose nextRetryAt has passed
+  const retryIndex = state.steps.findIndex(
+    (step) => step.state === 'needs_retry'
+      && step.retry?.nextRetryAt != null
+      && now >= step.retry.nextRetryAt,
+  )
+
+  if (retryIndex < 0) {
+    return { workflow: { ...currentWorkflow, state }, resumed: false, step: null }
+  }
+
+  const step = state.steps[retryIndex]
+  step.state = 'running'
+  step.startedAt = now
+  step.finishedAt = null
+  step.retry.nextRetryAt = null
+  step.runId = typeof runId === 'string' && runId ? runId : step.runId
+  state.currentStepId = step.id
+
+  return {
+    workflow: { template: currentWorkflow.template, policy: currentWorkflow.policy, state },
+    resumed: true,
+    step: clone(step),
   }
 }
 
@@ -146,7 +215,7 @@ export function failAutomationWorkflowStep(workflow, {
   summary = '',
 } = {}) {
   const currentWorkflow = initializeAutomationWorkflow(workflow)
-  if (currentWorkflow.template !== 'research_synthesis' || !currentWorkflow.state) {
+  if (!isMultiTurnTemplate(currentWorkflow.template) || !currentWorkflow.state) {
     return currentWorkflow
   }
 
@@ -156,32 +225,32 @@ export function failAutomationWorkflowStep(workflow, {
     : findCurrentStepIndex(state)
   if (index < 0) {
     state.currentStepId = null
-    return {
-      template: currentWorkflow.template,
-      state,
-    }
+    state.terminalState = 'failed'
+    return { template: currentWorkflow.template, policy: currentWorkflow.policy, state }
   }
 
   const step = state.steps[index]
   step.state = 'failed'
   step.runId = typeof runId === 'string' && runId ? runId : step.runId || null
   step.summary = compactText(summary)
+  step.finishedAt = Date.now()
   state.currentStepId = null
   state.lastWorkflowSummary = step.summary
-  return {
-    template: currentWorkflow.template,
-    state,
-  }
+  state.terminalState = 'failed'
+  return { template: currentWorkflow.template, policy: currentWorkflow.policy, state }
+}
+
+const STEP_INSTRUCTIONS = {
+  plan: 'Draft a short research plan with scope, evidence targets, and execution order. Do not produce the final user-facing output yet.',
+  research: 'Execute the plan, gather evidence, note uncertainties, and prepare a concise handoff for synthesis. Do not produce the final user-facing output yet.',
+  compare: 'You have gathered research from the previous step. Now compare the findings side by side. For each dimension of comparison, list what each source says. Highlight contradictions and areas of agreement. Output a structured comparison table.',
+  decide: 'Based on the comparison above, produce an explicit recommendation. Include: (1) a tradeoff matrix of options, (2) the recommended choice with rationale, (3) risks and mitigations, (4) confidence level (high/medium/low) with justification.',
+  synthesize: 'Use the session context from prior steps to produce the final user-facing synthesis now.',
+  write: 'Use the session context from prior steps to produce the final user-facing output now.',
 }
 
 function getWorkflowStepInstruction(stepKind) {
-  if (stepKind === 'plan') {
-    return 'Draft a short research plan with scope, evidence targets, and execution order. Do not produce the final user-facing output yet.'
-  }
-  if (stepKind === 'research') {
-    return 'Execute the plan, gather evidence, note uncertainties, and prepare a concise handoff for synthesis. Do not produce the final user-facing output yet.'
-  }
-  return 'Use the session context from prior steps to produce the final user-facing synthesis now.'
+  return STEP_INSTRUCTIONS[stepKind] || STEP_INSTRUCTIONS.synthesize
 }
 
 export function buildAutomationWorkflowPrompt({
@@ -190,7 +259,7 @@ export function buildAutomationWorkflowPrompt({
 } = {}) {
   const currentWorkflow = initializeAutomationWorkflow(workflow)
   const prompt = typeof basePrompt === 'string' ? basePrompt.trim() : ''
-  if (currentWorkflow.template !== 'research_synthesis' || !currentWorkflow.state) {
+  if (!isMultiTurnTemplate(currentWorkflow.template) || !currentWorkflow.state) {
     return prompt
   }
 
@@ -198,10 +267,23 @@ export function buildAutomationWorkflowPrompt({
   const currentStep = currentIndex >= 0 ? currentWorkflow.state.steps[currentIndex] : null
   if (!currentStep) return prompt
 
+  // Include handoff from previous step if available
+  const prevStep = currentIndex > 0 ? currentWorkflow.state.steps[currentIndex - 1] : null
+  const handoff = prevStep?.handoffSummary
+    ? `Previous step handoff: ${prevStep.handoffSummary}`
+    : null
+
+  // Include retry context if this is a retry attempt
+  const retryContext = currentStep.retry?.lastError
+    ? `This is retry attempt ${currentStep.retry.attempt}. Previous error: ${currentStep.retry.lastError}. Adjust your approach accordingly.`
+    : null
+
   return [
     `Workflow template: ${currentWorkflow.template}.`,
     `Current workflow step: ${currentStep.kind} (${currentIndex + 1}/${currentWorkflow.state.steps.length}).`,
     getWorkflowStepInstruction(currentStep.kind),
+    handoff,
+    retryContext,
     '',
     prompt,
   ].filter(Boolean).join('\n').trim()

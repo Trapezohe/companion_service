@@ -3,6 +3,7 @@ const DEFAULT_SESSION_TARGET = 'main'
 const DEFAULT_DELIVERY_MODE = 'notification'
 const DEFAULT_WORKFLOW = {
   template: 'single_turn',
+  policy: null,
   state: null,
 }
 
@@ -88,15 +89,39 @@ function normalizeWorkflow(raw) {
   // Workflow always normalizes to a stable single_turn shape so downstream diagnostics
   // and prompt builders do not need null checks for the default case.
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ...DEFAULT_WORKFLOW, policy: null }
+    return { ...DEFAULT_WORKFLOW }
   }
-  return {
-    template: normalizeWorkflowTemplate(raw.template),
-    policy: normalizeWorkflowPolicy(raw.policy),
-    state: raw.state && typeof raw.state === 'object' && !Array.isArray(raw.state)
-      ? raw.state
-      : null,
+  const template = normalizeWorkflowTemplate(raw.template)
+  const policy = normalizeWorkflowPolicy(raw.policy)
+  if (!raw.state || typeof raw.state !== 'object' || Array.isArray(raw.state)) {
+    return { template, policy, state: null }
   }
+  const state = { ...raw.state }
+  if (Array.isArray(state.steps)) {
+    state.steps = state.steps.map((step) => {
+      if (!step || typeof step !== 'object') return step
+      return {
+        ...step,
+        startedAt: Number.isFinite(step.startedAt) ? step.startedAt : null,
+        finishedAt: Number.isFinite(step.finishedAt) ? step.finishedAt : null,
+        handoffSummary: typeof step.handoffSummary === 'string' && step.handoffSummary ? step.handoffSummary : null,
+        retry: step.retry && typeof step.retry === 'object' && !Array.isArray(step.retry)
+          ? {
+            attempt: Number.isFinite(step.retry.attempt) ? Math.max(0, Math.round(step.retry.attempt)) : 0,
+            lastError: typeof step.retry.lastError === 'string' && step.retry.lastError ? step.retry.lastError : null,
+            nextRetryAt: Number.isFinite(step.retry.nextRetryAt) ? step.retry.nextRetryAt : null,
+          }
+          : null,
+      }
+    })
+  }
+  if (typeof state.lastContinuationAt !== 'number' || !Number.isFinite(state.lastContinuationAt)) {
+    state.lastContinuationAt = null
+  }
+  if (typeof state.terminalState !== 'string' || !state.terminalState) {
+    state.terminalState = null
+  }
+  return { template, policy, state }
 }
 
 function normalizeEscalationTemplate(raw) {
