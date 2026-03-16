@@ -490,7 +490,49 @@ pub fn run() {
             _ => {}
         })
         .run(tauri::generate_context!())
-        .expect("error while running tray shell");
+        .unwrap_or_else(|err| {
+            let msg = format!("Trapezohe Companion tray failed to start:\n\n{err}");
+            eprintln!("{msg}");
+            // Write to shared log directory for diagnostics
+            if let Some(log_dir) = dirs::data_dir().or_else(|| {
+                std::env::var("ProgramData").ok().map(std::path::PathBuf::from)
+            }) {
+                let log_path = log_dir.join("TrapezoheCompanion").join("tray-crash.log");
+                let _ = std::fs::create_dir_all(log_path.parent().unwrap());
+                let _ = std::fs::write(&log_path, &msg);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use std::ffi::OsStr;
+                use std::os::windows::ffi::OsStrExt;
+                let wide_msg: Vec<u16> = OsStr::new(&msg)
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let wide_title: Vec<u16> = OsStr::new("Trapezohe Companion")
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                unsafe {
+                    #[link(name = "user32")]
+                    extern "system" {
+                        fn MessageBoxW(
+                            hwnd: *mut std::ffi::c_void,
+                            text: *const u16,
+                            caption: *const u16,
+                            utype: u32,
+                        ) -> i32;
+                    }
+                    MessageBoxW(
+                        std::ptr::null_mut(),
+                        wide_msg.as_ptr(),
+                        wide_title.as_ptr(),
+                        0x10, // MB_ICONERROR
+                    );
+                }
+            }
+            std::process::exit(1);
+        });
 }
 
 #[cfg(test)]

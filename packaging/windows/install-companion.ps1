@@ -109,18 +109,51 @@ function Register-TrayAutoStart {
   Write-InstallerLog "Registered tray desktop startup via HKCU Run"
 }
 
+function Ensure-NpmGlobalBinOnPath {
+  try {
+    $npmPrefix = (& npm config get prefix 2>$null).Trim()
+    if ($npmPrefix -and (Test-Path $npmPrefix)) {
+      if ($env:PATH -notlike "*$npmPrefix*") {
+        $env:PATH = "$npmPrefix;$env:PATH"
+        Write-InstallerLog "Added npm global prefix to PATH: $npmPrefix"
+      }
+    }
+  } catch {
+    Write-InstallerLog "Warning: could not resolve npm global prefix: $_"
+  }
+
+  $appDataNpm = Join-Path $env:APPDATA "npm"
+  if ((Test-Path $appDataNpm) -and ($env:PATH -notlike "*$appDataNpm*")) {
+    $env:PATH = "$appDataNpm;$env:PATH"
+    Write-InstallerLog "Added APPDATA npm dir to PATH: $appDataNpm"
+  }
+}
+
 function Bootstrap-Companion {
   if (-not (Ensure-Node)) {
     return $false
   }
 
-  & npm install -g "trapezohe-companion@$version"
+  Ensure-NpmGlobalBinOnPath
+
+  Write-InstallerLog "Running: npm install -g trapezohe-companion@$version"
+  & npm install -g "trapezohe-companion@$version" 2>&1 | ForEach-Object { Write-InstallerLog "  npm: $_" }
   if ($LASTEXITCODE -ne 0) {
     Write-InstallerLog "npm install failed with exit code $LASTEXITCODE. Installation continues for manual retry."
     return $false
   }
+  Write-InstallerLog "npm install -g succeeded."
 
-  & trapezohe-companion bootstrap --mode workspace --workspace "$workspace"
+  Ensure-NpmGlobalBinOnPath
+
+  $cli = Get-Command trapezohe-companion -ErrorAction SilentlyContinue
+  if (-not $cli) {
+    Write-InstallerLog "ERROR: trapezohe-companion not found on PATH after npm install -g. PATH=$($env:PATH)"
+    return $false
+  }
+  Write-InstallerLog "Resolved CLI at: $($cli.Source)"
+
+  & trapezohe-companion bootstrap --mode workspace --workspace "$workspace" 2>&1 | ForEach-Object { Write-InstallerLog "  bootstrap: $_" }
   if ($LASTEXITCODE -ne 0) {
     Write-InstallerLog "bootstrap failed with exit code $LASTEXITCODE. Installation continues for manual retry."
     return $false
@@ -137,20 +170,22 @@ function Restart-CompanionDaemon {
     return
   }
 
+  Ensure-NpmGlobalBinOnPath
+
   $cli = Get-Command trapezohe-companion -ErrorAction SilentlyContinue
   if (-not $cli) {
-    Write-InstallerLog "Installed companion CLI is not on PATH; skipping runtime handoff"
+    Write-InstallerLog "Installed companion CLI is not on PATH; skipping runtime handoff. PATH=$($env:PATH)"
     return
   }
 
-  & trapezohe-companion stop --force | Out-Null
+  & trapezohe-companion stop --force 2>&1 | ForEach-Object { Write-InstallerLog "  stop: $_" }
   if ($LASTEXITCODE -eq 0) {
     Write-InstallerLog "Stopped any existing companion daemon before handoff"
   } else {
     Write-InstallerLog "Installed CLI stop command exited with $LASTEXITCODE during runtime handoff"
   }
 
-  & trapezohe-companion start -d | Out-Null
+  & trapezohe-companion start -d 2>&1 | ForEach-Object { Write-InstallerLog "  start: $_" }
   if ($LASTEXITCODE -eq 0) {
     Write-InstallerLog "Started installed companion daemon after handoff"
   } else {
@@ -169,10 +204,19 @@ function Launch-TrayOnce {
 }
 
 Write-InstallerLog "Windows installer bootstrap started (version=$version)."
+Write-InstallerLog "USERPROFILE=$($env:USERPROFILE) APPDATA=$($env:APPDATA) PATH=$($env:PATH)"
 Write-StartupPolicy
 Remove-LegacyDaemonAutostart
 Register-TrayAutoStart
-Bootstrap-Companion | Out-Null
-Restart-CompanionDaemon
+
+$bootstrapOk = Bootstrap-Companion
+if ($bootstrapOk) {
+  Write-InstallerLog "Bootstrap succeeded, proceeding with daemon handoff."
+  Restart-CompanionDaemon
+} else {
+  Write-InstallerLog "Bootstrap failed; skipping daemon handoff. Check log above for details."
+}
+
 Launch-TrayOnce
+Write-InstallerLog "Windows installer bootstrap finished."
 exit 0

@@ -663,18 +663,24 @@ const AUTOSTART_SERVICE_NAME = 'trapezohe-companion'
 const AUTOSTART_WIN_TASK_NAME = 'TrapezoheCompanion'
 
 async function resolveNativeHostExecutable(nativeHostScript) {
-  if (process.platform === 'win32') {
-    return nativeHostScript
-  }
-
   // Deploy native host files to ~/.trapezohe/ instead of the source directory.
   // Chrome on macOS cannot execute files under ~/Desktop/ due to TCC sandbox restrictions.
+  // Chrome on Windows cannot execute .mjs files directly — needs a .cmd wrapper.
   const deployDir = path.join(os.homedir(), '.trapezohe')
   await fs.mkdir(deployDir, { recursive: true })
 
   // Copy native-host.mjs to the deploy directory
   const deployedScript = path.join(deployDir, 'native-host.mjs')
   await fs.copyFile(nativeHostScript, deployedScript)
+
+  if (process.platform === 'win32') {
+    // Windows: Chrome native messaging requires .cmd/.exe — create a .cmd wrapper
+    const launcherPath = path.join(deployDir, 'native-host-launcher.cmd')
+    const launcher = `@echo off\r\n"${process.execPath}" "${deployedScript}" %*\r\n`
+    await fs.writeFile(launcherPath, launcher, 'utf8')
+    return launcherPath
+  }
+
   await fs.chmod(deployedScript, 0o755)
 
   // GUI-launched Chromium browsers may not inherit shell PATH (nvm/node not found).

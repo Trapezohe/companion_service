@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
@@ -118,7 +118,8 @@ export function addSessionExitListener(listener) {
 
 function shellCommandForPlatform(command) {
   if (process.platform === 'win32') {
-    return { bin: 'cmd.exe', args: ['/d', '/s', '/c', command] }
+    const comspec = process.env.COMSPEC || 'cmd.exe'
+    return { bin: comspec, args: ['/d', '/s', '/c', command] }
   }
   const shell = process.env.SHELL && process.env.SHELL.trim()
     ? process.env.SHELL.trim()
@@ -141,12 +142,24 @@ export function signalChildProcessTree(child, signal) {
   if (!child) return false
 
   const pid = Number(child.pid)
+
+  // Unix: use process-group signaling to kill the entire tree
   if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {
     try {
       process.kill(-pid, signal)
       return true
     } catch {
       // Fall back to the direct child signal when process-group signaling is unavailable.
+    }
+  }
+
+  // Windows: use taskkill /T to terminate the entire process tree
+  if (process.platform === 'win32' && Number.isInteger(pid) && pid > 0) {
+    try {
+      execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' })
+      return true
+    } catch {
+      // Fall back to direct child.kill() if taskkill fails
     }
   }
 

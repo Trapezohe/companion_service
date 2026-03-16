@@ -6,6 +6,7 @@
  */
 
 import { getDefaultMcpRequestTimeoutMs, normalizeMcpRequestTimeoutMs } from './config.mjs'
+import { signalChildProcessTree } from './runtime.mjs'
 
 export class StdioTransport {
   #proc
@@ -108,12 +109,12 @@ export class StdioTransport {
     try { this.#proc.stderr.destroy() } catch { /* ignore */ }
     try { this.#proc.stdin.end() } catch { /* ignore */ }
 
-    // Kill the process; verify it actually exited before sending SIGKILL
+    // Kill the process tree; verify it actually exited before force-killing
     try {
-      this.#proc.kill('SIGTERM')
+      signalChildProcessTree(this.#proc, 'SIGTERM')
       const killTimer = setTimeout(() => {
         try {
-          if (!this.#proc.killed) this.#proc.kill('SIGKILL')
+          if (!this.#proc.killed) signalChildProcessTree(this.#proc, 'SIGKILL')
         } catch { /* ignore */ }
       }, 3000)
       // Clear the kill timer if the process exits on its own
