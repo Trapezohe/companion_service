@@ -54,6 +54,15 @@ function normalizeScheduledWritePolicy(raw, executor) {
       .map((item) => normalizeScheduledWriteTool(item))
       .filter(Boolean)
     : []
+  if (mode === 'read_only') {
+    return {
+      mode,
+      allowedTools: [],
+      allowedPaths: null,
+      allowedCommandPrefixes: null,
+      enforcement: executor === 'companion_acp' ? 'prompt_only' : 'extension_hard',
+    }
+  }
   return {
     mode,
     allowedTools,
@@ -64,6 +73,8 @@ function normalizeScheduledWritePolicy(raw, executor) {
 }
 
 function normalizeWorkflow(raw) {
+  // Workflow always normalizes to a stable single_turn shape so downstream diagnostics
+  // and prompt builders do not need null checks for the default case.
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ...DEFAULT_WORKFLOW }
   }

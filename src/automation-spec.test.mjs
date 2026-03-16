@@ -175,6 +175,26 @@ test('normalizeAutomationSpec carries next-phase contract fields and downgrades 
   })
 })
 
+test('normalizeAutomationSpec clears allowlist details when scheduled write mode is read_only', () => {
+  const spec = normalizeAutomationSpec(createJob({
+    scheduledWritePolicy: {
+      mode: 'read_only',
+      allowedTools: ['write_file'],
+      allowedPaths: ['/tmp/reports'],
+      allowedCommandPrefixes: ['git status'],
+      enforcement: 'extension_hard',
+    },
+  }))
+
+  assert.deepEqual(spec.scheduledWritePolicy, {
+    mode: 'read_only',
+    allowedTools: [],
+    allowedPaths: null,
+    allowedCommandPrefixes: null,
+    enforcement: 'extension_hard',
+  })
+})
+
 test('summarizeAutomationSpecs exposes next-phase capability counts', () => {
   const summary = summarizeAutomationSpecs([
     createJob({
