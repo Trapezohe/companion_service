@@ -269,10 +269,10 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.automation.companionExecutableJobs, 0)
   assert.equal(payload.automation.outboxDeliveries, 0)
   assert.deepEqual(payload.automation.featureFlags, {
-    scheduledWriteGuardV22: false,
-    persistentBudgetV22: false,
-    workflowKernelV22: false,
-    watcherPolicyV23: false,
+    scheduledWriteGuardV22: true,
+    persistentBudgetV22: true,
+    workflowKernelV22: true,
+    watcherPolicyV23: true,
   })
   assert.equal(payload.mediaNormalizationSummary.enabled, true)
   assert.equal(payload.mediaNormalizationSummary.available, true)

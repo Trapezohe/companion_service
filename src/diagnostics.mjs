@@ -28,10 +28,10 @@ import {
 } from './native-host.mjs'
 
 const AUTOMATION_FEATURE_FLAGS = {
-  scheduledWriteGuardV22: false,
-  persistentBudgetV22: false,
-  workflowKernelV22: false,
-  watcherPolicyV23: false,
+  scheduledWriteGuardV22: true,
+  persistentBudgetV22: true,
+  workflowKernelV22: true,
+  watcherPolicyV23: true,
 }
 
 async function exists(target) {
