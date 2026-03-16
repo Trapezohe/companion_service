@@ -1083,6 +1083,8 @@ test('executeAutomationJob escalates watcher job to workflow when change is dete
     assert.equal(run?.meta?.watcherEscalation?.reason, 'change_detected')
     assert.ok(run?.meta?.watcherStatePatch)
     assert.equal(run?.meta?.watcherStatePatch?.lastInvestigatedHash, 'hash-new')
+    // runId should be backfilled with the real run ID (not null)
+    assert.equal(run?.meta?.watcherStatePatch?.lastEscalationRunId, result.runId)
 
     // Workflow should be initialized with escalation template
     assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
@@ -1131,6 +1133,46 @@ test('executeAutomationJob skips watcher escalation when hash is already investi
     assert.equal(run?.meta?.watcherEscalation?.reason, 'already_investigated')
 
     // Workflow should remain single_turn (no escalation override)
+    assert.equal(run?.meta?.workflow?.template, 'single_turn')
+  })
+})
+
+test('executeAutomationJob skips watcher escalation when observation hash is empty', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      watcher: {
+        policy: {
+          mode: 'change_only',
+          minNotifyIntervalMinutes: 30,
+          escalateWithWorkflow: true,
+          escalationTemplate: 'research_synthesis',
+        },
+        state: {
+          // No observation hash yet — first run before baseline is established
+          lastObservationHash: null,
+          lastInvestigatedHash: null,
+        },
+      },
+    }), {
+      createAcpSession: (input) => {
+        const session = { sessionId: 'acp-watcher-3', state: 'idle', ...input }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (id) => sessions.get(id) ?? null,
+      attachAcpSessionRunId: () => ({}),
+      enqueuePrompt: async () => ({ ok: true, sessionId: 'acp-watcher-3', turnId: 'turn-1' }),
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+
+    // No escalation — empty observation hash means no concrete observation to investigate
+    const run = await runStore.getRunById(result.runId)
+    assert.equal(run?.meta?.watcherEscalation, undefined)
     assert.equal(run?.meta?.workflow?.template, 'single_turn')
   })
 })

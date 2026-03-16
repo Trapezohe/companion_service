@@ -491,6 +491,8 @@ test('automation runtime escalates watcher job to workflow when observation hash
     assert.equal(run?.meta?.watcherEscalation?.reason, 'change_detected')
     assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
     assert.equal(run?.meta?.watcherStatePatch?.lastInvestigatedHash, 'hash-v2')
+    // runId should be the real run ID, not null
+    assert.equal(run?.meta?.watcherStatePatch?.lastEscalationRunId, result.runId)
   })
 })
 

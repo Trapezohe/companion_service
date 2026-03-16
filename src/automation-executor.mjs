@@ -359,25 +359,35 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   }
 
-  let workflow = initializeAutomationWorkflow(spec.workflow)
+  const queuedRun = await deps.createRun({
+    type: 'cron',
+    state: 'queued',
+    summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
+    meta: buildAutomationMeta(job, spec),
+  })
 
-  // Watcher escalation: if the job carries a watcher policy with escalation
-  // enabled and the observation hash is new, upgrade workflow to the escalation
-  // template so the run investigates the change instead of just notifying.
+  // Watcher escalation runs after createRun() so we have a real runId for the
+  // state patch. We also guard against empty currentHash — without a concrete
+  // observation there is nothing to investigate.
+  const observationHash = typeof spec.watcher?.state?.lastObservationHash === 'string'
+    ? spec.watcher.state.lastObservationHash
+    : ''
   let watcherEscalation = null
-  if (spec.watcher?.policy) {
+  if (spec.watcher?.policy && observationHash) {
     watcherEscalation = evaluateWatcherEscalation({
       watcherPolicy: spec.watcher.policy,
       watcherState: spec.watcher.state,
-      currentHash: spec.watcher.state?.lastObservationHash ?? '',
-      runId: '',
+      currentHash: observationHash,
+      runId: queuedRun.runId,
     })
-    if (watcherEscalation.shouldEscalate && watcherEscalation.escalationTemplate) {
-      workflow = initializeAutomationWorkflow({
-        ...spec.workflow,
-        template: watcherEscalation.escalationTemplate,
-      })
-    }
+  }
+
+  let workflow = initializeAutomationWorkflow(spec.workflow)
+  if (watcherEscalation?.shouldEscalate && watcherEscalation.escalationTemplate) {
+    workflow = initializeAutomationWorkflow({
+      ...spec.workflow,
+      template: watcherEscalation.escalationTemplate,
+    })
   }
 
   const automationPromptBase = buildAutomationBasePrompt(job, spec)
@@ -386,11 +396,9 @@ export async function executeAutomationJob(job, overrides = {}) {
     basePrompt: automationPromptBase,
   })
 
-  const queuedRun = await deps.createRun({
-    type: 'cron',
-    state: 'queued',
-    summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
-    meta: buildAutomationMeta(job, spec, {
+  // Persist workflow + escalation metadata now that we have all computed values.
+  await deps.updateRun(queuedRun.runId, {
+    meta: mergeRunMeta(queuedRun, {
       workflow,
       automationPromptBase,
       ...(watcherEscalation ? {
