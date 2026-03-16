@@ -235,6 +235,39 @@ test('executeAutomationJob marks companion allowlists as prompt-only guidance in
   })
 })
 
+test('executeAutomationJob injects evidence discipline for deep research automation profiles', async () => {
+  await withFreshState(async ({ executor }) => {
+    const enqueued = []
+    const sessions = new Map()
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      automationProfile: 'deep_research_brief',
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-research-brief-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      setSessionRunLink: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-research-brief-1' }
+      },
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(enqueued.length, 1)
+    assert.match(enqueued[0].input.prompt, /Thesis/)
+    assert.match(enqueued[0].input.prompt, /Recommendation/)
+    assert.match(enqueued[0].input.prompt, /Disclose uncertainty explicitly/)
+    assert.match(enqueued[0].input.prompt, /Do not invent URLs, tx hashes, or quotes\./)
+  })
+})
+
 test('executeAutomationJob reuses persistent companion sessions across runs', async () => {
   await withFreshState(async ({ executor }) => {
     const sessions = new Map()

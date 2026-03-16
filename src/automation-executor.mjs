@@ -39,8 +39,56 @@ function normalizeTimeoutMs(value) {
     : undefined
 }
 
+const AUTOMATION_PROFILE_PROMPTS = {
+  research_report: {
+    outputSections: ['Summary', 'Evidence', 'Next Steps'],
+    promptGuidance: [
+      'Keep the report evidence-based and rely on read-only research where possible.',
+      'Cite concrete sources, URLs, or tool outputs for factual claims.',
+      'Disclose uncertainty explicitly when evidence is incomplete or conflicting.',
+      'Do not invent URLs, tx hashes, or quotes.',
+    ],
+  },
+  watcher_digest: {
+    outputSections: ['What Changed', 'Why It Matters', 'Action'],
+    promptGuidance: [
+      'Focus on signal detection, validation, and whether the user actually needs to be alerted.',
+      'Cite concrete sources, URLs, or tool outputs for factual claims.',
+      'Disclose uncertainty explicitly when evidence is incomplete or conflicting.',
+      'Do not invent URLs, tx hashes, or quotes.',
+    ],
+  },
+  deep_research_brief: {
+    outputSections: ['Thesis', 'Evidence', 'Unknowns', 'Recommendation'],
+    promptGuidance: [
+      'Go broad on source gathering before converging on the strongest explanation.',
+      'Cite concrete sources, URLs, or tool outputs for factual claims.',
+      'Disclose uncertainty explicitly when evidence is incomplete or conflicting.',
+      'Do not invent URLs, tx hashes, or quotes.',
+    ],
+  },
+  structured_writer: {
+    outputSections: ['Objective', 'Draft', 'Open Risks'],
+    promptGuidance: [
+      'Optimize for structure, clarity, and traceable claims over breadth.',
+      'Cite concrete sources, URLs, or tool outputs for factual claims.',
+      'Disclose uncertainty explicitly when evidence is incomplete or conflicting.',
+      'Do not invent URLs, tx hashes, or quotes.',
+    ],
+  },
+  synthesis_report: {
+    outputSections: ['Decision', 'Evidence', 'Tradeoffs', 'Next Steps'],
+    promptGuidance: [
+      'Synthesize across multiple findings and make the tradeoffs explicit.',
+      'Cite concrete sources, URLs, or tool outputs for factual claims.',
+      'Disclose uncertainty explicitly when evidence is incomplete or conflicting.',
+      'Do not invent URLs, tx hashes, or quotes.',
+    ],
+  },
+}
+
 function normalizeAutomationProfile(value) {
-  return value === 'research_report' || value === 'watcher_digest'
+  return typeof value === 'string' && value in AUTOMATION_PROFILE_PROMPTS
     ? value
     : 'general'
 }
@@ -67,24 +115,13 @@ function buildAutomationBasePrompt(job, spec) {
   const basePrompt = typeof job?.prompt === 'string' ? job.prompt : ''
   const automationProfile = normalizeAutomationProfile(job?.automationProfile)
   const writePolicyPrompt = buildScheduledWritePolicyPrompt(spec)
-
-  if (automationProfile === 'research_report') {
+  const profilePrompt = automationProfile !== 'general' ? AUTOMATION_PROFILE_PROMPTS[automationProfile] : null
+  if (profilePrompt) {
     return [
       basePrompt,
       '',
-      'Use section headings in this order: Summary, Evidence, Next Steps.',
-      'Keep the report evidence-based and rely on read-only research where possible.',
-      '',
-      writePolicyPrompt,
-    ].join('\n').trim()
-  }
-
-  if (automationProfile === 'watcher_digest') {
-    return [
-      basePrompt,
-      '',
-      'Use section headings in this order: What Changed, Why It Matters, Action.',
-      'Focus on whether the detected change is actionable enough to alert the user.',
+      `Use section headings in this order: ${profilePrompt.outputSections.join(', ')}.`,
+      ...profilePrompt.promptGuidance,
       '',
       writePolicyPrompt,
     ].join('\n').trim()
