@@ -26,6 +26,10 @@
       <File Id="InstallCompanionPs1" Source="$(var.InstallerSourceDir)/install-companion.ps1" KeyPath="yes" />
     </Component>
 
+    <Component Id="CompanionPackageComponent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="CompanionPackage" Source="$(var.InstallerSourceDir)/trapezohe-companion-package.tgz" KeyPath="yes" />
+    </Component>
+
     <Component Id="TrayExeComponent" Directory="INSTALLFOLDER" Guid="*">
       <File Id="TrayExe" Source="$(var.InstallerSourceDir)/trapezohe-companion-tray.exe" KeyPath="yes" />
     </Component>
@@ -37,6 +41,7 @@
     <Feature Id="MainFeature" Title="Companion Installer" Level="1">
       <ComponentRef Id="RunInstallCmdComponent" />
       <ComponentRef Id="InstallCompanionPs1Component" />
+      <ComponentRef Id="CompanionPackageComponent" />
       <ComponentRef Id="TrayExeComponent" />
       <ComponentRef Id="TrayReadmeComponent" />
     </Feature>

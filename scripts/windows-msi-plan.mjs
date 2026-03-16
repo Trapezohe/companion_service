@@ -21,6 +21,11 @@ const MSI_FILES = [
     fileName: 'install-companion.ps1',
   },
   {
+    componentId: 'CompanionPackageComponent',
+    fileId: 'CompanionPackage',
+    fileName: 'trapezohe-companion-package.tgz',
+  },
+  {
     componentId: 'TrayExeComponent',
     fileId: 'TrayExe',
     fileName: 'trapezohe-companion-tray.exe',

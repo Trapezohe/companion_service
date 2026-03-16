@@ -24,6 +24,7 @@ $workDir = Join-Path $tempRoot ("trapezohe-companion-msi-" + [guid]::NewGuid().T
 $sourceDir = Join-Path $workDir "source"
 $trayStageDir = Join-Path $trayStageRoot "windows-tray"
 $msiPlanScript = Join-Path $root "scripts/windows-msi-plan.mjs"
+$packageTarballPath = Join-Path $sourceDir "trapezohe-companion-package.tgz"
 $msiPath = Join-Path $outDir "trapezohe-companion-windows.msi"
 $generatedWxsPath = Join-Path $workDir "installer.generated.wxs"
 
@@ -35,6 +36,26 @@ Copy-Item (Join-Path $root "packaging/windows/license.rtf") (Join-Path $sourceDi
 $psTemplate = Get-Content (Join-Path $root "packaging/windows/install-companion.ps1") -Raw
 $psRendered = $psTemplate -replace "__COMPANION_VERSION__", $Version
 Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRendered -Encoding UTF8
+
+Push-Location $root
+$packJson = & npm pack --pack-destination $workDir --json
+$packExitCode = $LASTEXITCODE
+Pop-Location
+if ($packExitCode -ne 0) {
+  throw "Failed to pack the companion npm payload for the Windows installer."
+}
+
+$packResult = $packJson | ConvertFrom-Json
+$packFileName = if ($packResult -is [array]) { $packResult[0].filename } else { $packResult.filename }
+if ([string]::IsNullOrWhiteSpace($packFileName)) {
+  throw "npm pack did not report a tarball filename."
+}
+
+$packedTarball = Join-Path $workDir $packFileName
+if (-not (Test-Path $packedTarball)) {
+  throw "Packed tarball missing at $packedTarball"
+}
+Copy-Item $packedTarball $packageTarballPath
 
 & (Join-Path $root "scripts/build-tray-windows.ps1") -Version $Version
 Copy-Item (Join-Path $trayStageDir "trapezohe-companion-tray.exe") (Join-Path $sourceDir "trapezohe-companion-tray.exe")
@@ -60,6 +81,7 @@ if ($plan.builder -eq "wix") {
   }
 
   wix build `
+    -arch x64 `
     -ext WixToolset.UI.wixext `
     -define ProductVersion=$Version `
     -define InstallerSourceDir=$sourceDir `

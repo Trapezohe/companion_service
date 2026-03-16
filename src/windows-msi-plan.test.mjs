@@ -4,6 +4,12 @@ import {
   getWindowsMsiBuildPlan,
   renderWindowsMsiSource,
 } from '../scripts/windows-msi-plan.mjs'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const root = path.join(__dirname, '..')
 
 test('host windows uses WiX v4 build plan', () => {
   const plan = getWindowsMsiBuildPlan({ hostPlatform: 'win32' })
@@ -28,6 +34,7 @@ test('wix4 source keeps WiX 4 authoring with bind variables', () => {
   assert.match(wxs, /http:\/\/wixtoolset\.org\/schemas\/v4\/wxs/)
   assert.match(wxs, /<Directory Id="INSTALLFOLDER" Name="TrapezoheCompanion" \/>/)
   assert.match(wxs, /Source="\$\(var\.InstallerSourceDir\)\/run-install\.cmd"/)
+  assert.match(wxs, /Source="\$\(var\.InstallerSourceDir\)\/trapezohe-companion-package\.tgz"/)
   assert.match(wxs, /FileRef="RunInstallCmd"/)
   assert.match(wxs, /Return="check"/)
   assert.doesNotMatch(wxs, /Return="ignore"/)
@@ -42,8 +49,15 @@ test('wix3 source renders absolute posix file paths for wixl', () => {
   assert.match(wxs, /http:\/\/schemas\.microsoft\.com\/wix\/2006\/wi/)
   assert.match(wxs, /<Directory Id="INSTALLFOLDER" Name="TrapezoheCompanion">/)
   assert.match(wxs, /Source="C:\/temp\/stage\/source\/run-install\.cmd"/)
+  assert.match(wxs, /Source="C:\/temp\/stage\/source\/trapezohe-companion-package\.tgz"/)
   assert.match(wxs, /FileKey="RunInstallCmd"/)
   assert.match(wxs, /Return="check"/)
   assert.doesNotMatch(wxs, /Return="ignore"/)
   assert.match(wxs, /<Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT Installed<\/Custom>/)
+})
+
+test('Windows MSI build script pins WiX output to x64', () => {
+  const script = readFileSync(path.join(root, 'scripts/build-windows-msi.ps1'), 'utf8')
+
+  assert.match(script, /wix build[\s\S]+?-arch x64[\s\S]+?-ext WixToolset\.UI\.wixext/s)
 })
