@@ -484,17 +484,17 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
       lifecycleTerminalState: terminalState || null,
     }),
   }) || run
-  const budgetOutputText = extractAutomationLifecycleText(events, run.summary || '') || lifecycleSummary || run.summary || ''
+  const lifecycleText = extractAutomationLifecycleText(events, currentRun.summary || run.summary || '')
+  const budgetOutputText = lifecycleText || lifecycleSummary || currentRun.summary || run.summary || ''
   currentRun = await refreshBudgetSnapshotForRun(deps, currentRun, {
     sessionBudget: currentRun.meta?.sessionBudget ?? run.meta?.sessionBudget ?? null,
     sessionKey: currentRun.meta?.sessionTarget ?? run.meta?.sessionTarget ?? '',
     outputText: budgetOutputText,
   })
-  const text = extractAutomationLifecycleText(events, run.summary || '')
   const workflowProgress = advanceAutomationWorkflow(currentRun.meta?.workflow ?? run.meta?.workflow ?? null, {
     runId,
     terminalState,
-    stepSummary: text || lifecycleSummary || run.summary || '',
+    stepSummary: lifecycleText || lifecycleSummary || currentRun.summary || run.summary || '',
   })
 
   if (workflowProgress.workflow.template === 'research_synthesis') {
@@ -524,6 +524,11 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           origin: 'automation',
           inputProvenance: buildInputProvenanceFromRun(currentRun, runId),
           timeoutMs: normalizeTimeoutMs(currentRun.meta?.timeoutMs ?? run.meta?.timeoutMs),
+        })
+        currentRun = await refreshBudgetSnapshotForRun(deps, currentRun, {
+          sessionBudget: currentRun.meta?.sessionBudget ?? run.meta?.sessionBudget ?? null,
+          sessionKey: currentRun.meta?.sessionTarget ?? run.meta?.sessionTarget ?? '',
+          promptText: nextPrompt,
         })
         currentRun = await deps.updateRun(runId, {
           state: 'running',
@@ -586,7 +591,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
   }
 
   const deliveryAttemptAt = Date.now()
-  if (!text) {
+  if (!lifecycleText) {
     currentRun = await finalizeTerminalRunStep(deps, runId, currentRun, {
       taskState: finalTaskState,
       lifecycleSummary,
@@ -638,7 +643,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           taskId: baseMeta.taskId || '',
           taskName: baseMeta.taskName || '',
           sessionId,
-          text,
+          text: lifecycleText,
           createdAt: deliveryAttemptAt,
         }),
       })
@@ -683,7 +688,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
       taskId: baseMeta.taskId || '',
       taskName: baseMeta.taskName || '',
       mode: deliveryMode,
-      text,
+      text: lifecycleText,
       target,
       createdAt: deliveryAttemptAt,
     })

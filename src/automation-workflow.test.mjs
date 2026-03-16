@@ -76,6 +76,26 @@ test('advanceAutomationWorkflow marks each completed step and finishes after syn
   assert.equal(afterSynthesize.workflow.state?.lastWorkflowSummary, 'Final synthesis ready.')
 })
 
+test('advanceAutomationWorkflow always returns a boolean failed flag', () => {
+  const nonWorkflow = advanceAutomationWorkflow(null, {
+    terminalState: '',
+    stepSummary: '',
+  })
+  const failedWorkflow = advanceAutomationWorkflow(initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  }), {
+    runId: 'run-workflow',
+    terminalState: 'failed',
+    stepSummary: 'Research step failed.',
+  })
+
+  assert.equal(nonWorkflow.failed, false)
+  assert.equal(typeof nonWorkflow.failed, 'boolean')
+  assert.equal(failedWorkflow.failed, true)
+  assert.equal(typeof failedWorkflow.failed, 'boolean')
+})
+
 test('buildAutomationWorkflowPrompt wraps the base prompt with step-specific instructions', () => {
   const workflow = initializeAutomationWorkflow({
     template: 'research_synthesis',

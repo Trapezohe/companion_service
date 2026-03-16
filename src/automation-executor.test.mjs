@@ -795,6 +795,63 @@ test('deliverAutomationRunResult advances research workflows across plan -> rese
   })
 })
 
+test('deliverAutomationRunResult counts workflow continuation prompts toward budget snapshots', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const run = await runStore.createRun({
+      runId: 'run-workflow-budget',
+      type: 'cron',
+      state: 'running',
+      summary: 'Launching workflow',
+      meta: {
+        taskId: 'task-workflow-budget',
+        taskName: 'Budgeted workflow',
+        executionMode: 'companion_acp',
+        deliveryMode: 'chat',
+        sessionTarget: 'persistent:workflow-budget',
+        timeoutMs: null,
+        automationPromptBase: 'Produce a research report with evidence and synthesis.',
+        sessionBudget: {
+          policy: {
+            mode: 'deep_research',
+            maxContextBudget: 24000,
+            dayRollupEnabled: true,
+            compactAfterRuns: 6,
+          },
+          ledger: null,
+        },
+        workflow: {
+          template: 'research_synthesis',
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              { id: 'plan', kind: 'plan', state: 'running', runId: null, summary: null },
+              { id: 'research', kind: 'research', state: 'queued', runId: null, summary: null },
+              { id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null, summary: null },
+            ],
+            lastWorkflowSummary: null,
+          },
+        },
+      },
+    })
+
+    const result = await executor.deliverAutomationRunResult({
+      runId: run.runId,
+      sessionId: 'acp-workflow-budget',
+      terminalState: 'done',
+    }, {
+      listAcpEvents: () => ({ events: [{ type: 'text_delta', text: 'Plan the scope.' }] }),
+      enqueuePrompt: async (sessionId, input) => ({ ok: true, sessionId, turnId: 'turn-workflow-budget-1', input }),
+      enqueueAutomationOutboxItem: async (item) => item,
+    })
+
+    assert.equal(result.mode, 'workflow_continued')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated?.meta?.budgetSnapshot?.ledger?.approxOutputTokens > 0, true)
+    assert.equal(updated?.meta?.budgetSnapshot?.ledger?.approxInputTokens > 0, true)
+  })
+})
+
 test('executeAutomationJob rejects unsupported main-session companion jobs with a failed run', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     let createAcpSessionCalled = 0

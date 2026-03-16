@@ -68,7 +68,7 @@ export function advanceAutomationWorkflow(workflow, {
       nextStep: null,
       continued: false,
       completed: true,
-      failed: terminalState && terminalState !== 'done',
+      failed: Boolean(terminalState) && terminalState !== 'done',
     }
   }
 
@@ -81,7 +81,7 @@ export function advanceAutomationWorkflow(workflow, {
       nextStep: null,
       continued: false,
       completed: true,
-      failed: terminalState && terminalState !== 'done',
+      failed: Boolean(terminalState) && terminalState !== 'done',
     }
   }
 
