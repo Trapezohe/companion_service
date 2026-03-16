@@ -4,6 +4,8 @@
  * Recipes provide step-specific section headings, evidence requirements,
  * handoff schema, and tool routing bias. The executor reads the active
  * recipe stage to inject context-appropriate guidance into workflow prompts.
+ *
+ * MIRROR: Keep in sync with extension-side utils/ai/automation-recipe-pack.ts
  */
 
 const RECIPE_STEPS = {

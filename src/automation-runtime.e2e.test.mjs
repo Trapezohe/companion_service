@@ -299,6 +299,96 @@ test('automation runtime injects watcher digest headings into persistent compani
   })
 })
 
+test('automation runtime injects recipe section headings for research_decision workflow prompts', async () => {
+  await withFreshState(async ({ executor, acp }) => {
+    const enqueuedPrompts = []
+
+    await executor.executeAutomationJob(createJob({
+      id: 'job-recipe-e2e',
+      name: 'Decision workflow',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      workflow: {
+        template: 'research_decision',
+        state: null,
+      },
+    }), {
+      createAcpSession: () => acp.createAcpSession({ agentType: 'codex', origin: 'automation' }),
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: 'turn-recipe-e2e-1' }
+      },
+    })
+
+    assert.equal(enqueuedPrompts.length, 1)
+    // Plan step recipe sections should be present
+    assert.match(enqueuedPrompts[0].input.prompt, /Scope, Evidence Targets, Execution Order/)
+    assert.match(enqueuedPrompts[0].input.prompt, /Define the research scope/)
+  })
+})
+
+test('automation runtime advances research_decision through 4 steps with recipe guidance at each step', async () => {
+  await withFreshState(async ({ executor, runStore, acp }) => {
+    const launched = await executor.executeAutomationJob(createJob({
+      id: 'job-decision-e2e',
+      name: 'Decision e2e',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      workflow: {
+        template: 'research_decision',
+        state: null,
+      },
+      delivery: { mode: 'chat', notification: false, chat: true, target: null },
+    }), {
+      createAcpSession: () => acp.createAcpSession({ agentType: 'codex', origin: 'automation' }),
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId) => ({ ok: true, sessionId, turnId: 'turn-1' }),
+    })
+
+    const enqueuedPrompts = []
+    const stepTexts = ['Plan done.', 'Compare done.', 'Decide done.', 'Final output.']
+    let stepIndex = 0
+
+    const deps = {
+      listAcpEvents: () => ({ events: [{ type: 'text_delta', text: stepTexts[stepIndex++] || '' }] }),
+      enqueuePrompt: async (sessionId, input) => {
+        enqueuedPrompts.push({ sessionId, input })
+        return { ok: true, sessionId, turnId: `turn-${enqueuedPrompts.length + 1}` }
+      },
+      enqueueAutomationOutboxItem: async (item) => item,
+    }
+
+    // Advance through plan -> compare -> decide -> write
+    for (let i = 0; i < 3; i++) {
+      const result = await executor.deliverAutomationRunResult({
+        runId: launched.runId,
+        sessionId: launched.sessionId,
+        terminalState: 'done',
+      }, deps)
+      assert.equal(result.mode, 'workflow_continued', `step ${i} should continue`)
+    }
+
+    // Compare step prompt should include recipe guidance
+    assert.match(enqueuedPrompts[0].input.prompt, /Comparison Matrix/)
+    // Decide step prompt should include tradeoff matrix guidance
+    assert.match(enqueuedPrompts[1].input.prompt, /Tradeoff Matrix/)
+    // Write step prompt should include draft guidance
+    assert.match(enqueuedPrompts[2].input.prompt, /Objective/)
+
+    // Final step delivers
+    const final = await executor.deliverAutomationRunResult({
+      runId: launched.runId,
+      sessionId: launched.sessionId,
+      terminalState: 'done',
+    }, deps)
+    assert.equal(final.mode, 'outbox')
+
+    const updated = await runStore.getRunById(launched.runId)
+    assert.equal(updated?.meta?.workflow?.state?.terminalState, 'done')
+  })
+})
+
 test('automation diagnostics summarize prompt-only write guards, active workflows, and budget alerts', async () => {
   await withFreshState(async ({ executor, diagnostics, acp, cronStore, budgetStore }) => {
     const job = createJob({
@@ -353,5 +443,10 @@ test('automation diagnostics summarize prompt-only write guards, active workflow
     assert.equal(payload.automation.scheduledWriteEnforcements.promptOnly, 1)
     assert.equal(payload.automation.budgetHealth.warning, 1)
     assert.equal(payload.automation.budgetHealth.critical, 0)
+    // v2.3 diagnostics counters
+    assert.equal(typeof payload.automation.activeWorkflowTemplates, 'object')
+    assert.equal(payload.automation.activeWorkflowTemplates?.research_synthesis, 1)
+    assert.equal(typeof payload.automation.rollupBackedSessions, 'number')
+    assert.equal(typeof payload.automation.recentCompactions, 'number')
   })
 })
