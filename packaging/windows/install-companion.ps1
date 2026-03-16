@@ -198,22 +198,18 @@ function Bootstrap-Companion {
     return $false
   }
 
-  if (-not (Test-Path $packageTarballPath)) {
-    Write-InstallerStatus "The bundled Trapezohe Companion package is missing, so setup cannot continue."
-    Write-InstallerLog "Bundled companion package missing at $packageTarballPath"
-    return $false
-  }
+  Ensure-NpmGlobalBinOnPath
 
-  $stagedPackageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("trapezohe-companion-install-" + [guid]::NewGuid().ToString("N"))
-  $stagedPackageTarballPath = Join-Path $stagedPackageDir "trapezohe-companion-package.tgz"
-  try {
-    New-Item -ItemType Directory -Force -Path $stagedPackageDir | Out-Null
-    Copy-Item $packageTarballPath $stagedPackageTarballPath -Force
-    Write-InstallerLog "Staged bundled package to $stagedPackageTarballPath"
-  } catch {
-    Write-InstallerStatus "The bundled package could not be staged to a temporary Windows path. Setup cannot continue."
-    Write-InstallerLog "Failed to stage bundled package to temp path: $_"
-    return $false
+  # Clean previous global install to avoid stale state on reinstall/upgrade.
+  $existingCli = Get-Command trapezohe-companion -ErrorAction SilentlyContinue
+  if ($existingCli) {
+    Write-InstallerLog "Removing previous global install before reinstall..."
+    $npmUninstallCli = (Get-Command npm -ErrorAction SilentlyContinue).Source
+    if ($npmUninstallCli) {
+      [void](Invoke-LoggedProcess -FilePath $npmUninstallCli -ArgumentList @("uninstall", "-g", "trapezohe-companion") -LogPrefix "npm-uninstall")
+    } else {
+      Write-InstallerLog "npm was not available for uninstall; continuing with reinstall."
+    }
   }
 
   Ensure-NpmGlobalBinOnPath
@@ -225,17 +221,38 @@ function Bootstrap-Companion {
     return $false
   }
 
+  $stagedPackageDir = $null
+  $npmInstallTarget = "trapezohe-companion@$version"
+  if (Test-Path $packageTarballPath) {
+    $stagedPackageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("trapezohe-companion-install-" + [guid]::NewGuid().ToString("N"))
+    $stagedPackageTarballPath = Join-Path $stagedPackageDir "trapezohe-companion-package.tgz"
+    try {
+      New-Item -ItemType Directory -Force -Path $stagedPackageDir | Out-Null
+      Copy-Item $packageTarballPath $stagedPackageTarballPath -Force
+      $npmInstallTarget = $stagedPackageTarballPath
+      Write-InstallerLog "Staged bundled package to $stagedPackageTarballPath"
+    } catch {
+      Write-InstallerStatus "The bundled package could not be staged to a temporary Windows path. Setup cannot continue."
+      Write-InstallerLog "Failed to stage bundled package to temp path: $_"
+      return $false
+    }
+  } else {
+    Write-InstallerLog "Bundled companion package missing at $packageTarballPath; falling back to npm registry target $npmInstallTarget"
+  }
+
   Write-InstallerStep 2 6 "Installing Trapezohe Companion from the bundled package."
-  Write-InstallerLog "Running: npm install -g $stagedPackageTarballPath"
+  Write-InstallerLog "Running: npm install -g $npmInstallTarget"
   try {
-    $npmExitCode = Invoke-LoggedProcess -FilePath $npmCli -ArgumentList @("install", "-g", $stagedPackageTarballPath) -LogPrefix "npm"
+    $npmExitCode = Invoke-LoggedProcess -FilePath $npmCli -ArgumentList @("install", "-g", $npmInstallTarget) -LogPrefix "npm"
     if ($npmExitCode -ne 0) {
       Write-InstallerStatus "The bundled package installation failed. Review the installer log for details."
       Write-InstallerLog "npm install failed with exit code $npmExitCode. Installation continues for manual retry."
       return $false
     }
   } finally {
-    Remove-Item -Path $stagedPackageDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($stagedPackageDir) {
+      Remove-Item -Path $stagedPackageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
   Write-InstallerStatus "Bundled package installation completed."
   Write-InstallerLog "npm install -g from bundled package succeeded."
