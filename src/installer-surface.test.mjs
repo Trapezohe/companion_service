@@ -82,11 +82,16 @@ test('macOS installer hands runtime over to the installed CLI after deploying th
 
 test('Windows installer hands runtime over to the installed CLI after bootstrap', () => {
   const installer = read('packaging/windows/install-companion.ps1')
+  const wxs = read('packaging/windows/installer.wxs')
 
   assert.match(installer, /function Restart-CompanionDaemon/)
   assert.match(installer, /& trapezohe-companion stop --force/)
   assert.match(installer, /& trapezohe-companion start -d/)
-  assert.match(installer, /Bootstrap-Companion \| Out-Null\s+Restart-CompanionDaemon\s+Launch-TrayOnce/s)
+  assert.match(installer, /\$bootstrapOk = Bootstrap-Companion/)
+  assert.match(installer, /if \(-not \$bootstrapOk\) \{\s+Write-InstallerLog "Bootstrap failed; aborting installer\./s)
+  assert.match(installer, /throw "Trapezohe Companion bootstrap failed\./)
+  assert.match(wxs, /Return="check"/)
+  assert.doesNotMatch(wxs, /Return="ignore"/)
 })
 
 

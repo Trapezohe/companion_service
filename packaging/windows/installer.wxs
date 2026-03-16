@@ -46,7 +46,7 @@
       FileRef="RunInstallCmd"
       ExeCommand=""
       Execute="deferred"
-      Return="ignore"
+      Return="check"
       Impersonate="yes" />
 
     <InstallExecuteSequence>

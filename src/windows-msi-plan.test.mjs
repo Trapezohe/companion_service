@@ -29,6 +29,8 @@ test('wix4 source keeps WiX 4 authoring with bind variables', () => {
   assert.match(wxs, /<Directory Id="INSTALLFOLDER" Name="TrapezoheCompanion" \/>/)
   assert.match(wxs, /Source="\$\(var\.InstallerSourceDir\)\/run-install\.cmd"/)
   assert.match(wxs, /FileRef="RunInstallCmd"/)
+  assert.match(wxs, /Return="check"/)
+  assert.doesNotMatch(wxs, /Return="ignore"/)
 })
 
 test('wix3 source renders absolute posix file paths for wixl', () => {
@@ -41,5 +43,7 @@ test('wix3 source renders absolute posix file paths for wixl', () => {
   assert.match(wxs, /<Directory Id="INSTALLFOLDER" Name="TrapezoheCompanion">/)
   assert.match(wxs, /Source="C:\/temp\/stage\/source\/run-install\.cmd"/)
   assert.match(wxs, /FileKey="RunInstallCmd"/)
+  assert.match(wxs, /Return="check"/)
+  assert.doesNotMatch(wxs, /Return="ignore"/)
   assert.match(wxs, /<Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT Installed<\/Custom>/)
 })

@@ -210,13 +210,13 @@ Remove-LegacyDaemonAutostart
 Register-TrayAutoStart
 
 $bootstrapOk = Bootstrap-Companion
-if ($bootstrapOk) {
-  Write-InstallerLog "Bootstrap succeeded, proceeding with daemon handoff."
-  Restart-CompanionDaemon
-} else {
-  Write-InstallerLog "Bootstrap failed; skipping daemon handoff. Check log above for details."
+if (-not $bootstrapOk) {
+  Write-InstallerLog "Bootstrap failed; aborting installer. Review $logFile for details."
+  throw "Trapezohe Companion bootstrap failed. Review installer log at $logFile."
 }
 
+Write-InstallerLog "Bootstrap succeeded, proceeding with daemon handoff."
+Restart-CompanionDaemon
 Launch-TrayOnce
 Write-InstallerLog "Windows installer bootstrap finished."
 exit 0

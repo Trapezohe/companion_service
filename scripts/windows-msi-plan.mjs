@@ -87,7 +87,7 @@ ${componentLines}
     <Feature Id="MainFeature" Title="Companion Installer" Level="1">
 ${componentRefLines}
     </Feature>
-    <CustomAction Id="RunCompanionBootstrap" FileKey="RunInstallCmd" ExeCommand="" Execute="deferred" Return="ignore" Impersonate="yes" />
+    <CustomAction Id="RunCompanionBootstrap" FileKey="RunInstallCmd" ExeCommand="" Execute="deferred" Return="check" Impersonate="yes" />
     <InstallExecuteSequence>
       <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT Installed</Custom>
     </InstallExecuteSequence>
