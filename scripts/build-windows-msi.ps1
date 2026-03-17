@@ -79,6 +79,7 @@ if ($plan.builder -eq "wix") {
     dotnet tool install --global wix --version 4.0.5 | Out-Null
     $env:PATH += ";$env:USERPROFILE\\.dotnet\\tools"
   }
+  wix extension add WixToolset.UI.wixext/4.0.5 | Out-Null
 
   wix build `
     -arch x64 `
