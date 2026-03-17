@@ -6,9 +6,9 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 
 const FILE_MODE = 0o600
 const MAX_APPROVALS = 500
@@ -41,18 +41,35 @@ function APPROVALS_FILE() {
 /** @type {{ approvals: ApprovalRecord[] }} */
 let store = { approvals: [] }
 let loaded = false
-let persistTimer = null
 
 function hasNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-function mergeMetaPreservingCanonical(currentMeta, inputMeta) {
+function resolveCanonicalApprovalRequestId(requestId, currentMeta, inputMeta) {
+  if (hasNonEmptyString(requestId)) return requestId.trim()
+  const existing = currentMeta && typeof currentMeta === 'object' ? currentMeta : {}
+  const incoming = inputMeta && typeof inputMeta === 'object' ? inputMeta : {}
+  if (hasNonEmptyString(existing.approvalRequestId)) return existing.approvalRequestId.trim()
+  if (hasNonEmptyString(existing.requestId)) return existing.requestId.trim()
+  if (hasNonEmptyString(incoming.approvalRequestId)) return incoming.approvalRequestId.trim()
+  if (hasNonEmptyString(incoming.requestId)) return incoming.requestId.trim()
+  return ''
+}
+
+function mergeMetaPreservingCanonical(requestId, currentMeta, inputMeta) {
   const incoming = inputMeta && typeof inputMeta === 'object' ? clone(inputMeta) : {}
   const existing = currentMeta && typeof currentMeta === 'object' ? clone(currentMeta) : {}
-  return {
+  const canonicalApprovalRequestId = resolveCanonicalApprovalRequestId(requestId, existing, incoming)
+  const merged = {
     ...incoming,
     ...existing,
+  }
+  if (!canonicalApprovalRequestId) return merged
+  return {
+    ...merged,
+    approvalRequestId: canonicalApprovalRequestId,
+    requestId: canonicalApprovalRequestId,
   }
 }
 
@@ -64,36 +81,36 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-async function safeChmod(target, mode) {
-  try {
-    await fs.chmod(target, mode)
-  } catch (err) {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return
-    throw err
-  }
+function APPROVALS_BACKUP_FILE() {
+  return path.join(getConfigDir(), 'approvals.json.bak')
 }
 
-async function writeStoreNow() {
-  await ensureConfigDir()
+const storage = createFileBackedStore({
+  label: 'approval-store',
+  primaryPath: APPROVALS_FILE,
+  backupPath: APPROVALS_BACKUP_FILE,
+  debounceMs: WRITE_DEBOUNCE_MS,
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ approvals: [] }),
+  parse: (raw) => {
+    const parsed = JSON.parse(raw)
+    return { approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [] }
+  },
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    primaryCorrupted: (err) => `Failed to load: ${err.message}`,
+  },
+})
+
+function buildPersistableSnapshot() {
   pruneExpired()
-  const payload = JSON.stringify({ approvals: store.approvals }, null, 2) + '\n'
-  const target = APPROVALS_FILE()
-  const tmp = `${target}.tmp`
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
+  return { approvals: store.approvals }
 }
 
 function schedulePersist() {
-  if (persistTimer) return
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    writeStoreNow().catch((err) => {
-      console.error(`[approval-store] Persist failed: ${err.message}`)
-    })
-  }, WRITE_DEBOUNCE_MS)
-  if (persistTimer.unref) persistTimer.unref()
+  storage.schedulePersist(buildPersistableSnapshot)
 }
 
 function pruneExpired() {
@@ -115,26 +132,13 @@ async function ensureLoaded() {
 }
 
 export async function loadApprovalStore() {
-  await ensureConfigDir()
-  try {
-    const raw = await fs.readFile(APPROVALS_FILE(), 'utf8')
-    const parsed = JSON.parse(raw)
-    store = { approvals: Array.isArray(parsed.approvals) ? parsed.approvals : [] }
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn(`[approval-store] Failed to load: ${err.message}`)
-    }
-    store = { approvals: [] }
-  }
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { approvals: [] }
   loaded = true
 }
 
 export async function flushApprovalStore() {
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-    await writeStoreNow()
-  }
+  await storage.flush()
 }
 
 export async function createApproval(input) {
@@ -170,8 +174,8 @@ export async function createApproval(input) {
       expiresAt: Number(current.expiresAt) || Number(input?.expiresAt) || now() + 120_000,
       ...(current.resolvedAt ? { resolvedAt: current.resolvedAt } : {}),
       ...(current.resolvedBy ? { resolvedBy: current.resolvedBy } : {}),
-      ...(Object.keys(mergeMetaPreservingCanonical(current.meta, input?.meta)).length > 0
-        ? { meta: mergeMetaPreservingCanonical(current.meta, input?.meta) }
+      ...(Object.keys(mergeMetaPreservingCanonical(requestId, current.meta, input?.meta)).length > 0
+        ? { meta: mergeMetaPreservingCanonical(requestId, current.meta, input?.meta) }
         : {}),
     }
     store.approvals[existingIndex] = next
@@ -188,7 +192,9 @@ export async function createApproval(input) {
     status: 'pending',
     createdAt: now(),
     expiresAt: Number(input?.expiresAt) || now() + 120_000,
-    ...(input?.meta && typeof input.meta === 'object' ? { meta: clone(input.meta) } : {}),
+    ...(Object.keys(mergeMetaPreservingCanonical(requestId, null, input?.meta)).length > 0
+      ? { meta: mergeMetaPreservingCanonical(requestId, null, input?.meta) }
+      : {}),
   }
   store.approvals.push(record)
   pruneExpired()
@@ -209,7 +215,9 @@ export async function relinkApprovalRun(requestId, runId) {
 
   const current = store.approvals[index]
   const nextMeta = {
-    ...(current.meta && typeof current.meta === 'object' ? clone(current.meta) : {}),
+    ...mergeMetaPreservingCanonical(id, current.meta, {
+      runId: nextRunId,
+    }),
     runId: nextRunId,
   }
   store.approvals[index] = {
@@ -287,14 +295,10 @@ export async function expireOverdueApprovals() {
 }
 
 export async function clearApprovalStoreForTests() {
+  await storage.flush()
   store = { approvals: [] }
   loaded = true
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-  }
-  await ensureConfigDir()
-  const payload = JSON.stringify({ approvals: [] }, null, 2) + '\n'
-  await fs.writeFile(APPROVALS_FILE(), payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(APPROVALS_FILE(), FILE_MODE)
+  loadingPromise = null
+  storage.reset()
+  await storage.persistSnapshot(buildPersistableSnapshot())
 }

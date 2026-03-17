@@ -64,6 +64,7 @@ import {
   updateRun,
   flushRunStore,
 } from './run-store.mjs'
+import { RUN_CONTRACT_VERSION } from './run-envelope.mjs'
 import {
   createApproval,
   expireOverdueApprovals,
@@ -166,6 +167,7 @@ function buildCompanionCapabilitiesPayload() {
   return {
     protocolVersion: `trapezohe-companion/${COMPANION_PROTOCOL_VERSION}`,
     version: COMPANION_VERSION,
+    runContractVersion: RUN_CONTRACT_VERSION,
     supportedFeatures: {
       ...COMPANION_SUPPORTED_FEATURES,
     },
@@ -176,7 +178,11 @@ const RECOVERABLE_SESSION_RUN_TYPES = new Set(['session', 'acp'])
 const RECOVERABLE_ACTIVE_STATES = new Set(['queued', 'idle', 'running', 'waiting_approval', 'retrying'])
 
 function getRunSessionId(run) {
-  const sessionId = typeof run?.meta?.sessionId === 'string' ? run.meta.sessionId.trim() : ''
+  const sessionId = typeof run?.sessionId === 'string' && run.sessionId.trim()
+    ? run.sessionId.trim()
+    : typeof run?.meta?.sessionId === 'string'
+      ? run.meta.sessionId.trim()
+      : ''
   return sessionId || ''
 }
 
@@ -198,6 +204,15 @@ function buildAcpApprovalRequestId(event) {
   const sessionId = String(event?.sessionId || '').trim() || 'session'
   const turnId = String(event?.turnId || '').trim() || 'turn'
   return `acp-approval-${sessionId}-${turnId}`
+}
+
+function buildApprovalLineage(requestId) {
+  const approvalRequestId = String(requestId || '').trim()
+  if (!approvalRequestId) return {}
+  return {
+    requestId: approvalRequestId,
+    approvalRequestId,
+  }
 }
 
 function createKeyedSerializer() {
@@ -438,6 +453,9 @@ async function handleExec(req, res, getPermissionPolicy) {
     type: 'exec',
     state: 'running',
     startedAt: Date.now(),
+    laneId: 'remote:exec',
+    source: 'remote',
+    contractVersion: RUN_CONTRACT_VERSION,
     summary: 'Executing local command',
     meta: {
       command: command.slice(0, 500),
@@ -724,8 +742,9 @@ export function createCompanionServer({
     if (!runId) return
 
     const currentRun = await getRunById(runId).catch(() => null)
+    const approvalRequestId = buildAcpApprovalRequestId(event)
     const approval = await createApproval({
-      requestId: buildAcpApprovalRequestId(event),
+      requestId: approvalRequestId,
       conversationId: String(currentRun?.meta?.conversationId || ''),
       toolName: 'acp_permission',
       toolPreview: trimApprovalText(event.text || 'ACP session requires approval'),
@@ -734,6 +753,7 @@ export function createCompanionServer({
       expiresAt: Date.now() + 120_000,
       meta: mergeRunMeta(currentRun, {
         runId,
+        ...buildApprovalLineage(approvalRequestId),
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.agentType ? { agentType: event.agentType } : {}),
@@ -750,7 +770,7 @@ export function createCompanionServer({
       state: 'waiting_approval',
       summary: 'ACP awaiting approval',
       meta: mergeRunMeta(currentRun, {
-        requestId: approval.requestId,
+        ...buildApprovalLineage(approval.requestId),
         sessionId: event.sessionId,
         approvalStatus: approval.status,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -794,6 +814,10 @@ export function createCompanionServer({
         type: 'session',
         state: 'running',
         startedAt: Date.now(),
+        sessionId: session.id,
+        laneId: 'remote:session',
+        source: 'remote',
+        contractVersion: RUN_CONTRACT_VERSION,
         summary: 'Session started',
         meta: {
           sessionId: session.id,
@@ -814,6 +838,10 @@ export function createCompanionServer({
       const run = await createRun({
         type: 'acp',
         state: 'idle',
+        sessionId: session.sessionId,
+        laneId: 'remote:acp',
+        source: 'remote',
+        contractVersion: RUN_CONTRACT_VERSION,
         summary: 'ACP session created',
         meta: {
           sessionId: session.sessionId,
@@ -890,6 +918,7 @@ export function createCompanionServer({
         pid: process.pid,
         version: capabilities.version,
         protocolVersion: capabilities.protocolVersion,
+        runContractVersion: capabilities.runContractVersion,
         supportedFeatures: capabilities.supportedFeatures,
         mcpServers: mcpManager.getConnectedCount(),
         mcpTools: mcpManager.getAllTools().length,
@@ -1198,9 +1227,12 @@ export function createCompanionServer({
               type: 'approval',
               state: 'waiting_approval',
               startedAt: Date.now(),
+              laneId: 'remote:approval',
+              source: 'remote',
+              contractVersion: RUN_CONTRACT_VERSION,
               summary: 'Awaiting approval',
               meta: {
-                requestId,
+                ...buildApprovalLineage(requestId),
                 conversationId: String(body.conversationId || ''),
                 toolName: String(body.toolName || ''),
                 toolPreview: String(body.toolPreview || '').slice(0, 500),
@@ -1239,7 +1271,7 @@ export function createCompanionServer({
                     ? 'Approval rejected'
                     : 'Awaiting approval',
               meta: mergeRunMeta(run, {
-                requestId: record.requestId,
+                ...buildApprovalLineage(record.requestId),
                 conversationId: record.conversationId,
                 toolName: record.toolName,
                 toolPreview: record.toolPreview,
@@ -1320,7 +1352,7 @@ export function createCompanionServer({
                 : 'Approval rejected',
             meta: {
               ...(record.meta && typeof record.meta === 'object' ? record.meta : {}),
-              requestId: record.requestId,
+              ...buildApprovalLineage(record.requestId),
               conversationId: record.conversationId,
               approvalStatus: record.status,
               ...(record.resolvedBy ? { resolvedBy: record.resolvedBy } : {}),

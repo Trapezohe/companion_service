@@ -2,7 +2,7 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 
 import { createCompanionServer } from './server.mjs'
 import { addPendingRun, clearCronStoreForTests } from './cron-store.mjs'
@@ -419,6 +419,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   const health = await requestJson(ctx, '/healthz')
   assert.equal(health.status, 200)
   assert.equal(typeof health.payload.protocolVersion, 'string')
+  assert.equal(health.payload.runContractVersion, 2)
   assert.equal(typeof health.payload.supportedFeatures, 'object')
   assert.equal(health.payload.supportedFeatures.acp, true)
   assert.equal(health.payload.supportedFeatures.mcp, true)
@@ -431,6 +432,7 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(capabilities.status, 200)
   assert.equal(capabilities.payload.protocolVersion, health.payload.protocolVersion)
   assert.equal(capabilities.payload.version, health.payload.version)
+  assert.equal(capabilities.payload.runContractVersion, health.payload.runContractVersion)
   assert.equal(capabilities.payload.supportedFeatures.runLedger, true)
   assert.equal(capabilities.payload.supportedFeatures.approvalStore, true)
   assert.equal(capabilities.payload.supportedFeatures.browserLedger, true)
@@ -1330,6 +1332,8 @@ test('runtime runs endpoints expose exec/session lifecycle and diagnostics', asy
   )
   assert.ok(sessionRun)
   assert.equal(sessionRun.state, 'done')
+  assert.equal(sessionRun.sessionId, sessionStart.payload.sessionId)
+  assert.equal(sessionRun.contractVersion, 2)
 
   const diagnostics = await requestJson(ctx, '/api/runtime/runs/diagnostics?limit=50')
   assert.equal(diagnostics.status, 200)
@@ -1957,4 +1961,157 @@ test('startup recovery marks orphaned session and ACP runs as failed after compa
   assert.equal(orphanSessionRun?.meta?.recoveredAfterRestart, true)
   assert.equal(orphanAcpRun?.state, 'failed')
   assert.equal(orphanAcpRun?.meta?.recoveredAfterRestart, true)
+})
+
+test('runtime run endpoints tolerate mixed-version persisted rows during rollback windows', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+
+  await writeFile(
+    path.join(testConfigDir, 'runs.json'),
+    JSON.stringify({
+      runs: [
+        {
+          runId: 'run-mixed-legacy',
+          type: 'session',
+          state: 'running',
+          createdAt: 1_710_000_000_000,
+          updatedAt: 1_710_000_000_100,
+          meta: {
+            sessionId: 'session-mixed-legacy',
+            command: 'node legacy.js',
+          },
+        },
+        {
+          runId: 'run-mixed-v2',
+          type: 'exec',
+          state: 'done',
+          createdAt: 1_710_000_000_200,
+          updatedAt: 1_710_000_000_300,
+          sessionId: 'session-mixed-v2',
+          attemptId: 'run-mixed-v2:attempt-1',
+          laneId: 'remote:exec',
+          source: 'remote',
+          contractVersion: 2,
+        },
+        {
+          runId: 'run-mixed-future',
+          type: 'cron',
+          state: 'failed',
+          createdAt: 1_710_000_000_400,
+          updatedAt: 1_710_000_000_500,
+          source: 'replay',
+          parentRunId: 'run-mixed-v2',
+          contractVersion: 999,
+          meta: {
+            replayOf: {
+              kind: 'cron_pending',
+              pendingId: 'pending-mixed-1',
+              taskId: 'task-mixed-1',
+              missedAt: 1_710_000_000_450,
+            },
+          },
+        },
+      ],
+      sessionLinks: {},
+      actionLinks: {},
+    }, null, 2) + '\n',
+    'utf8',
+  )
+
+  const ctx = await startTestServer({ preserveStores: true })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const runtimeList = await requestJson(ctx, '/api/runtime/runs?limit=20')
+  const legacyList = await requestJson(ctx, '/api/local-runtime/runs?limit=20')
+  const legacyDetail = await requestJson(ctx, '/api/runtime/runs/run-mixed-legacy')
+
+  assert.equal(runtimeList.status, 200)
+  assert.equal(legacyList.status, 200)
+  assert.equal(legacyDetail.status, 200)
+
+  const legacy = runtimeList.payload.runs.find((run) => run.runId === 'run-mixed-legacy')
+  const v2 = runtimeList.payload.runs.find((run) => run.runId === 'run-mixed-v2')
+  const future = runtimeList.payload.runs.find((run) => run.runId === 'run-mixed-future')
+  assert.ok(legacy)
+  assert.ok(v2)
+  assert.ok(future)
+
+  assert.equal(legacy.contractVersion, 1)
+  assert.equal(legacy.sessionId, 'session-mixed-legacy')
+  assert.equal(legacy.attemptId, undefined)
+  assert.equal(v2.contractVersion, 2)
+  assert.equal(v2.attemptId, 'run-mixed-v2:attempt-1')
+  assert.equal(future.contractVersion, 2)
+  assert.equal(future.source, 'replay')
+  assert.equal(future.parentRunId, 'run-mixed-v2')
+  assert.equal(typeof future.attemptId, 'string')
+  assert.deepEqual(future.meta?.replayOf, {
+    kind: 'cron_pending',
+    pendingId: 'pending-mixed-1',
+    taskId: 'task-mixed-1',
+    missedAt: 1_710_000_000_450,
+  })
+  assert.equal(legacyDetail.payload.run.sessionId, 'session-mixed-legacy')
+})
+
+test('startup recovery keeps replay lineage when orphaned replay ACP sessions are failed', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  const replayOf = {
+    kind: 'cron_pending',
+    pendingId: 'pending-restart-replay-1',
+    taskId: 'job-restart-replay-1',
+    missedAt: 1_710_000_001_000,
+  }
+
+  await writeFile(
+    path.join(testConfigDir, 'runs.json'),
+    JSON.stringify({
+      runs: [
+        {
+          runId: 'run-restart-replay',
+          type: 'acp',
+          state: 'running',
+          createdAt: 1_710_000_001_100,
+          updatedAt: 1_710_000_001_200,
+          sessionId: 'acp-restart-replay',
+          source: 'replay',
+          parentRunId: 'run-parent-replay',
+          contractVersion: 2,
+          meta: {
+            sessionId: 'acp-restart-replay',
+            replayOf,
+          },
+        },
+      ],
+      sessionLinks: {
+        'acp-restart-replay': {
+          runId: 'run-restart-replay',
+          type: 'acp',
+          updatedAt: 1_710_000_001_300,
+        },
+      },
+      actionLinks: {},
+    }, null, 2) + '\n',
+    'utf8',
+  )
+
+  const ctx = await startTestServer({ preserveStores: true })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  await delay(50)
+  const detail = await requestJson(ctx, '/api/runtime/runs/run-restart-replay')
+  assert.equal(detail.status, 200)
+  assert.equal(detail.payload.run.state, 'failed')
+  assert.equal(detail.payload.run.meta?.recoveredAfterRestart, true)
+  assert.equal(detail.payload.run.source, 'replay')
+  assert.equal(detail.payload.run.parentRunId, 'run-parent-replay')
+  assert.deepEqual(detail.payload.run.meta?.replayOf, replayOf)
 })

@@ -105,3 +105,44 @@ test('createApproval preserves canonical ACP provenance metadata across retries'
   assert.equal(retried.meta?.turnId, 'turn-acp-approval-2')
   assert.deepEqual(retried.meta?.inputProvenance, provenance)
 })
+
+test('createApproval mirrors the canonical approval request id into meta and preserves it across retries', async (t) => {
+  await clearApprovalStoreForTests()
+  t.after(async () => {
+    await clearApprovalStoreForTests()
+  })
+
+  const created = await createApproval({
+    requestId: 'req-canonical-approval-3',
+    conversationId: 'conv-canonical-approval-3',
+    toolName: 'Write',
+    toolPreview: 'Write file',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+    expiresAt: Date.now() + 60_000,
+    meta: {
+      runId: 'run-canonical-approval-3',
+    },
+  })
+
+  assert.equal(created.meta?.approvalRequestId, 'req-canonical-approval-3')
+  assert.equal(created.meta?.requestId, 'req-canonical-approval-3')
+
+  const retried = await createApproval({
+    requestId: 'req-canonical-approval-3',
+    conversationId: 'conv-ignored',
+    toolName: 'Ignored',
+    toolPreview: 'Ignored',
+    riskLevel: 'low',
+    channels: ['telegram'],
+    expiresAt: Date.now() + 120_000,
+    meta: {
+      approvalRequestId: 'wrong-approval-id',
+      requestId: 'wrong-request-id',
+    },
+  })
+
+  assert.equal(retried.meta?.approvalRequestId, 'req-canonical-approval-3')
+  assert.equal(retried.meta?.requestId, 'req-canonical-approval-3')
+  assert.equal(retried.meta?.runId, 'run-canonical-approval-3')
+})

@@ -6,16 +6,20 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
+import {
+  RUN_CONTRACT_VERSION,
+  normalizeRun,
+  normalizeState,
+  normalizeTimestamp,
+  normalizeType,
+} from './run-envelope.mjs'
 
 const FILE_MODE = 0o600
 const MAX_RUNS = Math.max(1, Number(process.env.TRAPEZOHE_MAX_RUNS || 200) || 200)
 const WRITE_DEBOUNCE_MS = Number(process.env.TRAPEZOHE_RUNS_WRITE_DEBOUNCE_MS || 300)
-
-const RUN_TYPES = new Set(['exec', 'session', 'cron', 'heartbeat', 'acp', 'approval'])
-const RUN_STATES = new Set(['queued', 'idle', 'running', 'waiting_approval', 'retrying', 'done', 'failed', 'cancelled'])
 
 function RUNS_FILE() {
   return path.join(getConfigDir(), 'runs.json')
@@ -57,8 +61,6 @@ function RUNS_BACKUP_FILE() {
 /** @type {{ runs: RunEnvelope[], sessionLinks: Record<string, BrowserRunLink>, actionLinks: Record<string, BrowserRunLink> }} */
 let store = { runs: [], sessionLinks: {}, actionLinks: {} }
 let loaded = false
-let persistTimer = null
-let persistPromise = null
 
 function now() {
   return Date.now()
@@ -72,38 +74,6 @@ function clampInt(value, fallback, min, max) {
   const parsed = Number.parseInt(value, 10)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(Math.max(parsed, min), max)
-}
-
-async function safeChmod(target, mode) {
-  try {
-    await fs.chmod(target, mode)
-  } catch (err) {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return
-    throw err
-  }
-}
-
-function trimText(text, maxChars = 500) {
-  const normalized = String(text || '').trim()
-  if (!normalized) return undefined
-  if (normalized.length <= maxChars) return normalized
-  return `${normalized.slice(0, Math.max(32, maxChars - 16)).trimEnd()}...[truncated]`
-}
-
-function normalizeType(value, fallback = 'exec') {
-  const normalized = String(value || '').trim().toLowerCase()
-  return RUN_TYPES.has(normalized) ? normalized : fallback
-}
-
-function normalizeState(value, fallback = 'queued') {
-  const normalized = String(value || '').trim().toLowerCase()
-  return RUN_STATES.has(normalized) ? normalized : fallback
-}
-
-function normalizeTimestamp(value) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return undefined
-  return Math.max(0, Math.floor(n))
 }
 
 function normalizeBrowserRunLink(input, fallback = {}) {
@@ -141,53 +111,8 @@ function normalizeBrowserRunLink(input, fallback = {}) {
   }
 }
 
-function normalizeDeliveryState(input) {
-  if (!input || typeof input !== 'object') return undefined
-  const attemptsRaw = Number(input.attempts)
-  const attempts = Number.isFinite(attemptsRaw) ? Math.max(0, Math.floor(attemptsRaw)) : undefined
-  const lastAttemptAt = normalizeTimestamp(input.lastAttemptAt)
-  const channel = typeof input.channel === 'string' ? input.channel.trim() : ''
-  if (!channel && attempts === undefined && lastAttemptAt === undefined) {
-    return undefined
-  }
-  return {
-    ...(channel ? { channel } : {}),
-    ...(attempts !== undefined ? { attempts } : {}),
-    ...(lastAttemptAt !== undefined ? { lastAttemptAt } : {}),
-  }
-}
-
-function normalizeRun(input) {
-  if (!input || typeof input !== 'object') return null
-  const runId = typeof input.runId === 'string' ? input.runId.trim() : ''
-  if (!runId) return null
-
-  const createdAt = normalizeTimestamp(input.createdAt) || now()
-  const updatedAt = normalizeTimestamp(input.updatedAt) || createdAt
-  const startedAt = normalizeTimestamp(input.startedAt)
-  const finishedAt = normalizeTimestamp(input.finishedAt)
-  const stateFallback = finishedAt !== undefined
-    ? (finishedAt && startedAt !== undefined ? 'done' : 'failed')
-    : 'queued'
-
-  return {
-    runId,
-    type: normalizeType(input.type, 'exec'),
-    state: normalizeState(input.state, stateFallback),
-    createdAt,
-    updatedAt,
-    ...(startedAt !== undefined ? { startedAt } : {}),
-    ...(finishedAt !== undefined ? { finishedAt } : {}),
-    ...(trimText(input.summary, 500) ? { summary: trimText(input.summary, 500) } : {}),
-    ...(trimText(input.error, 500) ? { error: trimText(input.error, 500) } : {}),
-    ...(input.meta && typeof input.meta === 'object' ? { meta: clone(input.meta) } : {}),
-    ...(normalizeDeliveryState(input.deliveryState) ? { deliveryState: normalizeDeliveryState(input.deliveryState) } : {}),
-  }
-}
-
-async function readStoreFile(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8')
-  const parsed = JSON.parse(raw)
+function normalizeStoreSnapshot(input) {
+  const parsed = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
   const runs = Array.isArray(parsed.runs) ? parsed.runs.map(normalizeRun).filter(Boolean) : []
   const sessionLinks = parsed.sessionLinks && typeof parsed.sessionLinks === 'object' && !Array.isArray(parsed.sessionLinks)
     ? Object.fromEntries(
@@ -222,46 +147,41 @@ async function readStoreFile(filePath) {
   return { runs, sessionLinks, actionLinks }
 }
 
+const storage = createFileBackedStore({
+  label: 'run-store',
+  primaryPath: RUNS_FILE,
+  backupPath: RUNS_BACKUP_FILE,
+  debounceMs: Math.max(50, WRITE_DEBOUNCE_MS),
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ runs: [], sessionLinks: {}, actionLinks: {} }),
+  parse: (raw) => normalizeStoreSnapshot(JSON.parse(raw)),
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    tmpCleanup: (err) => `Failed to clean orphan .tmp: ${err.message}`,
+    primaryCorrupted: (err) => `Primary runs.json corrupted: ${err.message}`,
+    backupRecovered: 'Recovered from backup runs.json.bak',
+    backupUnavailable: (err) => `Backup also unavailable: ${err.message ?? 'unknown error'}`,
+  },
+})
+
 function trimStoreRuns() {
   if (store.runs.length <= MAX_RUNS) return
   store.runs = store.runs.slice(store.runs.length - MAX_RUNS)
 }
 
-async function writeStoreNow() {
-  await ensureConfigDir()
+function buildPersistableSnapshot() {
   trimStoreRuns()
-  const payload = JSON.stringify({
+  return {
     runs: store.runs,
     sessionLinks: store.sessionLinks,
     actionLinks: store.actionLinks,
-  }, null, 2) + '\n'
-  const target = RUNS_FILE()
-  const backup = RUNS_BACKUP_FILE()
-  const tmp = `${target}.tmp`
-
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-
-  try {
-    await fs.copyFile(target, backup)
-    await safeChmod(backup, FILE_MODE)
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err
   }
-
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
 }
 
 function schedulePersist() {
-  if (persistTimer) return
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    persistPromise = writeStoreNow().finally(() => {
-      persistPromise = null
-    })
-  }, Math.max(50, WRITE_DEBOUNCE_MS))
-  if (persistTimer.unref) persistTimer.unref()
+  storage.schedulePersist(buildPersistableSnapshot)
 }
 
 let loadingPromise = null
@@ -275,33 +195,9 @@ async function ensureLoaded() {
   return loadingPromise
 }
 
-async function cleanOrphanTmp() {
-  try {
-    await fs.unlink(`${RUNS_FILE()}.tmp`)
-  } catch (err) {
-    if (err.code !== 'ENOENT') console.warn(`[run-store] Failed to clean orphan .tmp: ${err.message}`)
-  }
-}
-
 export async function loadRunStore() {
-  await ensureConfigDir()
-  await cleanOrphanTmp()
-  try {
-    store = await readStoreFile(RUNS_FILE())
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      store = { runs: [], sessionLinks: {}, actionLinks: {} }
-    } else {
-      console.warn(`[run-store] Primary runs.json corrupted: ${err.message}`)
-      try {
-        store = await readStoreFile(RUNS_BACKUP_FILE())
-        console.warn('[run-store] Recovered from backup runs.json.bak')
-      } catch (backupErr) {
-        console.warn(`[run-store] Backup also unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { runs: [], sessionLinks: {}, actionLinks: {} }
-      }
-    }
-  }
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { runs: [], sessionLinks: {}, actionLinks: {} }
   trimStoreRuns()
   if (!store.sessionLinks || typeof store.sessionLinks !== 'object') {
     store.sessionLinks = {}
@@ -315,14 +211,7 @@ export async function loadRunStore() {
 
 export async function flushRunStore() {
   await ensureLoaded()
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-    await writeStoreNow()
-  }
-  if (persistPromise) {
-    await persistPromise
-  }
+  await storage.flush()
 }
 
 export async function createRun(input) {
@@ -336,6 +225,12 @@ export async function createRun(input) {
     updatedAt: createdAt,
     startedAt: input?.startedAt,
     finishedAt: input?.finishedAt,
+    sessionId: input?.sessionId,
+    attemptId: input?.attemptId,
+    laneId: input?.laneId,
+    source: input?.source,
+    parentRunId: input?.parentRunId,
+    contractVersion: input?.contractVersion ?? RUN_CONTRACT_VERSION,
     summary: input?.summary,
     error: input?.error,
     meta: input?.meta,
@@ -534,17 +429,12 @@ export async function getRunDiagnostics(options = {}) {
 }
 
 export async function clearRunStoreForTests() {
+  await storage.flush()
   store = { runs: [], sessionLinks: {}, actionLinks: {} }
   loaded = true
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-  }
-  persistPromise = null
-  await ensureConfigDir()
-  const payload = JSON.stringify({ runs: [], sessionLinks: {}, actionLinks: {} }, null, 2) + '\n'
-  await fs.writeFile(RUNS_FILE(), payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(RUNS_FILE(), FILE_MODE)
+  loadingPromise = null
+  storage.reset()
+  await storage.replaceSnapshot(buildPersistableSnapshot())
 }
 
 export async function setSessionRunLink(sessionId, runId, meta = {}) {

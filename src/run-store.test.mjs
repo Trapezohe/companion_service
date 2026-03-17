@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 
 async function withTempHome(run, options = {}) {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-run-store-test-'))
@@ -44,10 +44,19 @@ test('run store supports create -> update -> list -> get -> diagnostics', async 
       state: 'running',
       summary: 'Executing command',
       startedAt: Date.now(),
+      sessionId: 'session-exec-1',
+      laneId: 'remote:exec',
+      source: 'remote',
+      contractVersion: 2,
       meta: { command: 'echo ok' },
     })
     assert.ok(run.runId)
     assert.equal(run.state, 'running')
+    assert.equal(run.sessionId, 'session-exec-1')
+    assert.equal(run.laneId, 'remote:exec')
+    assert.equal(run.source, 'remote')
+    assert.equal(run.contractVersion, 2)
+    assert.equal(run.attemptId, `${run.runId}:attempt-1`)
 
     const updated = await mod.updateRun(run.runId, {
       state: 'done',
@@ -65,6 +74,8 @@ test('run store supports create -> update -> list -> get -> diagnostics', async 
     const fetched = await mod.getRunById(run.runId)
     assert.equal(fetched.runId, run.runId)
     assert.equal(fetched.state, 'done')
+    assert.equal(fetched.sessionId, 'session-exec-1')
+    assert.equal(fetched.contractVersion, 2)
 
     const diagnostics = await mod.getRunDiagnostics({ limit: 20 })
     assert.equal(diagnostics.ok, true)
@@ -147,6 +158,110 @@ test('run store persists runs across module reload', async () => {
     const fetched = await reloaded.getRunById('run-persisted')
     assert.ok(fetched)
     assert.equal(fetched.summary, 'persist me')
+  })
+})
+
+test('run store loads mixed legacy persisted rows and keeps replay lineage across upgrade reload', async () => {
+  await withTempHome(async () => {
+    const configMod = await import('./config.mjs')
+    const configDir = configMod.getConfigDir()
+    const replayLineage = {
+      kind: 'cron_pending',
+      pendingId: 'pending-upgrade-1',
+      taskId: 'job-upgrade-1',
+      missedAt: 1_710_000_000_500,
+    }
+
+    await writeFile(
+      path.join(configDir, 'runs.json'),
+      JSON.stringify({
+        runs: [
+          {
+            runId: 'run-legacy-upgrade',
+            type: 'session',
+            state: 'running',
+            createdAt: 1_710_000_000_000,
+            updatedAt: 1_710_000_000_100,
+            meta: {
+              sessionId: 'session-legacy-upgrade',
+              command: 'node legacy.js',
+            },
+          },
+          {
+            runId: 'run-replay-upgrade',
+            type: 'acp',
+            state: 'running',
+            createdAt: 1_710_000_000_200,
+            updatedAt: 1_710_000_000_300,
+            source: 'replay',
+            parentRunId: 'run-parent-upgrade',
+            contractVersion: 2,
+            meta: {
+              sessionId: 'acp-replay-upgrade',
+              replayOf: replayLineage,
+            },
+          },
+        ],
+        sessionLinks: {
+          'session-legacy-upgrade': { runId: 'run-legacy-upgrade' },
+          'acp-replay-upgrade': { runId: 'run-replay-upgrade', type: 'acp' },
+        },
+        actionLinks: {},
+      }, null, 2) + '\n',
+      'utf8',
+    )
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+
+    const legacy = await reloaded.getRunById('run-legacy-upgrade')
+    assert.ok(legacy)
+    assert.equal(legacy.contractVersion, 1)
+    assert.equal(legacy.sessionId, 'session-legacy-upgrade')
+    assert.equal(legacy.attemptId, undefined)
+
+    const replay = await reloaded.getRunById('run-replay-upgrade')
+    assert.ok(replay)
+    assert.equal(replay.contractVersion, 2)
+    assert.equal(replay.sessionId, 'acp-replay-upgrade')
+    assert.equal(replay.source, 'replay')
+    assert.equal(replay.parentRunId, 'run-parent-upgrade')
+    assert.deepEqual(replay.meta?.replayOf, replayLineage)
+    assert.equal(typeof replay.attemptId, 'string')
+
+    const replayLink = await reloaded.getSessionRunLink('acp-replay-upgrade')
+    assert.equal(replayLink?.runId, 'run-replay-upgrade')
+  })
+})
+
+test('clearRunStoreForTests prevents stale backup recovery after the primary file is corrupted', async () => {
+  await withTempHome(async ({ mod }) => {
+    const configMod = await import('./config.mjs')
+    const configDir = configMod.getConfigDir()
+    const runsFile = path.join(configDir, 'runs.json')
+    const backupFile = path.join(configDir, 'runs.json.bak')
+
+    await mod.createRun({
+      runId: 'run-cleared-backup',
+      type: 'exec',
+      state: 'done',
+      summary: 'should not come back',
+    })
+    await mod.flushRunStore()
+
+    await writeFile(backupFile, await readFile(runsFile, 'utf8'), 'utf8')
+
+    await mod.clearRunStoreForTests()
+    await writeFile(runsFile, '{ invalid json', 'utf8')
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./run-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadRunStore()
+
+    assert.equal(await reloaded.getRunById('run-cleared-backup'), null)
+    const listed = await reloaded.listRuns({ limit: 10, offset: 0 })
+    assert.equal(listed.total, 0)
   })
 })
 
