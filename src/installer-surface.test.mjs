@@ -174,7 +174,7 @@ test('Windows installer hands runtime over to the installed CLI after bootstrap'
   assert.match(installer, /function Remove-TrayAutoStart/)
   assert.match(installer, /if \(\$Cleanup\) \{[\s\S]+?Stop-RunningTrayProcesses[\s\S]+?Remove-DesktopShortcut[\s\S]+?Remove-StartMenuShortcut[\s\S]+?Remove-TrayAutoStart[\s\S]+?exit 0[\s\S]+?\}/s)
   assert.match(wxs, /Id="UninstallCleanup"/)
-  assert.match(wxs, /ExeCommand="-Cleanup"/)
+  assert.match(wxs, /ExeCommand="cmd\.exe \/c run-install\.cmd -Cleanup"/)
   assert.match(wxs, /REMOVE~=&quot;ALL&quot;/)
 })
 

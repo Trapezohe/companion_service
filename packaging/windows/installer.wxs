@@ -68,11 +68,9 @@
 
     <CustomAction
       Id="UninstallCleanup"
-      FileRef="RunInstallCmd"
-      ExeCommand="-Cleanup"
-      Execute="deferred"
-      Return="ignore"
-      Impersonate="yes" />
+      Directory="INSTALLFOLDER"
+      ExeCommand="cmd.exe /c run-install.cmd -Cleanup"
+      Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="StopTrayBeforeInstall" Before="InstallFiles" Condition="(Installed OR WIX_UPGRADE_DETECTED) AND NOT REMOVE~=&quot;ALL&quot;" />

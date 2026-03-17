@@ -46,7 +46,7 @@ test('wix4 source keeps WiX 4 authoring with bind variables', () => {
   assert.match(wxs, /<Custom Action="StopTrayBeforeInstall" Before="InstallFiles" Condition="\(Installed OR WIX_UPGRADE_DETECTED\) AND NOT REMOVE~=&quot;ALL&quot;" \/>/)
   assert.match(wxs, /<Custom Action="RunCompanionBootstrap" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" \/>/)
   assert.match(wxs, /Id="UninstallCleanup"/)
-  assert.match(wxs, /ExeCommand="-Cleanup"/)
+  assert.match(wxs, /ExeCommand="cmd\.exe \/c run-install\.cmd -Cleanup"/)
   assert.match(wxs, /<Custom Action="UninstallCleanup" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot;" \/>/)
 })
 
@@ -66,7 +66,7 @@ test('wix3 source renders absolute posix file paths for wixl', () => {
   assert.match(wxs, /Return="check"/)
   assert.match(wxs, /<Custom Action="StopTrayBeforeInstall" Before="InstallFiles">\(Installed OR WIX_UPGRADE_DETECTED\) AND NOT REMOVE~="ALL"<\/Custom>/)
   assert.match(wxs, /<Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT REMOVE~="ALL"<\/Custom>/)
-  assert.match(wxs, /<CustomAction Id="UninstallCleanup" FileKey="RunInstallCmd" ExeCommand="-Cleanup"/)
+  assert.match(wxs, /<CustomAction Id="UninstallCleanup" Directory="INSTALLFOLDER" ExeCommand="cmd\.exe \/c run-install\.cmd -Cleanup"/)
   assert.match(wxs, /<Custom Action="UninstallCleanup" Before="RemoveFiles">REMOVE~="ALL"<\/Custom>/)
 })
 

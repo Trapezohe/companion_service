@@ -94,7 +94,7 @@ ${componentRefLines}
     </Feature>
     <CustomAction Id="StopTrayBeforeInstall" FileKey="RunInstallCmd" ExeCommand="-StopTrayOnly" Execute="deferred" Return="ignore" Impersonate="yes" />
     <CustomAction Id="RunCompanionBootstrap" FileKey="RunInstallCmd" ExeCommand="" Execute="deferred" Return="check" Impersonate="yes" />
-    <CustomAction Id="UninstallCleanup" FileKey="RunInstallCmd" ExeCommand="-Cleanup" Execute="deferred" Return="ignore" Impersonate="yes" />
+    <CustomAction Id="UninstallCleanup" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c run-install.cmd -Cleanup" Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="StopTrayBeforeInstall" Before="InstallFiles">(Installed OR WIX_UPGRADE_DETECTED) AND NOT REMOVE~="ALL"</Custom>
       <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT REMOVE~="ALL"</Custom>
