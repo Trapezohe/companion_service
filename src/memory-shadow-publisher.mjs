@@ -1,7 +1,7 @@
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 
 const FILE_MODE = 0o600
 const MEMORY_CHECKPOINTS_LATEST_KEY = 'memory-checkpoints/latest.json'
@@ -204,35 +204,21 @@ function buildRefreshBundle(envelope, nowTs) {
   }
 }
 
-let fileStateLoaded = false
-let fileState = buildInitialState()
-
-async function loadFileState() {
-  if (fileStateLoaded) return clone(fileState)
-  await ensureConfigDir()
-  try {
-    const raw = await fs.readFile(MEMORY_SHADOW_REFRESH_FILE(), 'utf8')
-    fileState = normalizePersistedState(JSON.parse(raw))
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      console.warn(`[memory-shadow-publisher] Failed to load refresh state: ${error.message}`)
-    }
-    fileState = buildInitialState()
-  }
-  fileStateLoaded = true
-  return clone(fileState)
+function MEMORY_SHADOW_REFRESH_BACKUP_FILE() {
+  return path.join(getConfigDir(), 'memory-shadow-refresh.json.bak')
 }
 
-async function saveFileState(nextState) {
-  await ensureConfigDir()
-  fileState = normalizePersistedState(nextState)
-  fileStateLoaded = true
-  const payload = JSON.stringify(fileState, null, 2) + '\n'
-  const target = MEMORY_SHADOW_REFRESH_FILE()
-  const tmp = `${target}.tmp`
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await fs.rename(tmp, target)
-}
+const memoryShadowStorage = createFileBackedStore({
+  label: 'memory-shadow-refresh',
+  primaryPath: MEMORY_SHADOW_REFRESH_FILE,
+  backupPath: MEMORY_SHADOW_REFRESH_BACKUP_FILE,
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: buildInitialState,
+  parse: (raw) => normalizePersistedState(JSON.parse(raw)),
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+})
 
 export function createInMemoryMemoryShadowRefreshStateStore(initialState = null) {
   let state = normalizePersistedState(initialState || {})
@@ -245,20 +231,24 @@ export function createInMemoryMemoryShadowRefreshStateStore(initialState = null)
 }
 
 export function createFileBackedMemoryShadowRefreshStateStore() {
+  let cachedState = null
   return {
-    load: loadFileState,
-    save: saveFileState,
+    async load() {
+      if (cachedState !== null) return clone(cachedState)
+      const result = await memoryShadowStorage.load()
+      cachedState = result.state ?? buildInitialState()
+      return clone(cachedState)
+    },
+    async save(nextState) {
+      cachedState = normalizePersistedState(nextState)
+      await memoryShadowStorage.persistSnapshot(cachedState)
+    },
   }
 }
 
 export async function clearMemoryShadowRefreshStateForTests() {
-  fileState = buildInitialState()
-  fileStateLoaded = true
-  await ensureConfigDir().catch(() => undefined)
-  await Promise.all([
-    fs.rm(MEMORY_SHADOW_REFRESH_FILE(), { force: true }).catch(() => undefined),
-    fs.rm(`${MEMORY_SHADOW_REFRESH_FILE()}.tmp`, { force: true }).catch(() => undefined),
-  ])
+  memoryShadowStorage.reset()
+  await memoryShadowStorage.replaceSnapshot(buildInitialState())
 }
 
 function errorMessage(error) {

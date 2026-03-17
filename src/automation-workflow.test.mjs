@@ -5,6 +5,7 @@ import {
   initializeAutomationWorkflow,
   advanceAutomationWorkflow,
   resumeAutomationWorkflowRetry,
+  cancelAutomationWorkflow,
   buildAutomationWorkflowPrompt,
 } from './automation-workflow.mjs'
 
@@ -385,4 +386,102 @@ test('buildAutomationWorkflowPrompt includes retry context when step has retry i
 
   assert.match(prompt, /retry attempt 2/)
   assert.match(prompt, /network timeout/)
+})
+
+// --- Step lineage tests ---
+
+test('advanceAutomationWorkflow records source and attemptId on next step', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  const result = advanceAutomationWorkflow(workflow, {
+    runId: 'run-lineage',
+    terminalState: 'done',
+    stepSummary: 'Plan done.',
+  })
+
+  assert.equal(result.nextStep?.source, 'advance:run-lineage')
+  assert.equal(result.nextStep?.attemptId, 'research:run-lineage:1')
+})
+
+test('resumeAutomationWorkflowRetry records retry source and attemptId', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    policy: { maxStepAttempts: 3, retryBackoffMinutes: 1 },
+    state: null,
+  })
+
+  workflow.state.steps[0].state = 'needs_retry'
+  workflow.state.steps[0].retry = {
+    attempt: 2,
+    lastError: 'timeout',
+    nextRetryAt: Date.now() - 1000,
+  }
+
+  const result = resumeAutomationWorkflowRetry(workflow, { runId: 'run-retry-2' })
+  assert.equal(result.resumed, true)
+  assert.equal(result.step?.source, 'retry:run-retry-2')
+  assert.equal(result.step?.attemptId, 'plan:run-retry-2:3')
+})
+
+test('initializeAutomationWorkflow seeds steps with source and attemptId as null', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  for (const step of workflow.state.steps) {
+    assert.equal(step.source, null)
+    assert.equal(step.attemptId, null)
+  }
+})
+
+// --- Cancel cascade tests ---
+
+test('cancelAutomationWorkflow cascades to all active steps', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  // Simulate: plan done, research running, synthesize queued
+  workflow.state.steps[0].state = 'done'
+  workflow.state.steps[1].state = 'running'
+  workflow.state.currentStepId = 'research'
+
+  const cancelled = cancelAutomationWorkflow(workflow, { reason: 'user_cancelled' })
+  assert.equal(cancelled.state.terminalState, 'cancelled')
+  assert.equal(cancelled.state.currentStepId, null)
+  assert.equal(cancelled.state.steps[0].state, 'done') // already done — untouched
+  assert.equal(cancelled.state.steps[1].state, 'failed') // was running
+  assert.equal(cancelled.state.steps[1].summary, 'user_cancelled')
+  assert.equal(cancelled.state.steps[2].state, 'failed') // was queued
+})
+
+test('cancelAutomationWorkflow clears retry.nextRetryAt on needs_retry steps', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    policy: { maxStepAttempts: 3, retryBackoffMinutes: 5 },
+    state: null,
+  })
+
+  workflow.state.steps[0].state = 'needs_retry'
+  workflow.state.steps[0].retry = {
+    attempt: 1,
+    lastError: 'timeout',
+    nextRetryAt: Date.now() + 999_999,
+  }
+
+  const cancelled = cancelAutomationWorkflow(workflow, { reason: 'abort' })
+  assert.equal(cancelled.state.steps[0].state, 'failed')
+  assert.equal(cancelled.state.steps[0].retry.nextRetryAt, null)
+  assert.equal(cancelled.state.terminalState, 'cancelled')
+})
+
+test('cancelAutomationWorkflow returns workflow unchanged for single_turn', () => {
+  const result = cancelAutomationWorkflow({ template: 'single_turn', state: null })
+  assert.equal(result.template, 'single_turn')
+  assert.equal(result.state, null)
 })

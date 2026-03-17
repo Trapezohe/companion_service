@@ -8,12 +8,13 @@
 
 import { getJobs, addPendingRun, upsertJob } from './cron-store.mjs'
 import { createRun, updateRun } from './run-store.mjs'
-import { executeAutomationJob } from './automation-executor.mjs'
+import { executeAutomationJob, checkAndResumeRetryableRuns } from './automation-executor.mjs'
 import { normalizeAutomationSpec } from './automation-spec.mjs'
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const timers = new Map()
 let schedulerOptions = {}
+let retryTimer = null
 
 /**
  * Compute delay in ms until the next occurrence of a schedule.
@@ -188,6 +189,15 @@ export function startCronScheduler(options = {}) {
     }
   }
   console.log(`[cron-companion] Scheduler started with ${jobs.filter((j) => j.enabled).length} job(s)`)
+
+  if (!retryTimer) {
+    retryTimer = setInterval(() => {
+      checkAndResumeRetryableRuns().catch((err) => {
+        console.error('[cron-companion] Retry resume check failed:', err?.message || err)
+      })
+    }, 60_000)
+    if (retryTimer.unref) retryTimer.unref()
+  }
 }
 
 export function stopCronScheduler() {
@@ -195,6 +205,10 @@ export function stopCronScheduler() {
     clearTimeout(timer)
   }
   timers.clear()
+  if (retryTimer) {
+    clearInterval(retryTimer)
+    retryTimer = null
+  }
   schedulerOptions = {}
   console.log('[cron-companion] Scheduler stopped')
 }

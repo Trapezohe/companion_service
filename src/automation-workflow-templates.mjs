@@ -50,6 +50,8 @@ export function buildInitialSteps(templateName) {
     kind: step.kind,
     state: index === 0 ? 'running' : 'queued',
     runId: null,
+    source: null,
+    attemptId: null,
     summary: null,
     startedAt: null,
     finishedAt: null,

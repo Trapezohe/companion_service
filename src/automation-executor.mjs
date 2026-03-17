@@ -28,6 +28,7 @@ import {
   createRun,
   getRunById,
   updateRun,
+  listRuns,
   setSessionRunLink,
 } from './run-store.mjs'
 import { enqueueAutomationOutboxItem } from './automation-outbox.mjs'
@@ -345,6 +346,7 @@ function getExecutorDeps(overrides = {}) {
     createRun,
     getRunById,
     updateRun,
+    listRuns,
     createAcpSession,
     getAcpSessionById,
     attachAcpSessionRunId,
@@ -848,4 +850,85 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     })
     return { mode: 'failed', reason: message }
   }
+}
+
+export async function checkAndResumeRetryableRuns(overrides = {}) {
+  const deps = getExecutorDeps(overrides)
+  const { runs } = await deps.listRuns({ state: 'failed', limit: 100 })
+  const retryable = runs.filter(
+    (run) => run.meta?.taskState === 'retrying' && isMultiTurnTemplate(run.meta?.workflow?.template),
+  )
+
+  const results = []
+  for (const run of retryable) {
+    const workflow = run.meta?.workflow
+    const retryResult = resumeAutomationWorkflowRetry(workflow, { runId: run.runId })
+    if (!retryResult.resumed || !retryResult.step) continue
+
+    const sessionId = typeof run.sessionId === 'string' ? run.sessionId : ''
+    if (!sessionId) {
+      const failedWorkflow = failAutomationWorkflowStep(retryResult.workflow, {
+        stepId: retryResult.step.id,
+        runId: run.runId,
+        summary: 'no_session_for_retry',
+      })
+      await deps.updateRun(run.runId, {
+        state: 'failed',
+        meta: mergeRunMeta(run, {
+          workflow: failedWorkflow,
+          taskState: 'failed',
+        }),
+      }).catch(() => undefined)
+      results.push({ runId: run.runId, resumed: false, reason: 'no_session' })
+      continue
+    }
+
+    try {
+      const automationPromptBase = typeof run.meta?.automationPromptBase === 'string'
+        ? run.meta.automationPromptBase
+        : ''
+      const nextPrompt = buildAutomationWorkflowPrompt({
+        workflow: retryResult.workflow,
+        basePrompt: automationPromptBase,
+      })
+
+      await deps.updateRun(run.runId, {
+        state: 'running',
+        summary: buildWorkflowExecutionSummary(run, retryResult.step),
+        meta: mergeRunMeta(run, {
+          workflow: retryResult.workflow,
+          taskState: 'running',
+          stepState: 'execute',
+        }),
+      })
+
+      await deps.enqueuePrompt(sessionId, {
+        prompt: nextPrompt,
+        origin: 'automation',
+        inputProvenance: buildInputProvenanceFromRun(run, run.runId),
+        timeoutMs: normalizeTimeoutMs(run.meta?.timeoutMs),
+      })
+
+      results.push({ runId: run.runId, resumed: true, stepId: retryResult.step.id })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const failedWorkflow = failAutomationWorkflowStep(retryResult.workflow, {
+        stepId: retryResult.step.id,
+        runId: run.runId,
+        summary: message,
+      })
+      await deps.updateRun(run.runId, {
+        state: 'failed',
+        summary: `Retry resume failed: ${run.meta?.taskName || 'unnamed job'}`,
+        error: message,
+        meta: mergeRunMeta(run, {
+          workflow: failedWorkflow,
+          taskState: 'failed',
+        }),
+      }).catch(() => undefined)
+      results.push({ runId: run.runId, resumed: false, reason: message })
+    }
+  }
+
+  return { checked: retryable.length, results }
 }

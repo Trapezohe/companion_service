@@ -99,6 +99,7 @@ import {
 import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 import { deliverAutomationRunResult } from './automation-executor.mjs'
+import { cancelAutomationWorkflow } from './automation-workflow.mjs'
 
 // ── Auth rate limiter ──
 
@@ -725,6 +726,14 @@ export function createCompanionServer({
       }),
     }).catch(() => undefined)
     if (mappedState === 'done' || mappedState === 'failed' || mappedState === 'cancelled') {
+      if (mappedState === 'cancelled' && currentRun?.meta?.workflow) {
+        const cancelledWorkflow = cancelAutomationWorkflow(currentRun.meta.workflow, {
+          reason: 'run_cancelled',
+        })
+        await updateRun(runId, {
+          meta: mergeRunMeta(currentRun, { workflow: cancelledWorkflow }),
+        }).catch(() => undefined)
+      }
       await deliverAutomationRunResult({
         runId,
         sessionId: event.sessionId,

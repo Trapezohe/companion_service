@@ -163,6 +163,8 @@ export function advanceAutomationWorkflow(workflow, {
 
   nextStep.state = 'running'
   nextStep.runId = typeof runId === 'string' && runId ? runId : nextStep.runId || null
+  nextStep.source = typeof runId === 'string' && runId ? `advance:${runId}` : null
+  nextStep.attemptId = `${nextStep.id}:${runId || 'unknown'}:1`
   nextStep.startedAt = now
   state.currentStepId = nextStep.id
   state.lastContinuationAt = now
@@ -201,6 +203,8 @@ export function resumeAutomationWorkflowRetry(workflow, { runId = null } = {}) {
   step.finishedAt = null
   step.retry.nextRetryAt = null
   step.runId = typeof runId === 'string' && runId ? runId : step.runId
+  step.source = typeof runId === 'string' && runId ? `retry:${runId}` : step.source
+  step.attemptId = `${step.id}:${runId || 'unknown'}:${(step.retry?.attempt || 0) + 1}`
   state.currentStepId = step.id
 
   return {
@@ -238,6 +242,32 @@ export function failAutomationWorkflowStep(workflow, {
   state.currentStepId = null
   state.lastWorkflowSummary = step.summary
   state.terminalState = 'failed'
+  return { template: currentWorkflow.template, policy: currentWorkflow.policy, state }
+}
+
+export function cancelAutomationWorkflow(workflow, { reason = '' } = {}) {
+  const currentWorkflow = initializeAutomationWorkflow(workflow)
+  if (!isMultiTurnTemplate(currentWorkflow.template) || !currentWorkflow.state) {
+    return currentWorkflow
+  }
+
+  const state = clone(currentWorkflow.state)
+  const now = Date.now()
+
+  for (const step of state.steps) {
+    if (step.state === 'running' || step.state === 'queued' || step.state === 'needs_retry') {
+      step.state = 'failed'
+      step.summary = compactText(reason || 'cancelled')
+      step.finishedAt = now
+      if (step.retry) {
+        step.retry.nextRetryAt = null
+      }
+    }
+  }
+
+  state.currentStepId = null
+  state.terminalState = 'cancelled'
+
   return { template: currentWorkflow.template, policy: currentWorkflow.policy, state }
 }
 

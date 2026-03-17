@@ -1222,3 +1222,119 @@ test('executeAutomationJob skips watcher escalation when observation hash is emp
     assert.equal(run?.meta?.workflow?.template, 'single_turn')
   })
 })
+
+test('checkAndResumeRetryableRuns resumes run with expired nextRetryAt', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const enqueued = []
+
+    // Create a run in the retrying state with an expired retry step
+    const run = await runStore.createRun({
+      type: 'cron',
+      state: 'failed',
+      sessionId: 'acp-retry-session',
+      summary: 'Step needs retry',
+      meta: {
+        taskState: 'retrying',
+        taskName: 'retry-test',
+        automationPromptBase: 'do things',
+        workflow: {
+          template: 'research_synthesis',
+          policy: { maxStepAttempts: 3, retryBackoffMinutes: 1 },
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              {
+                id: 'plan', kind: 'plan', state: 'needs_retry', runId: 'old-run',
+                source: null, attemptId: null,
+                summary: null, startedAt: null, finishedAt: null, handoffSummary: null,
+                retry: { attempt: 1, lastError: 'timeout', nextRetryAt: Date.now() - 1000 },
+              },
+              {
+                id: 'research', kind: 'research', state: 'queued', runId: null,
+                source: null, attemptId: null,
+                summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null,
+              },
+              {
+                id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null,
+                source: null, attemptId: null,
+                summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null,
+              },
+            ],
+            lastWorkflowSummary: null,
+            lastContinuationAt: null,
+            terminalState: null,
+          },
+        },
+      },
+    })
+
+    const result = await executor.checkAndResumeRetryableRuns({
+      enqueuePrompt: async (sessionId, input) => {
+        enqueued.push({ sessionId, input })
+        return { ok: true }
+      },
+    })
+
+    assert.equal(result.checked, 1)
+    assert.equal(result.results.length, 1)
+    assert.equal(result.results[0].resumed, true)
+    assert.equal(result.results[0].runId, run.runId)
+    assert.equal(enqueued.length, 1)
+    assert.equal(enqueued[0].sessionId, 'acp-retry-session')
+
+    const updated = await runStore.getRunById(run.runId)
+    assert.equal(updated.state, 'running')
+    assert.equal(updated.meta?.taskState, 'running')
+  })
+})
+
+test('checkAndResumeRetryableRuns skips run with future nextRetryAt', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    await runStore.createRun({
+      type: 'cron',
+      state: 'failed',
+      sessionId: 'acp-retry-session-2',
+      summary: 'Step needs retry later',
+      meta: {
+        taskState: 'retrying',
+        taskName: 'retry-future',
+        workflow: {
+          template: 'research_synthesis',
+          policy: { maxStepAttempts: 3, retryBackoffMinutes: 60 },
+          state: {
+            currentStepId: 'plan',
+            steps: [
+              {
+                id: 'plan', kind: 'plan', state: 'needs_retry', runId: null,
+                source: null, attemptId: null,
+                summary: null, startedAt: null, finishedAt: null, handoffSummary: null,
+                retry: { attempt: 1, lastError: 'timeout', nextRetryAt: Date.now() + 999_999 },
+              },
+              {
+                id: 'research', kind: 'research', state: 'queued', runId: null,
+                source: null, attemptId: null,
+                summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null,
+              },
+              {
+                id: 'synthesize', kind: 'synthesize', state: 'queued', runId: null,
+                source: null, attemptId: null,
+                summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null,
+              },
+            ],
+            lastWorkflowSummary: null,
+            lastContinuationAt: null,
+            terminalState: null,
+          },
+        },
+      },
+    })
+
+    const result = await executor.checkAndResumeRetryableRuns({
+      enqueuePrompt: async () => ({ ok: true }),
+    })
+
+    // The run is found as retryable, but resumeAutomationWorkflowRetry returns resumed=false
+    assert.equal(result.checked, 1)
+    assert.equal(result.results.length, 0)
+  })
+})
