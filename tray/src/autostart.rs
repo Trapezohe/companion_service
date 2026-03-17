@@ -8,6 +8,17 @@ use std::{
 
 use crate::models::AutoStartStatus;
 
+/// On Windows, prevent child processes from creating a visible console window.
+#[cfg(target_os = "windows")]
+fn suppress_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_console_window(_command: &mut Command) {}
+
 const LEGACY_PREFS_FILE_NAME: &str = "companion-tray.json";
 const STARTUP_POLICY_FILE_NAME: &str = "companion-startup.json";
 const MACOS_LABEL: &str = "ai.trapezohe.companion.tray";
@@ -421,18 +432,20 @@ fn desktop_escape(value: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn install_windows_registry(target: &RegistrationTarget) -> Result<()> {
-    let status = Command::new("reg")
-        .args([
-            "add",
-            WINDOWS_RUN_KEY,
-            "/v",
-            WINDOWS_VALUE_NAME,
-            "/t",
-            "REG_SZ",
-            "/d",
-            &target.contents,
-            "/f",
-        ])
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "add",
+        WINDOWS_RUN_KEY,
+        "/v",
+        WINDOWS_VALUE_NAME,
+        "/t",
+        "REG_SZ",
+        "/d",
+        &target.contents,
+        "/f",
+    ]);
+    suppress_console_window(&mut cmd);
+    let status = cmd
         .status()
         .context("Failed to register tray auto-start in Windows registry")?;
     if !status.success() {
@@ -448,8 +461,10 @@ fn install_windows_registry(_target: &RegistrationTarget) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn remove_windows_registry(_target: &RegistrationTarget) -> Result<()> {
-    let status = Command::new("reg")
-        .args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_VALUE_NAME, "/f"])
+    let mut cmd = Command::new("reg");
+    cmd.args(["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_VALUE_NAME, "/f"]);
+    suppress_console_window(&mut cmd);
+    let status = cmd
         .status()
         .context("Failed to remove tray auto-start from Windows registry")?;
     if !status.success() {
@@ -465,8 +480,10 @@ fn remove_windows_registry(_target: &RegistrationTarget) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn windows_registration_exists(_target: &RegistrationTarget) -> Result<bool> {
-    let status = Command::new("reg")
-        .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_VALUE_NAME])
+    let mut cmd = Command::new("reg");
+    cmd.args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_VALUE_NAME]);
+    suppress_console_window(&mut cmd);
+    let status = cmd
         .status()
         .context("Failed to query tray auto-start from Windows registry")?;
     Ok(status.success())
@@ -479,8 +496,10 @@ fn windows_registration_exists(_target: &RegistrationTarget) -> Result<bool> {
 
 #[cfg(target_os = "windows")]
 fn remove_windows_scheduled_task(target: &RegistrationTarget) -> Result<()> {
-    let status = Command::new("schtasks")
-        .args(["/Delete", "/TN", &target.target, "/F"])
+    let mut cmd = Command::new("schtasks");
+    cmd.args(["/Delete", "/TN", &target.target, "/F"]);
+    suppress_console_window(&mut cmd);
+    let status = cmd
         .status()
         .context("Failed to remove legacy daemon scheduled task")?;
     if !status.success() {

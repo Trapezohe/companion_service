@@ -239,7 +239,10 @@ fn resolve_command_on_path(name: &str) -> Option<PathBuf> {
     } else {
         "which"
     };
-    let output = Command::new(lookup_program).arg(name).output().ok()?;
+    let mut cmd = Command::new(lookup_program);
+    cmd.arg(name);
+    suppress_console_window(&mut cmd);
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -254,8 +257,20 @@ fn resolve_command_on_path(name: &str) -> Option<PathBuf> {
 fn build_cli_command(cli: &CliInvocation, args: &[&str]) -> Command {
     let mut command = Command::new(&cli.program);
     command.args(&cli.prefix_args).args(args);
+    suppress_console_window(&mut command);
     command
 }
+
+/// On Windows, prevent child processes from creating a visible console window.
+#[cfg(target_os = "windows")]
+fn suppress_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_console_window(_command: &mut Command) {}
 
 fn extract_failing_checks(value: Option<&Value>) -> Vec<String> {
     let Some(Value::Object(entries)) = value else {

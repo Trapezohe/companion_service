@@ -80,7 +80,7 @@ function renderWix3Source({ productVersion, installerSourceDir }) {
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="${PRODUCT_NAME}" Language="1033" Version="${escapeXmlAttr(productVersion)}" Manufacturer="${MANUFACTURER}" UpgradeCode="${UPGRADE_CODE}">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
-    <MajorUpgrade DowngradeErrorMessage="A newer ${PRODUCT_NAME} is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer ${PRODUCT_NAME} is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFilesFolder">
@@ -92,9 +92,13 @@ ${componentLines}
     <Feature Id="MainFeature" Title="Companion Installer" Level="1">
 ${componentRefLines}
     </Feature>
+    <CustomAction Id="StopTrayBeforeInstall" FileKey="RunInstallCmd" ExeCommand="-StopTrayOnly" Execute="deferred" Return="ignore" Impersonate="yes" />
     <CustomAction Id="RunCompanionBootstrap" FileKey="RunInstallCmd" ExeCommand="" Execute="deferred" Return="check" Impersonate="yes" />
+    <CustomAction Id="UninstallCleanup" FileKey="RunInstallCmd" ExeCommand="-Cleanup" Execute="deferred" Return="ignore" Impersonate="yes" />
     <InstallExecuteSequence>
-      <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="StopTrayBeforeInstall" Before="InstallFiles">(Installed OR WIX_UPGRADE_DETECTED) AND NOT REMOVE~="ALL"</Custom>
+      <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT REMOVE~="ALL"</Custom>
+      <Custom Action="UninstallCleanup" Before="RemoveFiles">REMOVE~="ALL"</Custom>
     </InstallExecuteSequence>
   </Product>
 </Wix>
