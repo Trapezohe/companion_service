@@ -1,6 +1,6 @@
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 
 const FILE_MODE = 0o600
 
@@ -15,7 +15,6 @@ function BACKUP_FILE() {
 let store = { ledgers: {} }
 let loaded = false
 let loadingPromise = null
-let persistPromise = null
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -71,68 +70,31 @@ function normalizeStore(input) {
   }
 }
 
-async function safeChmod(target, mode) {
-  try {
-    await fs.chmod(target, mode)
-  } catch (err) {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return
-    throw err
-  }
+function buildPersistableSnapshot() {
+  return { ledgers: store.ledgers }
 }
 
-async function readStoreFile(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8')
-  return normalizeStore(JSON.parse(raw))
-}
-
-async function writeStoreSnapshot(snapshot) {
-  await ensureConfigDir()
-  const payload = JSON.stringify(snapshot, null, 2) + '\n'
-  const target = STORE_FILE()
-  const backup = BACKUP_FILE()
-  const tmp = `${target}.tmp`
-
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-
-  try {
-    await fs.copyFile(target, backup)
-    await safeChmod(backup, FILE_MODE)
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err
-  }
-
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
-}
+const storage = createFileBackedStore({
+  label: 'automation-budget-store',
+  primaryPath: STORE_FILE,
+  backupPath: BACKUP_FILE,
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ ledgers: {} }),
+  parse: (raw) => normalizeStore(JSON.parse(raw)),
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    tmpCleanup: (err) => `Failed to clean orphan .tmp: ${err.message}`,
+    primaryCorrupted: (err) => `Primary store corrupted: ${err.message}`,
+    backupRecovered: 'Recovered from backup store',
+    backupUnavailable: (err) => `Backup unavailable: ${err.message ?? 'unknown error'}`,
+  },
+})
 
 export async function loadAutomationBudgetStore() {
-  await ensureConfigDir()
-  try {
-    await fs.unlink(`${STORE_FILE()}.tmp`)
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn(`[automation-budget-store] Failed to clean orphan .tmp: ${err.message}`)
-    }
-  }
-
-  try {
-    store = await readStoreFile(STORE_FILE())
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      store = { ledgers: {} }
-    } else {
-      console.warn(`[automation-budget-store] Primary store corrupted: ${err.message}`)
-      try {
-        store = await readStoreFile(BACKUP_FILE())
-        console.warn('[automation-budget-store] Recovered from backup store')
-      } catch (backupErr) {
-        console.warn(`[automation-budget-store] Backup unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { ledgers: {} }
-      }
-    }
-  }
-
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { ledgers: {} }
   loaded = true
   return clone(store)
 }
@@ -148,17 +110,12 @@ async function ensureLoaded() {
 
 async function saveStore() {
   await ensureLoaded()
-  const snapshot = clone(store)
-  const nextWrite = async () => writeStoreSnapshot(snapshot)
-  persistPromise = (persistPromise || Promise.resolve())
-    .catch(() => undefined)
-    .then(nextWrite)
-  await persistPromise
+  await storage.persistSnapshot(buildPersistableSnapshot())
 }
 
 export async function flushAutomationBudgetStore() {
   await ensureLoaded()
-  if (persistPromise) await persistPromise
+  await storage.flush()
 }
 
 export async function getAutomationBudgetLedger(sessionKey) {
@@ -198,9 +155,10 @@ export async function clearAutomationBudgetLedger(sessionKey) {
 }
 
 export async function clearAutomationBudgetStoreForTests() {
+  await storage.flush()
   store = { ledgers: {} }
   loaded = true
-  persistPromise = null
-  await ensureConfigDir()
-  await writeStoreSnapshot(store)
+  loadingPromise = null
+  storage.reset()
+  await storage.replaceSnapshot(buildPersistableSnapshot())
 }

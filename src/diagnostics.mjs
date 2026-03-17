@@ -15,6 +15,7 @@ import { getMemoryShadowStatus } from './memory-shadow-store.mjs'
 import { getBrowserLedgerDiagnostics } from './browser-ledger.mjs'
 import { normalizePermissionPolicy } from './permission-policy.mjs'
 import { logEvent } from './log.mjs'
+import { RUN_CONTRACT_VERSION } from './run-envelope.mjs'
 import { getJobs } from './cron-store.mjs'
 import {
   getAutomationSessionSweepSummary,
@@ -67,6 +68,115 @@ async function resolveExecutable(command) {
     if (process.platform === 'win32' && await exists(`${candidate}.exe`)) return true
   }
   return false
+}
+
+function getRunMeta(run) {
+  return run?.meta && typeof run.meta === 'object' && !Array.isArray(run.meta)
+    ? run.meta
+    : {}
+}
+
+function resolveRunOwner(run) {
+  const source = typeof run?.source === 'string' ? run.source.trim() : ''
+  if (source) return source
+  if (run?.type === 'cron') return 'cron'
+  return 'unknown'
+}
+
+function resolveReplayCount(run) {
+  const replayOf = getRunMeta(run).replayOf
+  if (!replayOf || typeof replayOf !== 'object' || Array.isArray(replayOf)) {
+    return run?.source === 'replay' ? 1 : 0
+  }
+  const explicit = Number(replayOf.count)
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit)
+  }
+  return 1
+}
+
+function resolveRunPolicyReason(run) {
+  const meta = getRunMeta(run)
+  if (typeof meta.policyReason === 'string' && meta.policyReason.trim()) {
+    return meta.policyReason.trim()
+  }
+  if (run?.state === 'waiting_approval') {
+    return 'awaiting_user_approval'
+  }
+  return null
+}
+
+function resolveFailureCategory(run, policyReason) {
+  const errorText = String(run?.error || '').toLowerCase()
+  if (policyReason && policyReason.startsWith('blocked_by_')) return 'policy_blocked'
+  if (run?.state === 'waiting_approval') return 'approval_wait'
+  if (run?.state === 'cancelled') return 'cancelled'
+  if (/fetch failed|network|socket|econn|enotfound|timed out|timeout|dns/.test(errorText)) return 'network'
+  if (/\b429\b|rate limit|too many requests/.test(errorText)) return 'rate_limit'
+  if (/\b401\b|\b403\b|unauthorized|forbidden|invalid token|token expired|credential/.test(errorText)) return 'auth_expired'
+  if (/\b413\b|payload too large|message too long|too large/.test(errorText)) return 'payload_too_large'
+  return run?.state === 'failed' ? 'unknown' : null
+}
+
+function resolveRunLifecycle(run, policyReason, replayCount) {
+  if (policyReason && policyReason.startsWith('blocked_by_')) return 'blocked'
+  if (run?.state === 'waiting_approval') return 'waiting_approval'
+  if (run?.state === 'cancelled') return 'cancelled'
+  if (run?.state === 'retrying' && replayCount > 0) return 'replaying'
+  return run?.state || 'unknown'
+}
+
+function resolveApprovalWaitMs(run, approvalsById) {
+  if (run?.state !== 'waiting_approval') return null
+  const meta = getRunMeta(run)
+  const approvalRequestId = typeof meta.approvalRequestId === 'string' && meta.approvalRequestId.trim()
+    ? meta.approvalRequestId.trim()
+    : typeof meta.requestId === 'string' && meta.requestId.trim()
+      ? meta.requestId.trim()
+      : ''
+  if (!approvalRequestId) return null
+  const approval = approvalsById.get(approvalRequestId)
+  if (!approval || !Number.isFinite(approval.createdAt)) return null
+  return Math.max(0, Date.now() - Number(approval.createdAt))
+}
+
+function buildRecentRunExplanations(runs, approvals) {
+  const approvalsById = new Map(
+    approvals
+      .filter((approval) => typeof approval?.requestId === 'string' && approval.requestId.trim())
+      .map((approval) => [approval.requestId.trim(), approval]),
+  )
+
+  return runs.runs
+    .filter((run) => {
+      const policyReason = resolveRunPolicyReason(run)
+      return Boolean(
+        policyReason
+        || run.state === 'failed'
+        || run.state === 'waiting_approval'
+        || run.state === 'cancelled'
+        || run.state === 'retrying'
+        || run.source === 'replay',
+      )
+    })
+    .slice(0, 10)
+    .map((run) => {
+      const policyReason = resolveRunPolicyReason(run)
+      const replayCount = resolveReplayCount(run)
+      return {
+        runId: run.runId,
+        state: run.state,
+        lifecycle: resolveRunLifecycle(run, policyReason, replayCount),
+        summary: run.summary,
+        updatedAt: Number.isFinite(run.updatedAt) ? run.updatedAt : Date.now(),
+        runOwner: resolveRunOwner(run),
+        policyReason,
+        approvalWaitMs: resolveApprovalWaitMs(run, approvalsById),
+        replayCount,
+        failureCategory: resolveFailureCategory(run, policyReason),
+        contractVersion: Number.isFinite(run.contractVersion) ? Number(run.contractVersion) : RUN_CONTRACT_VERSION,
+      }
+    })
 }
 
 function buildCapabilitySummary(supportedFeatures = {}) {
@@ -366,8 +476,10 @@ export async function buildDiagnosticsPayload(params) {
   const browserLedgerSummary = await getBrowserLedgerDiagnostics({
     supportedFeatures: params.supportedFeatures,
   })
+  const recentRunExplanations = buildRecentRunExplanations(runs, approvals)
 
   const payload = {
+    contractVersion: RUN_CONTRACT_VERSION,
     protocolVersion: params.protocolVersion,
     version: params.version,
     permissionPolicy,
@@ -399,6 +511,7 @@ export async function buildDiagnosticsPayload(params) {
     },
     runs: {
       recentFailed: runs.runs.filter((run) => run.state === 'failed').slice(0, 5),
+      recentExplanations: recentRunExplanations,
     },
     approvals: {
       pending: approvals,

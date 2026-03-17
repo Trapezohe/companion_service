@@ -190,6 +190,37 @@ function cloneWorkflow(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function cloneReplayOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return JSON.parse(JSON.stringify(value))
+}
+
+function cloneRetryPolicy(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return JSON.parse(JSON.stringify(value))
+}
+
+function buildSessionLineage(sessionId) {
+  const normalizedSessionId = typeof sessionId === 'string' && sessionId.trim()
+    ? sessionId.trim()
+    : ''
+  if (!normalizedSessionId) {
+    return {
+      runPatch: {},
+      metaPatch: {},
+    }
+  }
+  return {
+    runPatch: {
+      sessionId: normalizedSessionId,
+    },
+    metaPatch: {
+      sessionId: normalizedSessionId,
+      acpSessionId: normalizedSessionId,
+    },
+  }
+}
+
 function resolvePersistentBudgetSessionKey(sessionTarget) {
   return typeof sessionTarget === 'string' && sessionTarget.startsWith('persistent:')
     ? sessionTarget
@@ -200,6 +231,8 @@ function buildAutomationMeta(job, spec, extra = {}) {
   const target = cloneDeliveryTarget(job)
   const sessionBudget = cloneSessionBudget(spec.sessionBudget)
   const workflow = cloneWorkflow(spec.workflow)
+  const replayOf = cloneReplayOf(job?.replayOf)
+  const retryPolicy = cloneRetryPolicy(workflow?.policy)
   return {
     taskId: typeof job?.id === 'string' ? job.id : '',
     taskName: typeof job?.name === 'string' ? job.name : '',
@@ -212,6 +245,8 @@ function buildAutomationMeta(job, spec, extra = {}) {
     timeoutMs: normalizeTimeoutMs(job?.timeoutMs) ?? null,
     sessionBudget,
     ...(workflow ? { workflow } : {}),
+    ...(retryPolicy ? { retryPolicy } : {}),
+    ...(replayOf ? { replayOf } : {}),
     taskState: 'queued',
     stepState: 'launch',
     ...(target ? { target } : {}),
@@ -361,10 +396,13 @@ export async function executeAutomationJob(job, overrides = {}) {
     }
   }
 
+  const replayOf = cloneReplayOf(job?.replayOf)
   const queuedRun = await deps.createRun({
     type: 'cron',
     state: 'queued',
     summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
+    ...(replayOf ? { source: 'replay' } : {}),
+    ...(typeof job?.parentRunId === 'string' && job.parentRunId ? { parentRunId: job.parentRunId } : {}),
     meta: buildAutomationMeta(job, spec),
   })
 
@@ -448,11 +486,13 @@ export async function executeAutomationJob(job, overrides = {}) {
     await deps.setSessionRunLink(sessionId, queuedRun.runId, {
       type: 'acp',
     })
+    const sessionLineage = buildSessionLineage(sessionId)
     await deps.updateRun(queuedRun.runId, {
+      ...sessionLineage.runPatch,
       state: 'running',
       summary: `Companion automation executing: ${job?.name || 'unnamed job'}`,
       meta: buildAutomationMeta(job, spec, {
-        acpSessionId: sessionId,
+        ...sessionLineage.metaPatch,
         reusedSession: sessionResolution.reused === true,
         workflow,
         automationPromptBase,
@@ -534,9 +574,12 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     events,
     terminalState,
   })
+  const sessionLineage = buildSessionLineage(sessionId)
   let currentRun = await deps.updateRun(runId, {
+    ...sessionLineage.runPatch,
     ...(lifecycleSummary ? { summary: lifecycleSummary } : {}),
     meta: mergeRunMeta(run, {
+      ...sessionLineage.metaPatch,
       taskState: finalTaskState,
       stepState: 'summarize',
       lifecycleSummary,
@@ -561,6 +604,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     currentRun = await deps.updateRun(runId, {
       meta: mergeRunMeta(currentRun, {
         workflow: workflowProgress.workflow,
+        ...(workflowProgress.workflow?.policy ? { retryPolicy: cloneRetryPolicy(workflowProgress.workflow.policy) } : {}),
       }),
     }) || currentRun
 
@@ -591,12 +635,15 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           promptText: nextPrompt,
         })
         currentRun = await deps.updateRun(runId, {
+          ...sessionLineage.runPatch,
           state: 'running',
           summary: buildWorkflowExecutionSummary(currentRun, workflowProgress.nextStep),
           meta: mergeRunMeta(currentRun, {
+            ...sessionLineage.metaPatch,
             taskState: 'running',
             stepState: 'execute',
             workflow: workflowProgress.workflow,
+            ...(workflowProgress.workflow?.policy ? { retryPolicy: cloneRetryPolicy(workflowProgress.workflow.policy) } : {}),
             lifecycleSummary,
             lifecycleTerminalState: terminalState || null,
           }),
@@ -622,6 +669,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
             taskState: 'failed',
             stepState: 'done',
             workflow: failedWorkflow,
+            ...(failedWorkflow?.policy ? { retryPolicy: cloneRetryPolicy(failedWorkflow.policy) } : {}),
             lifecycleSummary,
             lifecycleTerminalState: 'failed',
           }),
@@ -638,6 +686,7 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
           taskState: 'retrying',
           stepState: 'done',
           workflow: workflowProgress.workflow,
+          ...(workflowProgress.workflow?.policy ? { retryPolicy: cloneRetryPolicy(workflowProgress.workflow.policy) } : {}),
           lifecycleSummary,
           lifecycleTerminalState: terminalState || null,
         }),

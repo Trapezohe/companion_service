@@ -139,7 +139,7 @@ test('rescheduleJob clears existing timer before scheduling a new one', async ()
 
 
 test('timer firings keep extension_chat jobs on pending replay even when automation executor is available', async () => {
-  await withTempHome(async ({ cronStore, cronScheduler, scheduled }) => {
+  await withTempHome(async ({ cronStore, cronScheduler, runStore, scheduled }) => {
     const automationCalls = []
 
     await cronStore.upsertJob({
@@ -166,6 +166,16 @@ test('timer firings keep extension_chat jobs on pending replay even when automat
     const pending = cronStore.getPendingRuns()
     assert.equal(pending.length, 1)
     assert.deepEqual(automationCalls, [])
+
+    const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
+    assert.equal(runs.runs.length, 1)
+    assert.equal(runs.runs[0].meta?.sessionTarget, 'isolated')
+    assert.deepEqual(runs.runs[0].meta?.replayOf, {
+      kind: 'cron_pending',
+      pendingId: pending[0].pendingId,
+      missedAt: pending[0].missedAt,
+      taskId: 'job-extension-chat',
+    })
   })
 })
 

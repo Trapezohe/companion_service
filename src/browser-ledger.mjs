@@ -1,6 +1,6 @@
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 import {
   linkRunToBrowserAction,
   linkRunToBrowserSession,
@@ -36,8 +36,6 @@ function BROWSER_LEDGER_BACKUP_FILE() {
 
 let store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
 let loaded = false
-let persistTimer = null
-let persistPromise = null
 let loadingPromise = null
 
 function now() {
@@ -70,13 +68,6 @@ function safeText(value, maxChars = 1_000) {
   if (!normalized) return undefined
   if (normalized.length <= maxChars) return normalized
   return `${normalized.slice(0, Math.max(32, maxChars - 16)).trimEnd()}...[truncated]`
-}
-
-function safeChmod(target, mode) {
-  return fs.chmod(target, mode).catch((err) => {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return undefined
-    throw err
-  })
 }
 
 function sortByTimestampDescending(items, getTimestamp) {
@@ -541,8 +532,7 @@ function normalizeBrowserEventRecord(input) {
   }
 }
 
-async function readStoreFile(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8')
+function parseStoreSnapshot(raw) {
   const parsed = JSON.parse(raw)
   const events = Array.isArray(parsed.events)
     ? parsed.events.map(normalizeBrowserEventRecord).filter(Boolean)
@@ -623,42 +613,32 @@ function trimStore() {
   }
 }
 
-async function writeStoreSnapshot(snapshot) {
-  await ensureConfigDir()
-  const payload = JSON.stringify(snapshot, null, 2) + '\n'
-  const target = BROWSER_LEDGER_FILE()
-  const backup = BROWSER_LEDGER_BACKUP_FILE()
-  const tmp = `${target}.${process.pid}.${Date.now()}.${Math.round(Math.random() * 1_000_000)}.tmp`
+const storage = createFileBackedStore({
+  label: 'browser-ledger',
+  primaryPath: BROWSER_LEDGER_FILE,
+  backupPath: BROWSER_LEDGER_BACKUP_FILE,
+  fileMode: FILE_MODE,
+  debounceMs: WRITE_DEBOUNCE_MS,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }),
+  parse: parseStoreSnapshot,
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    tmpCleanup: (err) => `Failed to clean orphan .tmp: ${err.message}`,
+    primaryCorrupted: (err) => `Primary browser-ledger.json corrupted: ${err.message}`,
+    backupRecovered: 'Recovered from backup browser-ledger.json.bak',
+    backupUnavailable: (err) => `Backup also unavailable: ${err.message ?? 'unknown error'}`,
+  },
+})
 
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-  try {
-    await fs.copyFile(target, backup)
-    await safeChmod(backup, FILE_MODE)
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err
-  }
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
-}
-
-function queuePersist() {
-  persistPromise = (persistPromise || Promise.resolve())
-    .catch(() => undefined)
-    .then(async () => {
-      trimStore()
-      return writeStoreSnapshot(clone(store))
-    })
-  return persistPromise
+function buildPersistableSnapshot() {
+  trimStore()
+  return clone(store)
 }
 
 function schedulePersist() {
-  if (persistTimer) return
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    void queuePersist()
-  }, WRITE_DEBOUNCE_MS)
-  if (persistTimer.unref) persistTimer.unref()
+  storage.schedulePersist(buildPersistableSnapshot)
 }
 
 async function ensureLoaded() {
@@ -670,35 +650,9 @@ async function ensureLoaded() {
   return loadingPromise
 }
 
-async function cleanOrphanTmp() {
-  try {
-    await fs.unlink(`${BROWSER_LEDGER_FILE()}.tmp`)
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn(`[browser-ledger] Failed to clean orphan .tmp: ${err.message}`)
-    }
-  }
-}
-
 export async function loadBrowserLedger() {
-  await ensureConfigDir()
-  await cleanOrphanTmp()
-  try {
-    store = await readStoreFile(BROWSER_LEDGER_FILE())
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
-    } else {
-      console.warn(`[browser-ledger] Primary browser-ledger.json corrupted: ${err.message}`)
-      try {
-        store = await readStoreFile(BROWSER_LEDGER_BACKUP_FILE())
-        console.warn('[browser-ledger] Recovered from backup browser-ledger.json.bak')
-      } catch (backupErr) {
-        console.warn(`[browser-ledger] Backup also unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
-      }
-    }
-  }
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
   trimStore()
   loaded = true
   return clone(store)
@@ -706,14 +660,7 @@ export async function loadBrowserLedger() {
 
 export async function flushBrowserLedger() {
   await ensureLoaded()
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-    await queuePersist()
-  }
-  if (persistPromise) {
-    await persistPromise
-  }
+  await storage.flush()
 }
 
 function mergeSessionEnvelope(current, incoming) {
@@ -1211,11 +1158,10 @@ export async function getBrowserLedgerDiagnostics(options = {}) {
 }
 
 export async function clearBrowserLedgerForTests() {
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-  }
+  await storage.flush()
+  storage.reset()
   store = { sessions: [], actions: [], artifacts: [], events: [], nextCursor: 1 }
   loaded = true
-  await queuePersist()
+  loadingPromise = null
+  await storage.persistSnapshot(buildPersistableSnapshot())
 }

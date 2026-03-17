@@ -9,6 +9,7 @@
 import { getJobs, addPendingRun, upsertJob } from './cron-store.mjs'
 import { createRun, updateRun } from './run-store.mjs'
 import { executeAutomationJob } from './automation-executor.mjs'
+import { normalizeAutomationSpec } from './automation-spec.mjs'
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const timers = new Map()
@@ -67,16 +68,32 @@ function getAutomationExecutor(options = {}) {
     : executeAutomationJob
 }
 
+function cloneLifecycleObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return JSON.parse(JSON.stringify(value))
+}
+
+function buildCronLifecycleMeta(job) {
+  const spec = normalizeAutomationSpec(job)
+  const workflow = cloneLifecycleObject(spec.workflow)
+  const retryPolicy = cloneLifecycleObject(spec.workflow?.policy)
+  return {
+    taskId: job.id,
+    taskName: job.name,
+    scheduleKind: job.schedule?.kind || 'unknown',
+    executionMode: spec.executor === 'companion_acp' ? 'companion_acp' : 'extension_pending',
+    sessionTarget: spec.sessionTarget,
+    ...(workflow ? { workflow } : {}),
+    ...(retryPolicy ? { retryPolicy } : {}),
+  }
+}
+
 async function queuePendingRun(job) {
   const run = await createRun({
     type: 'cron',
     state: 'queued',
     summary: `Cron timer fired, queuing for extension: ${job.name}`,
-    meta: {
-      taskId: job.id,
-      taskName: job.name,
-      scheduleKind: job.schedule?.kind || 'unknown',
-    },
+    meta: buildCronLifecycleMeta(job),
   }).catch(() => null)
 
   try {
@@ -90,6 +107,12 @@ async function queuePendingRun(job) {
           ...(run.meta && typeof run.meta === 'object' ? run.meta : {}),
           pendingId: pending.pendingId,
           missedAt: pending.missedAt,
+          replayOf: {
+            kind: 'cron_pending',
+            pendingId: pending.pendingId,
+            missedAt: pending.missedAt,
+            taskId: job.id,
+          },
         },
       }).catch(() => undefined)
     }
@@ -120,10 +143,7 @@ async function executeCompanionAutomation(job, options = {}) {
       summary: `Companion automation failed before run startup: ${job.name}`,
       error: message,
       meta: {
-        taskId: job.id,
-        taskName: job.name,
-        scheduleKind: job.schedule?.kind || 'unknown',
-        executionMode: 'companion_acp',
+        ...buildCronLifecycleMeta(job),
         startupFailed: true,
       },
     }).catch(() => undefined)

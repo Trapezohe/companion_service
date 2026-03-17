@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 
 async function withTempConfig(run) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-automation-budget-store-'))
@@ -48,5 +48,32 @@ test('automation budget store persists ledgers by persistent session key', async
       lastRollupAt: 1_700_000_000_000,
       health: 'warning',
     })
+  })
+})
+
+test('clearAutomationBudgetStoreForTests prevents stale backup recovery after the primary file is corrupted', async () => {
+  await withTempConfig(async ({ tempDir, mod }) => {
+    const primaryPath = path.join(tempDir, 'automation-budgets.json')
+    const backupPath = path.join(tempDir, 'automation-budgets.json.bak')
+
+    await mod.setAutomationBudgetLedger('persistent:cleared-budget', {
+      approxInputTokens: 5,
+      approxOutputTokens: 3,
+      compactionCount: 0,
+      lastRollupAt: 1_700_000_000_000,
+      health: 'healthy',
+    })
+    await mod.flushAutomationBudgetStore()
+    await writeFile(backupPath, await readFile(primaryPath, 'utf8'), 'utf8')
+
+    await mod.clearAutomationBudgetStoreForTests()
+    await writeFile(primaryPath, '{ invalid json', 'utf8')
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./automation-budget-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadAutomationBudgetStore()
+
+    assert.equal(await reloaded.getAutomationBudgetLedger('persistent:cleared-budget'), null)
+    assert.deepEqual(await reloaded.listAutomationBudgetLedgers(), [])
   })
 })

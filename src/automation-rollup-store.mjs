@@ -8,9 +8,9 @@
  *   temp:     <configDir>/automation-rollups.json.tmp
  */
 
-import { readFile, writeFile, rename, unlink, chmod } from 'node:fs/promises'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 
 const STORE_FILE = 'automation-rollups.json'
 const STORE_BAK = 'automation-rollups.json.bak'
@@ -19,14 +19,9 @@ const STORE_TMP = 'automation-rollups.json.tmp'
 let store = { rollups: {} }
 let loaded = false
 let loadingPromise = null
-let persistPromise = null
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
-}
-
-function safeChmod(filePath) {
-  return chmod(filePath, 0o600).catch(() => undefined)
 }
 
 function normalizeSessionKey(key) {
@@ -53,63 +48,28 @@ function parseRollupKey(rollupKey) {
   return { sessionKey, dateStr }
 }
 
-async function readStoreFile() {
-  const dir = getConfigDir()
-  const primaryPath = path.join(dir, STORE_FILE)
-  const bakPath = path.join(dir, STORE_BAK)
-  const tmpPath = path.join(dir, STORE_TMP)
-
-  await unlink(tmpPath).catch(() => undefined)
-
-  try {
-    const raw = await readFile(primaryPath, 'utf8')
+const storage = createFileBackedStore({
+  label: 'automation-rollup-store',
+  primaryPath: () => path.join(getConfigDir(), STORE_FILE),
+  backupPath: () => path.join(getConfigDir(), STORE_BAK),
+  tmpPath: () => path.join(getConfigDir(), STORE_TMP),
+  fileMode: 0o600,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ rollups: {} }),
+  parse: (raw) => {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return { rollups: parsed.rollups && typeof parsed.rollups === 'object' ? parsed.rollups : {} }
     }
-  } catch {
-    // fall through to backup
-  }
-
-  try {
-    const raw = await readFile(bakPath, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return { rollups: parsed.rollups && typeof parsed.rollups === 'object' ? parsed.rollups : {} }
-    }
-  } catch {
-    // fall through to empty
-  }
-
-  return { rollups: {} }
-}
-
-async function writeStoreSnapshot(snapshot) {
-  const dir = getConfigDir()
-  const primaryPath = path.join(dir, STORE_FILE)
-  const bakPath = path.join(dir, STORE_BAK)
-  const tmpPath = path.join(dir, STORE_TMP)
-
-  const json = JSON.stringify(snapshot, null, 2)
-  await writeFile(tmpPath, json, { mode: 0o600 })
-  await safeChmod(tmpPath)
-
-  await readFile(primaryPath).then(() =>
-    writeFile(bakPath, '', { flag: 'wx' }).catch(() => undefined).then(() =>
-      rename(primaryPath, bakPath).then(() => safeChmod(bakPath)),
-    ),
-  ).catch(() => undefined)
-
-  await rename(tmpPath, primaryPath)
-  await safeChmod(primaryPath)
-}
+    return { rollups: {} }
+  },
+  serialize: (snapshot) => JSON.stringify(snapshot, null, 2),
+  logger: console,
+})
 
 function saveStore() {
   const snapshot = clone(store)
-  persistPromise = (persistPromise || Promise.resolve())
-    .catch(() => undefined)
-    .then(() => writeStoreSnapshot(snapshot))
-  return persistPromise
+  return storage.persistSnapshot(snapshot)
 }
 
 async function ensureLoaded() {
@@ -117,9 +77,12 @@ async function ensureLoaded() {
   if (!loadingPromise) {
     loadingPromise = (async () => {
       await ensureConfigDir()
-      store = await readStoreFile()
+      const loadedStore = await storage.load()
+      store = loadedStore.state || { rollups: {} }
       loaded = true
-    })()
+    })().finally(() => {
+      loadingPromise = null
+    })
   }
   await loadingPromise
 }
@@ -129,7 +92,7 @@ export async function loadAutomationRollupStore() {
 }
 
 export async function flushAutomationRollupStore() {
-  if (persistPromise) await persistPromise
+  await storage.flush()
 }
 
 export async function getRollup(sessionKey, dateStr) {
@@ -208,9 +171,10 @@ export async function removeRollupsForSession(sessionKey) {
 }
 
 export async function clearAutomationRollupStoreForTests() {
+  await storage.flush()
+  storage.reset()
   store = { rollups: {} }
   loaded = true
   loadingPromise = null
-  persistPromise = null
   await saveStore()
 }

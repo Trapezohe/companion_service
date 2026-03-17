@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 import {
   validateMemoryShadowContract,
   validateMemoryShadowStatus,
@@ -25,8 +26,6 @@ let store = {
 }
 let loaded = false
 let loadingPromise = null
-let persistTimer = null
-let persistPromise = null
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -36,15 +35,6 @@ function normalizeTimestamp(value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric) || numeric <= 0) return null
   return Math.floor(numeric)
-}
-
-async function safeChmod(target, mode) {
-  try {
-    await fs.chmod(target, mode)
-  } catch (err) {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return
-    throw err
-  }
 }
 
 function buildEmptyStatus() {
@@ -98,54 +88,34 @@ function normalizePersistedStore(input) {
   }
 }
 
-async function readStoreFile(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8')
-  return normalizePersistedStore(JSON.parse(raw))
-}
+const storage = createFileBackedStore({
+  label: 'memory-shadow-store',
+  primaryPath: MEMORY_SHADOW_FILE,
+  backupPath: MEMORY_SHADOW_BACKUP_FILE,
+  debounceMs: WRITE_DEBOUNCE_MS,
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ envelope: null, shadowedAt: null }),
+  parse: (raw) => normalizePersistedStore(JSON.parse(raw)),
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    tmpCleanup: (err) => `Failed to clean orphan .tmp: ${err.message}`,
+    primaryCorrupted: (err) => `Primary memory-shadow.json corrupted: ${err.message}`,
+    backupRecovered: 'Recovered from backup memory-shadow.json.bak',
+    backupUnavailable: (err) => `Backup also unavailable: ${err.message ?? 'unknown error'}`,
+  },
+})
 
-async function cleanOrphanTmp() {
-  try {
-    await fs.unlink(`${MEMORY_SHADOW_FILE()}.tmp`)
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn(`[memory-shadow-store] Failed to clean orphan .tmp: ${err.message}`)
-    }
-  }
-}
-
-async function writeStoreNow() {
-  await ensureConfigDir()
-  const payload = JSON.stringify({
+function buildPersistableSnapshot() {
+  return {
     envelope: store.envelope,
     shadowedAt: store.shadowedAt,
-  }, null, 2) + '\n'
-  const target = MEMORY_SHADOW_FILE()
-  const backup = MEMORY_SHADOW_BACKUP_FILE()
-  const tmp = `${target}.tmp`
-
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-
-  try {
-    await fs.copyFile(target, backup)
-    await safeChmod(backup, FILE_MODE)
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err
   }
-
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
 }
 
 function schedulePersist() {
-  if (persistTimer) return
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    persistPromise = writeStoreNow().finally(() => {
-      persistPromise = null
-    })
-  }, WRITE_DEBOUNCE_MS)
-  if (persistTimer.unref) persistTimer.unref()
+  storage.schedulePersist(buildPersistableSnapshot)
 }
 
 async function ensureLoaded() {
@@ -158,40 +128,13 @@ async function ensureLoaded() {
 }
 
 export async function loadMemoryShadowStore() {
-  await ensureConfigDir()
-  await cleanOrphanTmp()
-  try {
-    store = await readStoreFile(MEMORY_SHADOW_FILE())
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      store = { envelope: null, shadowedAt: null }
-    } else {
-      console.warn(`[memory-shadow-store] Primary memory-shadow.json corrupted: ${err.message}`)
-      try {
-        store = await readStoreFile(MEMORY_SHADOW_BACKUP_FILE())
-        console.warn('[memory-shadow-store] Recovered from backup memory-shadow.json.bak')
-      } catch (backupErr) {
-        if (backupErr.code !== 'ENOENT') {
-          console.warn(`[memory-shadow-store] Backup also unavailable: ${backupErr.message ?? 'unknown error'}`)
-        }
-        store = { envelope: null, shadowedAt: null }
-      }
-    }
-  }
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { envelope: null, shadowedAt: null }
   loaded = true
 }
 
 export async function flushMemoryShadowStore() {
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-    persistPromise = writeStoreNow().finally(() => {
-      persistPromise = null
-    })
-  }
-  if (persistPromise) {
-    await persistPromise
-  }
+  await storage.flush()
 }
 
 export async function ingestMemoryShadowEnvelope(input, options = {}) {
@@ -217,16 +160,14 @@ export async function getMemoryShadowStatus() {
 }
 
 export async function clearMemoryShadowStoreForTests() {
-  if (persistTimer) {
-    clearTimeout(persistTimer)
-    persistTimer = null
-  }
-  persistPromise = null
+  await storage.flush()
+  storage.reset()
   store = {
     envelope: null,
     shadowedAt: null,
   }
   loaded = true
+  loadingPromise = null
   await ensureConfigDir().catch(() => undefined)
   await Promise.all([
     fs.rm(MEMORY_SHADOW_FILE(), { force: true }).catch(() => undefined),

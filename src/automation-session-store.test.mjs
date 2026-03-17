@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { rmSync } from 'node:fs'
 import {
   clearAutomationBudgetStoreForTests,
@@ -202,5 +202,52 @@ test('sweepAutomationSessionBindings removes bindings that exceed retention maxR
 
     const bindings = await store.listAutomationSessionBindings()
     assert.deepEqual(bindings.map((binding) => binding.key), ['persistent:max-runs-ok'])
+  })
+})
+
+test('sweepAutomationSessionBindings keeps bindings referenced only by top-level run.sessionId', async () => {
+  await withFreshStore(async (store) => {
+    const now = 1_700_000_000_000
+    await store.setAutomationSessionBinding('persistent:top-level-session', 'acp-top-level', { updatedAt: now })
+
+    const summary = await store.sweepAutomationSessionBindings({
+      now,
+      getSessionById: (sessionId) => ({ sessionId, state: 'idle' }),
+      listRuns: async () => ({
+        runs: [
+          {
+            runId: 'run-top-level-session',
+            sessionId: 'acp-top-level',
+          },
+        ],
+      }),
+    })
+
+    assert.equal(summary.removed, 0)
+    assert.equal(summary.kept, 1)
+
+    const bindings = await store.listAutomationSessionBindings()
+    assert.deepEqual(bindings.map((binding) => binding.key), ['persistent:top-level-session'])
+  })
+})
+
+test('clearAutomationSessionStoreForTests prevents stale backup recovery after the primary file is corrupted', async () => {
+  await withFreshStore(async (store) => {
+    const configDir = process.env.TRAPEZOHE_CONFIG_DIR
+    const primaryPath = path.join(configDir, 'automation-sessions.json')
+    const backupPath = path.join(configDir, 'automation-sessions.json.bak')
+
+    await store.setAutomationSessionBinding('persistent:cleared-session', 'acp-cleared')
+    await writeFile(backupPath, await readFile(primaryPath, 'utf8'), 'utf8')
+
+    await store.clearAutomationSessionStoreForTests()
+    await writeFile(primaryPath, '{ invalid json', 'utf8')
+
+    const cacheBust = `${Date.now()}-${Math.random()}`
+    const reloaded = await import(`./automation-session-store.mjs?bust=${cacheBust}`)
+    await reloaded.loadAutomationSessionStore()
+
+    assert.equal(await reloaded.getAutomationSessionBinding('persistent:cleared-session'), null)
+    assert.deepEqual(await reloaded.listAutomationSessionBindings(), [])
   })
 })

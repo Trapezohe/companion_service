@@ -119,6 +119,34 @@ test('automation runtime keeps report-oriented extension_chat jobs on the legacy
   })
 })
 
+test('automation runtime treats legacy companion_acp jobs without sessionTarget as isolated-compatible', async () => {
+  await withFreshState(async ({ executor, runStore, acp }) => {
+    let createdSessions = 0
+    const result = await executor.executeAutomationJob(createJob({
+      id: 'job-legacy-companion-shape',
+      name: 'Legacy companion shape',
+      executor: 'companion_acp',
+      agentType: 'codex',
+      sessionTarget: undefined,
+      delivery: undefined,
+    }), {
+      createAcpSession: () => {
+        createdSessions += 1
+        return acp.createAcpSession({ agentType: 'codex', origin: 'automation' })
+      },
+      getAcpSessionById: acp.getAcpSessionById,
+      enqueuePrompt: async (sessionId) => ({ ok: true, sessionId, turnId: 'turn-legacy-shape-1' }),
+    })
+
+    assert.equal(result.mode, 'companion_acp')
+    assert.equal(createdSessions, 1)
+    const run = await runStore.getRunById(result.runId)
+    assert.ok(run)
+    assert.equal(run?.meta?.sessionTarget, 'isolated')
+    assert.equal(run?.state, 'running')
+  })
+})
+
 test('automation runtime delivers companion webhook jobs directly when the browser is closed', async () => {
   await withFreshState(async ({ executor, runStore, acp }) => {
     const fetchCalls = []

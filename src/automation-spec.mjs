@@ -15,12 +15,12 @@ function normalizeAgentType(raw) {
   return raw === 'codex' || raw === 'claude-code' ? raw : null
 }
 
-function normalizeSessionTarget(raw) {
+function normalizeSessionTarget(raw, executor = DEFAULT_EXECUTOR) {
   if (raw === 'isolated' || raw === 'main') return raw
   if (typeof raw === 'string' && raw.startsWith('persistent:') && raw.length > 'persistent:'.length) {
     return raw
   }
-  return DEFAULT_SESSION_TARGET
+  return executor === 'companion_acp' ? 'isolated' : DEFAULT_SESSION_TARGET
 }
 
 function normalizeDeliveryMode(raw) {
@@ -226,7 +226,7 @@ function resolveDeliveryTransport(mode) {
 export function normalizeAutomationSpec(job) {
   const executor = normalizeExecutor(job?.executor)
   const agentType = normalizeAgentType(job?.agentType)
-  const sessionTarget = normalizeSessionTarget(job?.sessionTarget)
+  const sessionTarget = normalizeSessionTarget(job?.sessionTarget, executor)
   const deliveryMode = normalizeDeliveryMode(job?.delivery?.mode)
   const sessionRetention = normalizeSessionRetention(job?.sessionRetention)
   const scheduledWritePolicy = normalizeScheduledWritePolicy(job?.scheduledWritePolicy, executor)

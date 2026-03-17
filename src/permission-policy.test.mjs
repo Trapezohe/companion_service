@@ -33,3 +33,19 @@ test('isPathWithinRoots detects nested paths', () => {
   assert.equal(isPathWithinRoots(path.resolve('/tmp/example-root/src/index.ts'), [root]), true)
   assert.equal(isPathWithinRoots(path.resolve('/tmp/example-root-2/file.txt'), [root]), false)
 })
+
+test('normalizePermissionPolicy adds stable policyReason vocabulary', () => {
+  const full = normalizePermissionPolicy()
+  const workspace = normalizePermissionPolicy({
+    mode: PERMISSION_MODE_WORKSPACE,
+    workspaceRoots: ['/tmp/example-root'],
+  })
+  const workspaceUnscoped = normalizePermissionPolicy({
+    mode: PERMISSION_MODE_WORKSPACE,
+    workspaceRoots: [],
+  })
+
+  assert.equal(full.policyReason, 'policy_mode:full')
+  assert.equal(workspace.policyReason, 'policy_mode:workspace')
+  assert.equal(workspaceUnscoped.policyReason, 'policy_mode:workspace_unscoped')
+})

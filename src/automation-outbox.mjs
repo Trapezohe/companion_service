@@ -1,6 +1,6 @@
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 
 const FILE_MODE = 0o600
 
@@ -29,7 +29,6 @@ function OUTBOX_BACKUP_FILE() {
 let store = { items: [] }
 let loaded = false
 let loadingPromise = null
-let persistPromise = null
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -82,17 +81,7 @@ function sortNewestFirst(items) {
   })
 }
 
-async function safeChmod(target, mode) {
-  try {
-    await fs.chmod(target, mode)
-  } catch (err) {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return
-    throw err
-  }
-}
-
-async function readStoreFile(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8')
+function parseStoreSnapshot(raw) {
   const parsed = JSON.parse(raw)
   const items = Array.isArray(parsed.items)
     ? parsed.items.map(normalizeItem).filter(Boolean)
@@ -100,54 +89,27 @@ async function readStoreFile(filePath) {
   return { items: sortNewestFirst(items) }
 }
 
-async function writeStoreSnapshot(snapshot) {
-  await ensureConfigDir()
-  const payload = JSON.stringify(snapshot, null, 2) + '\n'
-  const target = OUTBOX_FILE()
-  const backup = OUTBOX_BACKUP_FILE()
-  const tmp = `${target}.tmp`
-
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-
-  try {
-    await fs.copyFile(target, backup)
-    await safeChmod(backup, FILE_MODE)
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err
-  }
-
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
-}
+const storage = createFileBackedStore({
+  label: 'automation-outbox',
+  primaryPath: OUTBOX_FILE,
+  backupPath: OUTBOX_BACKUP_FILE,
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ items: [] }),
+  parse: parseStoreSnapshot,
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    tmpCleanup: (err) => `Failed to clean orphan .tmp: ${err.message}`,
+    primaryCorrupted: (err) => `Primary store corrupted: ${err.message}`,
+    backupRecovered: 'Recovered from backup store',
+    backupUnavailable: (err) => `Backup unavailable: ${err.message ?? 'unknown error'}`,
+  },
+})
 
 export async function loadAutomationOutboxStore() {
-  await ensureConfigDir()
-  try {
-    await fs.unlink(`${OUTBOX_FILE()}.tmp`)
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn(`[automation-outbox] Failed to clean orphan .tmp: ${err.message}`)
-    }
-  }
-
-  try {
-    store = await readStoreFile(OUTBOX_FILE())
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      store = { items: [] }
-    } else {
-      console.warn(`[automation-outbox] Primary store corrupted: ${err.message}`)
-      try {
-        store = await readStoreFile(OUTBOX_BACKUP_FILE())
-        console.warn('[automation-outbox] Recovered from backup store')
-      } catch (backupErr) {
-        console.warn(`[automation-outbox] Backup unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { items: [] }
-      }
-    }
-  }
-
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { items: [] }
   loaded = true
   return clone(store)
 }
@@ -165,11 +127,7 @@ async function saveStore() {
   await ensureLoaded()
   store.items = sortNewestFirst(store.items)
   const snapshot = clone(store)
-  const nextWrite = async () => writeStoreSnapshot(snapshot)
-  persistPromise = (persistPromise || Promise.resolve())
-    .catch(() => undefined)
-    .then(nextWrite)
-  await persistPromise
+  await storage.persistSnapshot(snapshot)
 }
 
 export async function enqueueAutomationOutboxItem(input) {
@@ -224,9 +182,10 @@ export async function ackAutomationOutboxItems(ids = []) {
 }
 
 export async function clearAutomationOutboxForTests() {
+  await storage.flush()
+  storage.reset()
   store = { items: [] }
   loaded = true
-  persistPromise = null
-  await ensureConfigDir()
-  await writeStoreSnapshot(store)
+  loadingPromise = null
+  await storage.persistSnapshot(clone(store))
 }

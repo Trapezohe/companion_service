@@ -117,8 +117,10 @@ test('executeAutomationJob starts isolated companion_acp runs without writing pe
     const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
     assert.equal(runs.runs.length, 1)
     assert.equal(runs.runs[0].state, 'running')
+    assert.equal(runs.runs[0].sessionId, 'acp-1')
     assert.equal(runs.runs[0].meta?.executionMode, 'companion_acp')
     assert.equal(runs.runs[0].meta?.acpSessionId, 'acp-1')
+    assert.equal(runs.runs[0].meta?.sessionId, 'acp-1')
     assert.equal(createdRuns[0].meta?.taskState, 'queued')
     assert.equal(createdRuns[0].meta?.stepState, 'launch')
     assert.equal(runs.runs[0].meta?.taskState, 'running')
@@ -149,16 +151,48 @@ test('executeAutomationJob rejects research workflows outside companion_acp', as
   })
 })
 
+test('executeAutomationJob preserves replay lineage metadata on companion runs', async () => {
+  await withFreshState(async ({ executor, runStore }) => {
+    const sessions = new Map()
+    const replayOf = {
+      kind: 'cron_pending',
+      pendingId: 'pending-replay-1',
+      missedAt: 1_700_000_000_000,
+      taskId: 'job-1',
+    }
+
+    const result = await executor.executeAutomationJob(createJob({
+      executor: 'companion_acp',
+      agentType: 'codex',
+      replayOf,
+    }), {
+      createAcpSession: () => {
+        const session = { sessionId: 'acp-replay-1', state: 'idle' }
+        sessions.set(session.sessionId, session)
+        return session
+      },
+      getAcpSessionById: (sessionId) => sessions.get(sessionId) ?? null,
+      attachAcpSessionRunId: () => ({ ok: true }),
+      enqueuePrompt: async (sessionId, input) => ({ ok: true, sessionId, input, turnId: 'turn-replay-1' }),
+    })
+
+    const run = await runStore.getRunById(result.runId)
+    assert.deepEqual(run?.meta?.replayOf, replayOf)
+  })
+})
+
 test('executeAutomationJob seeds research_synthesis workflow state on companion runs', async () => {
   await withFreshState(async ({ executor, runStore }) => {
     const sessions = new Map()
     const enqueued = []
+    const retryPolicy = { maxStepAttempts: 3, retryBackoffMinutes: 5 }
 
     const result = await executor.executeAutomationJob(createJob({
       executor: 'companion_acp',
       agentType: 'codex',
       workflow: {
         template: 'research_synthesis',
+        policy: retryPolicy,
         state: null,
       },
     }), {
@@ -181,6 +215,7 @@ test('executeAutomationJob seeds research_synthesis workflow state on companion 
 
     const run = await runStore.getRunById(result.runId)
     assert.equal(run?.meta?.workflow?.template, 'research_synthesis')
+    assert.deepEqual(run?.meta?.retryPolicy, retryPolicy)
     assert.equal(run?.meta?.workflow?.state?.currentStepId, 'plan')
     assert.deepEqual(
       run?.meta?.workflow?.state?.steps?.map((step) => ({

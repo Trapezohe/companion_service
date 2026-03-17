@@ -502,6 +502,132 @@ test('buildDiagnosticsPayload exposes workflow step ledgers for recent companion
   assert.equal(payload.automation.recentLifecyclePhases[0]?.workflow?.state?.lastWorkflowSummary, 'Plan ready.')
 })
 
+test('buildDiagnosticsPayload exposes stable run explanations for blocked, waiting, cancelled, replaying, and failed runs', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  await createApproval({
+    requestId: 'approval-wait-1',
+    conversationId: 'conv-1',
+    toolName: 'write_file',
+    toolPreview: 'write report.md',
+    riskLevel: 'high',
+    channels: ['sidepanel'],
+  })
+
+  await createRun({
+    runId: 'run-blocked-1',
+    type: 'exec',
+    state: 'failed',
+    source: 'remote',
+    contractVersion: 2,
+    summary: 'Blocked by remote policy',
+    error: 'blocked_by_remote_mode_high_risk',
+    meta: {
+      policyReason: 'blocked_by_remote_mode_high_risk',
+    },
+  })
+  await createRun({
+    runId: 'run-waiting-1',
+    type: 'approval',
+    state: 'waiting_approval',
+    source: 'remote',
+    contractVersion: 2,
+    summary: 'Awaiting approval',
+    meta: {
+      requestId: 'approval-wait-1',
+      approvalStatus: 'pending',
+    },
+  })
+  await createRun({
+    runId: 'run-cancelled-1',
+    type: 'approval',
+    state: 'cancelled',
+    source: 'remote',
+    contractVersion: 2,
+    summary: 'Approval rejected',
+    meta: {
+      requestId: 'approval-cancelled-1',
+      approvalStatus: 'rejected',
+    },
+  })
+  await createRun({
+    runId: 'run-replaying-1',
+    type: 'cron',
+    state: 'retrying',
+    source: 'replay',
+    contractVersion: 2,
+    summary: 'Retrying replay',
+    meta: {
+      replayOf: { kind: 'cron_pending', pendingId: 'pending-1' },
+    },
+  })
+  await createRun({
+    runId: 'run-failed-1',
+    type: 'cron',
+    state: 'failed',
+    source: 'replay',
+    contractVersion: 2,
+    summary: 'Replay failed',
+    error: 'fetch failed: socket hang up',
+    meta: {
+      replayOf: { kind: 'cron_pending', pendingId: 'pending-2' },
+    },
+  })
+  await flushRunStore()
+  await flushApprovalStore()
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  assert.equal(payload.contractVersion, 2)
+  assert.equal(payload.permissionPolicy.policyReason, 'policy_mode:full')
+
+  const blocked = payload.runs.recentExplanations.find((item) => item.runId === 'run-blocked-1')
+  const waiting = payload.runs.recentExplanations.find((item) => item.runId === 'run-waiting-1')
+  const cancelled = payload.runs.recentExplanations.find((item) => item.runId === 'run-cancelled-1')
+  const replaying = payload.runs.recentExplanations.find((item) => item.runId === 'run-replaying-1')
+  const failed = payload.runs.recentExplanations.find((item) => item.runId === 'run-failed-1')
+
+  assert.equal(blocked.lifecycle, 'blocked')
+  assert.equal(blocked.runOwner, 'remote')
+  assert.equal(blocked.policyReason, 'blocked_by_remote_mode_high_risk')
+  assert.equal(blocked.failureCategory, 'policy_blocked')
+
+  assert.equal(waiting.lifecycle, 'waiting_approval')
+  assert.equal(waiting.policyReason, 'awaiting_user_approval')
+  assert.equal(waiting.failureCategory, 'approval_wait')
+  assert.equal(typeof waiting.approvalWaitMs, 'number')
+
+  assert.equal(cancelled.lifecycle, 'cancelled')
+  assert.equal(cancelled.failureCategory, 'cancelled')
+
+  assert.equal(replaying.lifecycle, 'replaying')
+  assert.equal(replaying.runOwner, 'replay')
+  assert.equal(replaying.replayCount, 1)
+
+  assert.equal(failed.lifecycle, 'failed')
+  assert.equal(failed.runOwner, 'replay')
+  assert.equal(failed.replayCount, 1)
+  assert.equal(failed.failureCategory, 'network')
+})
+
 test('buildDiagnosticsPayload summarizes companion budget health across tracked persistent sessions', async (t) => {
   await clearRunStoreForTests()
   await clearApprovalStoreForTests()

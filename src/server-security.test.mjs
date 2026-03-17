@@ -56,6 +56,20 @@ async function requestHealthWithOrigin(ctx, origin) {
   })
 }
 
+async function requestJson(ctx, pathname, origin = 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
+  const response = await fetch(`${ctx.baseUrl}${pathname}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${ctx.token}`,
+      Origin: origin,
+    },
+  })
+  return {
+    response,
+    payload: await response.json(),
+  }
+}
+
 test('allowed extension origin receives echoed ACAO header', () => {
   const headers = buildCorsHeaders({
     origin: 'chrome-extension://abc123',
@@ -165,4 +179,27 @@ test('server falls back to the last known origin policy when origin lookup fails
   const rejected = await requestHealthWithOrigin(ctx, originB)
   assert.equal(rejected.status, 200)
   assert.equal(rejected.headers.get('access-control-allow-origin'), null)
+})
+
+test('health and diagnostics expose contract and policy explanation metadata without weakening CORS', async (t) => {
+  const origin = 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const ctx = await startSecurityServer({
+    getAllowedOrigins: async () => getAllowedOrigins(['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']),
+  })
+  t.after(async () => {
+    await stopSecurityServer(ctx.server)
+  })
+
+  const health = await requestHealthWithOrigin(ctx, origin)
+  const healthPayload = await health.json()
+  assert.equal(health.status, 200)
+  assert.equal(health.headers.get('access-control-allow-origin'), origin)
+  assert.equal(healthPayload.runContractVersion, 2)
+  assert.equal(healthPayload.permissionPolicy.policyReason, 'policy_mode:full')
+
+  const diagnostics = await requestJson(ctx, '/api/system/diagnostics', origin)
+  assert.equal(diagnostics.response.status, 200)
+  assert.equal(diagnostics.response.headers.get('access-control-allow-origin'), origin)
+  assert.equal(diagnostics.payload.contractVersion, 2)
+  assert.equal(diagnostics.payload.permissionPolicy.policyReason, 'policy_mode:full')
 })

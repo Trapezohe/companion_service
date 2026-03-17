@@ -38,10 +38,16 @@ export function normalizePermissionPolicy(input = {}, { strict = false } = {}) {
 
   const normalizedMode = VALID_MODES.has(rawMode) ? rawMode : PERMISSION_MODE_WORKSPACE
   const workspaceRoots = normalizeWorkspaceRoots(input.workspaceRoots)
+  const policyReason = normalizedMode === PERMISSION_MODE_FULL
+    ? 'policy_mode:full'
+    : workspaceRoots.length > 0
+      ? 'policy_mode:workspace'
+      : 'policy_mode:workspace_unscoped'
 
   return {
     mode: normalizedMode,
     workspaceRoots: normalizedMode === PERMISSION_MODE_WORKSPACE ? workspaceRoots : [],
+    policyReason,
   }
 }
 

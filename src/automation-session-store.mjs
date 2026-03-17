@@ -1,7 +1,7 @@
-import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ensureConfigDir, getConfigDir } from './config.mjs'
 import { clearAutomationBudgetLedger } from './automation-budget-store.mjs'
+import { createFileBackedStore } from './file-backed-store.mjs'
 
 const FILE_MODE = 0o600
 const BLOCKED_REUSE_STATES = new Set(['error', 'timeout', 'cancelled'])
@@ -130,69 +130,31 @@ function formatBinding(key, value) {
   }
 }
 
-async function safeChmod(target, mode) {
-  try {
-    await fs.chmod(target, mode)
-  } catch (err) {
-    if (err.code === 'ENOSYS' || err.code === 'EPERM' || err.code === 'EINVAL') return
-    throw err
-  }
+function buildPersistableSnapshot() {
+  return { bindings: store.bindings }
 }
 
-async function readStoreFile(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8')
-  return normalizeStore(JSON.parse(raw))
-}
-
-async function writeStoreSnapshot(snapshot) {
-  await ensureConfigDir()
-  const payload = JSON.stringify(snapshot, null, 2) + '\n'
-  const target = STORE_FILE()
-  const backup = BACKUP_FILE()
-  const tmp = `${target}.tmp`
-
-  await fs.writeFile(tmp, payload, { encoding: 'utf8', mode: FILE_MODE })
-  await safeChmod(tmp, FILE_MODE)
-
-  try {
-    await fs.copyFile(target, backup)
-    await safeChmod(backup, FILE_MODE)
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err
-  }
-
-  await fs.rename(tmp, target)
-  await safeChmod(target, FILE_MODE)
-}
+const storage = createFileBackedStore({
+  label: 'automation-session-store',
+  primaryPath: STORE_FILE,
+  backupPath: BACKUP_FILE,
+  fileMode: FILE_MODE,
+  ensureDir: ensureConfigDir,
+  fallbackState: () => ({ bindings: {} }),
+  parse: (raw) => normalizeStore(JSON.parse(raw)),
+  serialize: (snapshot) => `${JSON.stringify(snapshot, null, 2)}\n`,
+  logger: console,
+  messages: {
+    tmpCleanup: (err) => `Failed to clean orphan .tmp: ${err.message}`,
+    primaryCorrupted: (err) => `Primary store corrupted: ${err.message}`,
+    backupRecovered: 'Recovered from backup store',
+    backupUnavailable: (err) => `Backup unavailable: ${err.message ?? 'unknown error'}`,
+  },
+})
 
 export async function loadAutomationSessionStore() {
-  await ensureConfigDir()
-
-  try {
-    await fs.unlink(`${STORE_FILE()}.tmp`)
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.warn(`[automation-session-store] Failed to clean orphan .tmp: ${err.message}`)
-    }
-  }
-
-  try {
-    store = await readStoreFile(STORE_FILE())
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      store = { bindings: {} }
-    } else {
-      console.warn(`[automation-session-store] Primary store corrupted: ${err.message}`)
-      try {
-        store = await readStoreFile(BACKUP_FILE())
-        console.warn('[automation-session-store] Recovered from backup store')
-      } catch (backupErr) {
-        console.warn(`[automation-session-store] Backup unavailable: ${backupErr.message ?? 'unknown error'}`)
-        store = { bindings: {} }
-      }
-    }
-  }
-
+  const loadedStore = await storage.load()
+  store = loadedStore.state || { bindings: {} }
   loaded = true
   return clone(store)
 }
@@ -208,7 +170,7 @@ async function ensureLoaded() {
 
 async function persistStore() {
   await ensureLoaded()
-  await writeStoreSnapshot(store)
+  await storage.persistSnapshot(buildPersistableSnapshot())
 }
 
 export async function getAutomationSessionBinding(sessionKey) {
@@ -262,22 +224,20 @@ function canReuseSession(session) {
   return !BLOCKED_REUSE_STATES.has(state)
 }
 
+function isRunReference(binding, run) {
+  const meta = run?.meta && typeof run.meta === 'object' ? run.meta : {}
+  return run?.sessionId === binding.sessionId
+    || meta.sessionTarget === binding.key
+    || meta.acpSessionId === binding.sessionId
+    || meta.sessionId === binding.sessionId
+}
+
 function hasRunReference(binding, runs) {
-  return runs.some((run) => {
-    const meta = run?.meta && typeof run.meta === 'object' ? run.meta : {}
-    return meta.sessionTarget === binding.key
-      || meta.acpSessionId === binding.sessionId
-      || meta.sessionId === binding.sessionId
-  })
+  return runs.some((run) => isRunReference(binding, run))
 }
 
 function countRunReferences(binding, runs) {
-  return runs.filter((run) => {
-    const meta = run?.meta && typeof run.meta === 'object' ? run.meta : {}
-    return meta.sessionTarget === binding.key
-      || meta.acpSessionId === binding.sessionId
-      || meta.sessionId === binding.sessionId
-  }).length
+  return runs.filter((run) => isRunReference(binding, run)).length
 }
 
 export async function sweepAutomationSessionBindings(input = {}) {
@@ -403,6 +363,7 @@ export async function resolvePersistentAutomationSession(sessionKey, deps = {}) 
 }
 
 export async function clearAutomationSessionStoreForTests() {
+  await storage.flush()
   store = { bindings: {} }
   lastSweepSummary = {
     sweptAt: null,
@@ -418,6 +379,7 @@ export async function clearAutomationSessionStoreForTests() {
     removedBindings: [],
   }
   loaded = true
-  await ensureConfigDir()
-  await writeStoreSnapshot(store)
+  loadingPromise = null
+  storage.reset()
+  await storage.replaceSnapshot(buildPersistableSnapshot())
 }
