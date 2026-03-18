@@ -116,6 +116,187 @@ setTimeout(() => process.exit(1), 10)
   return { scriptPath }
 }
 
+async function createChromeDevtoolsListPagesRecoveryServer(tempDir) {
+  const scriptPath = path.join(tempDir, 'fake-chrome-devtools-list-pages-recovery.mjs')
+  const startCountPath = path.join(tempDir, 'devtools-list-pages-start-count.txt')
+  const source = `
+import { readFileSync, writeFileSync } from 'node:fs'
+
+const countPath = process.argv[2]
+let count = 0
+try {
+  count = Number(readFileSync(countPath, 'utf8').trim()) || 0
+} catch {}
+count += 1
+writeFileSync(countPath, String(count))
+
+const staleText = 'The selected page has been closed. Call list_pages to see open pages.'
+const pagesText = '## Pages\\n1: chrome://inspect/#remote-debugging [selected]\\n2: https://x.com/home'
+
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let newlineIndex = buffer.indexOf('\\n')
+  while (newlineIndex >= 0) {
+    const line = buffer.slice(0, newlineIndex).trim()
+    buffer = buffer.slice(newlineIndex + 1)
+    if (line) handle(JSON.parse(line))
+    newlineIndex = buffer.indexOf('\\n')
+  }
+})
+
+function respond(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+function handle(message) {
+  if (message.method === 'initialize') {
+    respond(message.id, { capabilities: { tools: {} }, serverInfo: { name: 'chrome_devtools', version: '1.0.0' } })
+    return
+  }
+  if (message.method === 'tools/list') {
+    respond(message.id, {
+      tools: [
+        { name: 'list_pages', description: 'List pages', inputSchema: { type: 'object', properties: {} } },
+      ],
+    })
+    return
+  }
+  if (message.method === 'tools/call') {
+    const toolName = message.params?.name
+    if (toolName === 'list_pages') {
+      if (count === 1) {
+        respond(message.id, { isError: true, content: [{ type: 'text', text: staleText }] })
+      } else {
+        respond(message.id, { isError: false, content: [{ type: 'text', text: pagesText }] })
+      }
+      return
+    }
+    respond(message.id, { isError: true, content: [{ type: 'text', text: 'unexpected tool call' }] })
+  }
+}
+`
+
+  await writeFile(scriptPath, source, 'utf8')
+  return { scriptPath, startCountPath }
+}
+
+async function createChromeDevtoolsSelectionRecoveryServer(tempDir) {
+  const scriptPath = path.join(tempDir, 'fake-chrome-devtools-selection-recovery.mjs')
+  const startCountPath = path.join(tempDir, 'devtools-selection-start-count.txt')
+  const selectionPath = path.join(tempDir, 'devtools-selection-current.txt')
+  const snapshotCountPath = path.join(tempDir, 'devtools-selection-snapshot-count.txt')
+  const source = `
+import { readFileSync, writeFileSync } from 'node:fs'
+
+const [countPath, selectionPath, snapshotCountPath] = process.argv.slice(2)
+let startCount = 0
+try {
+  startCount = Number(readFileSync(countPath, 'utf8').trim()) || 0
+} catch {}
+startCount += 1
+writeFileSync(countPath, String(startCount))
+writeFileSync(selectionPath, '1')
+
+const staleText = 'The selected page has been closed. Call list_pages to see open pages.'
+const snapshotText = '## Latest page snapshot\\nuid=2_0 RootWebArea "主页 / X" url="https://x.com/home"'
+
+function readSelection() {
+  try {
+    return Number(readFileSync(selectionPath, 'utf8').trim()) || 1
+  } catch {
+    return 1
+  }
+}
+
+function readSnapshotCount() {
+  try {
+    return Number(readFileSync(snapshotCountPath, 'utf8').trim()) || 0
+  } catch {
+    return 0
+  }
+}
+
+function writeSnapshotCount(count) {
+  writeFileSync(snapshotCountPath, String(count))
+}
+
+function pagesText(selectedPageId) {
+  return [
+    '## Pages',
+    '1: chrome://inspect/#remote-debugging' + (selectedPageId === 1 ? ' [selected]' : ''),
+    '4: https://x.com/home' + (selectedPageId === 4 ? ' [selected]' : ''),
+  ].join('\\n')
+}
+
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let newlineIndex = buffer.indexOf('\\n')
+  while (newlineIndex >= 0) {
+    const line = buffer.slice(0, newlineIndex).trim()
+    buffer = buffer.slice(newlineIndex + 1)
+    if (line) handle(JSON.parse(line))
+    newlineIndex = buffer.indexOf('\\n')
+  }
+})
+
+function respond(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+function handle(message) {
+  if (message.method === 'initialize') {
+    respond(message.id, { capabilities: { tools: {} }, serverInfo: { name: 'chrome_devtools', version: '1.0.0' } })
+    return
+  }
+  if (message.method === 'tools/list') {
+    respond(message.id, {
+      tools: [
+        { name: 'list_pages', description: 'List pages', inputSchema: { type: 'object', properties: {} } },
+        { name: 'select_page', description: 'Select page', inputSchema: { type: 'object', properties: { pageId: { type: 'number' } } } },
+        { name: 'take_snapshot', description: 'Take snapshot', inputSchema: { type: 'object', properties: {} } },
+      ],
+    })
+    return
+  }
+  if (message.method === 'tools/call') {
+    const toolName = message.params?.name
+    if (toolName === 'list_pages') {
+      respond(message.id, { isError: false, content: [{ type: 'text', text: pagesText(readSelection()) }] })
+      return
+    }
+    if (toolName === 'select_page') {
+      const pageId = Number(message.params?.arguments?.pageId) || 1
+      writeFileSync(selectionPath, String(pageId))
+      respond(message.id, { isError: false, content: [{ type: 'text', text: pagesText(pageId) }] })
+      return
+    }
+    if (toolName === 'take_snapshot') {
+      const nextCount = readSnapshotCount() + 1
+      writeSnapshotCount(nextCount)
+      if (nextCount === 1) {
+        respond(message.id, { isError: true, content: [{ type: 'text', text: staleText }] })
+        return
+      }
+      if (readSelection() !== 4) {
+        respond(message.id, { isError: true, content: [{ type: 'text', text: 'expected page 4 to be reselected before retry' }] })
+        return
+      }
+      respond(message.id, { isError: false, content: [{ type: 'text', text: snapshotText }] })
+      return
+    }
+    respond(message.id, { isError: true, content: [{ type: 'text', text: 'unexpected tool call' }] })
+  }
+}
+`
+
+  await writeFile(scriptPath, source, 'utf8')
+  return { scriptPath, startCountPath, selectionPath, snapshotCountPath }
+}
+
 test('buildMcpSpawnPath appends common executable directories and nvm bins', async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-path-'))
   try {
@@ -236,6 +417,68 @@ test('startServer includes MCP stderr when initialize exits before responding', 
     assert.equal(status.status, 'error')
     assert.match(status.error || '', /unsupported runtime: upgrade node/i)
   } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('callTool retries Chrome DevTools list_pages after a stale selected page error', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-devtools-list-pages-recovery-'))
+  let manager = null
+  try {
+    const { scriptPath, startCountPath } = await createChromeDevtoolsListPagesRecoveryServer(tempDir)
+    manager = new McpManager({
+      'chrome-devtools': {
+        command: process.execPath,
+        args: [scriptPath, startCountPath],
+      },
+    })
+
+    await manager.startServer('chrome-devtools')
+    const result = await manager.callTool('chrome-devtools', 'list_pages', {})
+
+    assert.equal(result.ok, true)
+    assert.equal(result.isError, false)
+    assert.match(result.content?.[0]?.text || '', /https:\/\/x\.com\/home/)
+
+    const startCount = Number(await readFile(startCountPath, 'utf8'))
+    assert.equal(startCount, 2)
+  } finally {
+    await manager?.stopAll().catch(() => {})
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('callTool reselects the last known Chrome DevTools page before retrying a stale snapshot', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-devtools-selection-recovery-'))
+  let manager = null
+  try {
+    const {
+      scriptPath,
+      startCountPath,
+      selectionPath,
+      snapshotCountPath,
+    } = await createChromeDevtoolsSelectionRecoveryServer(tempDir)
+    manager = new McpManager({
+      'chrome-devtools': {
+        command: process.execPath,
+        args: [scriptPath, startCountPath, selectionPath, snapshotCountPath],
+      },
+    })
+
+    await manager.startServer('chrome-devtools')
+
+    const selectResult = await manager.callTool('chrome-devtools', 'select_page', { pageId: 4 })
+    assert.equal(selectResult.ok, true)
+
+    const snapshotResult = await manager.callTool('chrome-devtools', 'take_snapshot', {})
+    assert.equal(snapshotResult.ok, true)
+    assert.equal(snapshotResult.isError, false)
+    assert.match(snapshotResult.content?.[0]?.text || '', /https:\/\/x\.com\/home/)
+
+    const startCount = Number(await readFile(startCountPath, 'utf8'))
+    assert.equal(startCount, 2)
+  } finally {
+    await manager?.stopAll().catch(() => {})
     await rm(tempDir, { recursive: true, force: true })
   }
 })

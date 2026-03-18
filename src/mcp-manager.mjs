@@ -23,6 +23,7 @@ const MCP_RESTART_BASE_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_BAS
 const MCP_RESTART_MAX_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS || 30_000)
 const MCP_MAX_STARTING = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_STARTING || 4))
 const MCP_MAX_CONNECTED = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_CONNECTED || 32))
+const DEVTOOLS_SELECTED_PAGE_CLOSED_RE = /the selected page has been closed/i
 const NODE_TOOLCHAIN_COMMANDS = new Set([
   'node',
   'npm',
@@ -104,10 +105,117 @@ function normalizeServerName(input) {
   return typeof input === 'string' ? input.trim().toLowerCase() : ''
 }
 
+function isChromeDevtoolsServerName(input) {
+  return getServerBaseName(input) === 'chrome-devtools'
+}
+
 function getServerBaseName(input) {
   const normalized = normalizeServerName(input)
   if (!normalized) return ''
   return normalized.endsWith('-mcp') ? normalized.slice(0, -4) : normalized
+}
+
+function getToolTextContent(content = []) {
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((item) => {
+      if (!item || typeof item !== 'object') return ''
+      return typeof item.text === 'string' ? item.text : ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function isChromeDevtoolsStalePageResult(result) {
+  return Boolean(
+    result?.isError
+    && DEVTOOLS_SELECTED_PAGE_CLOSED_RE.test(getToolTextContent(result.content)),
+  )
+}
+
+function parseChromeDevtoolsPages(content = []) {
+  const pages = []
+  const text = getToolTextContent(content)
+  if (!text) return pages
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim()
+    const match = line.match(/^(\d+):\s+(.+?)(\s+\[selected\])?$/)
+    if (!match) continue
+    pages.push({
+      pageId: Number(match[1]),
+      descriptor: match[2].trim(),
+      selected: Boolean(match[3]),
+    })
+  }
+  return pages
+}
+
+function buildChromeDevtoolsPageHint(toolName, args, result) {
+  if (result?.isError) return null
+
+  if (toolName === 'list_pages' || toolName === 'select_page') {
+    const pages = parseChromeDevtoolsPages(result.content)
+    if (pages.length === 0) return null
+
+    const requestedPageId = Number(args?.pageId)
+    const selectedPage = Number.isFinite(requestedPageId)
+      ? pages.find((page) => page.pageId === requestedPageId) || pages.find((page) => page.selected)
+      : pages.find((page) => page.selected)
+    if (!selectedPage) return null
+
+    return {
+      pageId: selectedPage.pageId,
+      descriptor: selectedPage.descriptor,
+    }
+  }
+
+  if (toolName === 'take_snapshot') {
+    const text = getToolTextContent(result.content)
+    const match = text.match(/RootWebArea\s+"[^"]*"\s+url="([^"]+)"/)
+    if (!match) return null
+    return {
+      pageId: null,
+      descriptor: match[1],
+    }
+  }
+
+  return null
+}
+
+function resolveChromeDevtoolsRecoveryPageId(pages, hint) {
+  if (!hint || pages.length === 0) return null
+
+  const pageId = Number(hint.pageId)
+  if (Number.isFinite(pageId)) {
+    const byId = pages.find((page) => page.pageId === pageId)
+    if (byId && (!hint.descriptor || byId.descriptor === hint.descriptor)) {
+      return byId.pageId
+    }
+  }
+
+  const descriptor = typeof hint.descriptor === 'string' ? hint.descriptor.trim() : ''
+  if (!descriptor) return null
+
+  const exactMatches = pages.filter((page) => page.descriptor === descriptor)
+  if (exactMatches.length === 1) return exactMatches[0].pageId
+
+  const suffixMatches = pages.filter((page) => page.descriptor.endsWith(descriptor))
+  if (suffixMatches.length === 1) return suffixMatches[0].pageId
+
+  return null
+}
+
+function formatChromeDevtoolsPageRecoveryError(pages) {
+  if (!Array.isArray(pages) || pages.length === 0) {
+    return 'Chrome DevTools refreshed the MCP session after the selected page closed, but no open pages were available. Call list_pages before retrying.'
+  }
+
+  const summary = pages
+    .slice(0, 8)
+    .map((page) => `${page.pageId}: ${page.descriptor}${page.selected ? ' [selected]' : ''}`)
+    .join('; ')
+  return `Chrome DevTools refreshed the MCP session after the selected page closed, but could not safely restore the previous tab. Open pages: ${summary}. Call list_pages and select_page before retrying.`
 }
 
 function isWriteCapableToolName(name) {
@@ -238,7 +346,9 @@ export class McpManager {
         nextRetryAt: null,
         restartPending: false,
         restartTimer: null,
+        startToken: null,
         writeCapable: resolveWriteCapable(normalizedConfig),
+        lastSelectedPageHint: null,
       })
     }
   }
@@ -295,6 +405,8 @@ export class McpManager {
       entry.tools = []
       entry.startedAt = null
 
+      const startToken = Symbol(`mcp-start:${name}`)
+      entry.startToken = startToken
       const { command, args = [], env = {}, cwd } = entry.config
       const childEnv = { ...process.env, ...env }
       childEnv.PATH = buildMcpSpawnPath(childEnv.PATH, {
@@ -324,6 +436,7 @@ export class McpManager {
 
       // Register close handler after confirmed spawn
       proc.on('close', (code) => {
+        if (entry.startToken !== startToken) return
         if (entry.status !== 'stopped') {
           entry.status = 'disconnected'
           entry.transport = null
@@ -340,6 +453,7 @@ export class McpManager {
 
       // Register late error handler (after spawn succeeded)
       proc.on('error', (err) => {
+        if (entry.startToken !== startToken) return
         if (entry.status !== 'stopped') {
           entry.status = 'error'
           entry.transport = null
@@ -399,6 +513,7 @@ export class McpManager {
       return { name, tools: entry.tools.length }
     } catch (err) {
       entry.status = 'error'
+      entry.startToken = null
       const failureMessage = formatMcpProcessExitMessage(
         err?.message || String(err),
         entry.transport?.stderr,
@@ -427,6 +542,7 @@ export class McpManager {
 
     this.#clearScheduledRestart(entry)
     entry.status = 'stopped'
+    entry.startToken = null
 
     if (entry.transport) {
       entry.transport.close()
@@ -483,6 +599,74 @@ export class McpManager {
     return tools
   }
 
+  async #callToolRaw(entry, toolName, args = {}) {
+    return entry.transport.request('tools/call', {
+      name: toolName,
+      arguments: args,
+    })
+  }
+
+  #rememberChromeDevtoolsPageHint(entry, toolName, args, result) {
+    if (!isChromeDevtoolsServerName(entry?.name)) return
+    const hint = buildChromeDevtoolsPageHint(toolName, args, result)
+    if (hint) entry.lastSelectedPageHint = hint
+  }
+
+  #normalizeToolCallResult(result) {
+    return {
+      ok: !result?.isError,
+      content: result?.content || [],
+      isError: Boolean(result?.isError),
+    }
+  }
+
+  async #recoverChromeDevtoolsToolCall(entry, toolName, args = {}) {
+    const previousHint = entry?.lastSelectedPageHint ? { ...entry.lastSelectedPageHint } : null
+    await this.restartServer(entry.name)
+
+    const recoveredEntry = this.#resolveServerEntry(entry.name)
+    if (!recoveredEntry || recoveredEntry.status !== 'connected' || !recoveredEntry.transport || recoveredEntry.transport.closed) {
+      return {
+        ok: false,
+        error: `Chrome DevTools MCP could not be reconnected after the selected page closed.`,
+      }
+    }
+
+    if (toolName === 'list_pages' || toolName === 'select_page') {
+      const retryResult = await this.#callToolRaw(recoveredEntry, toolName, args)
+      this.#rememberChromeDevtoolsPageHint(recoveredEntry, toolName, args, retryResult)
+      return this.#normalizeToolCallResult(retryResult)
+    }
+
+    const pageListResult = await this.#callToolRaw(recoveredEntry, 'list_pages', {})
+    this.#rememberChromeDevtoolsPageHint(recoveredEntry, 'list_pages', {}, pageListResult)
+    if (pageListResult?.isError) {
+      return this.#normalizeToolCallResult(pageListResult)
+    }
+
+    const pages = parseChromeDevtoolsPages(pageListResult.content)
+    const recoveryPageId = resolveChromeDevtoolsRecoveryPageId(pages, previousHint)
+    if (!Number.isFinite(recoveryPageId)) {
+      return {
+        ok: false,
+        error: formatChromeDevtoolsPageRecoveryError(pages),
+      }
+    }
+
+    const selectResult = await this.#callToolRaw(recoveredEntry, 'select_page', {
+      pageId: recoveryPageId,
+      bringToFront: false,
+    })
+    this.#rememberChromeDevtoolsPageHint(recoveredEntry, 'select_page', { pageId: recoveryPageId }, selectResult)
+    if (selectResult?.isError) {
+      return this.#normalizeToolCallResult(selectResult)
+    }
+
+    const retryResult = await this.#callToolRaw(recoveredEntry, toolName, args)
+    this.#rememberChromeDevtoolsPageHint(recoveredEntry, toolName, args, retryResult)
+    return this.#normalizeToolCallResult(retryResult)
+  }
+
   async callTool(serverName, toolName, args = {}) {
     const entry = this.#resolveServerEntry(serverName)
     if (!entry) {
@@ -501,16 +685,12 @@ export class McpManager {
     }
 
     try {
-      const result = await entry.transport.request('tools/call', {
-        name: toolName,
-        arguments: args,
-      })
-
-      return {
-        ok: !result.isError,
-        content: result.content || [],
-        isError: Boolean(result.isError),
+      const result = await this.#callToolRaw(entry, toolName, args)
+      if (isChromeDevtoolsServerName(entry.name) && isChromeDevtoolsStalePageResult(result)) {
+        return await this.#recoverChromeDevtoolsToolCall(entry, toolName, args)
       }
+      this.#rememberChromeDevtoolsPageHint(entry, toolName, args, result)
+      return this.#normalizeToolCallResult(result)
     } catch (err) {
       return { ok: false, error: err.message }
     }
@@ -576,6 +756,7 @@ export class McpManager {
       existing.config = normalizedConfig
       existing.error = null
       existing.writeCapable = resolveWriteCapable(normalizedConfig, existing.tools)
+      existing.lastSelectedPageHint = null
     } else {
       this.#servers.set(serverName, {
         name: serverName,
@@ -591,7 +772,9 @@ export class McpManager {
         nextRetryAt: null,
         restartPending: false,
         restartTimer: null,
+        startToken: null,
         writeCapable: resolveWriteCapable(normalizedConfig),
+        lastSelectedPageHint: null,
       })
     }
 
