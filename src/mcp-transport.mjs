@@ -8,6 +8,25 @@
 import { getDefaultMcpRequestTimeoutMs, normalizeMcpRequestTimeoutMs } from './config.mjs'
 import { signalChildProcessTree } from './runtime.mjs'
 
+export function formatMcpProcessExitMessage(message, stderr) {
+  const baseMessage = typeof message === 'string' && message.trim()
+    ? message.trim()
+    : 'MCP server process exited'
+  const normalizedStderr = typeof stderr === 'string'
+    ? stderr.trim().replace(/\s+/g, ' ')
+    : ''
+
+  if (!normalizedStderr || baseMessage.includes(normalizedStderr)) {
+    return baseMessage
+  }
+
+  const limit = 500
+  const summarizedStderr = normalizedStderr.length > limit
+    ? `${normalizedStderr.slice(0, limit)}...`
+    : normalizedStderr
+  return `${baseMessage}: ${summarizedStderr}`
+}
+
 export class StdioTransport {
   #proc
   #nextId = 1
@@ -175,7 +194,7 @@ export class StdioTransport {
 
     for (const [, entry] of this.#pending) {
       clearTimeout(entry.timer)
-      entry.reject(new Error('MCP server process exited'))
+      entry.reject(new Error(formatMcpProcessExitMessage('MCP server process exited', this.stderr)))
     }
     this.#pending.clear()
   }
@@ -186,7 +205,9 @@ export class StdioTransport {
 
     for (const [, entry] of this.#pending) {
       clearTimeout(entry.timer)
-      entry.reject(new Error(`MCP server process error: ${err.message}`))
+      entry.reject(new Error(
+        formatMcpProcessExitMessage(`MCP server process error: ${err.message}`, this.stderr),
+      ))
     }
     this.#pending.clear()
   }

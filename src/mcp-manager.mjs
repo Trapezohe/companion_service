@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process'
 import os from 'node:os'
 import { dirname, delimiter as PATH_DELIMITER, join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
-import { StdioTransport } from './mcp-transport.mjs'
+import { formatMcpProcessExitMessage, StdioTransport } from './mcp-transport.mjs'
 import { COMPANION_VERSION } from './version.mjs'
 import { getDefaultMcpRequestTimeoutMs, normalizeMcpRequestTimeoutMs } from './config.mjs'
 
@@ -23,6 +23,18 @@ const MCP_RESTART_BASE_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_BAS
 const MCP_RESTART_MAX_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_MAX_BACKOFF_MS || 30_000)
 const MCP_MAX_STARTING = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_STARTING || 4))
 const MCP_MAX_CONNECTED = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_CONNECTED || 32))
+const NODE_TOOLCHAIN_COMMANDS = new Set([
+  'node',
+  'npm',
+  'npx',
+  'pnpm',
+  'pnpx',
+  'yarn',
+  'yarnpkg',
+  'corepack',
+  'bun',
+  'bunx',
+])
 
 function splitPathEntries(pathValue) {
   if (!pathValue || typeof pathValue !== 'string') return []
@@ -47,11 +59,22 @@ function getNvmNodeBinDirs(homeDir) {
 export function buildMcpSpawnPath(basePath, opts = {}) {
   const homeDir = opts.homeDir !== undefined ? opts.homeDir : (process.env.HOME || os.homedir())
   const execDir = opts.execDir || dirname(process.execPath)
+  const userBins = homeDir ? [join(homeDir, 'bin'), join(homeDir, '.local', 'bin')] : []
+  const nvmNodeBins = getNvmNodeBinDirs(homeDir)
+  const preferredEntries = opts.preferNodeToolchain
+    ? [
+        ...nvmNodeBins,
+        ...userBins,
+        execDir,
+      ]
+    : [
+        execDir,
+        ...userBins,
+        ...nvmNodeBins,
+      ]
   const entries = [
-    ...splitPathEntries(basePath),
-    execDir,
-    ...(homeDir ? [join(homeDir, 'bin'), join(homeDir, '.local', 'bin')] : []),
-    ...getNvmNodeBinDirs(homeDir),
+    ...(opts.preferNodeToolchain ? preferredEntries : splitPathEntries(basePath)),
+    ...(opts.preferNodeToolchain ? splitPathEntries(basePath) : preferredEntries),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
@@ -68,6 +91,13 @@ export function buildMcpSpawnPath(basePath, opts = {}) {
     deduped.push(entry)
   }
   return deduped.join(PATH_DELIMITER)
+}
+
+function shouldPreferManagedNodeToolchain(command) {
+  if (typeof command !== 'string') return false
+  const normalized = command.trim().split(/[\\/]/).pop()?.toLowerCase() || ''
+  const withoutExtension = normalized.replace(/\.(?:cmd|bat|exe|ps1)$/i, '')
+  return NODE_TOOLCHAIN_COMMANDS.has(withoutExtension)
 }
 
 function normalizeServerName(input) {
@@ -267,7 +297,9 @@ export class McpManager {
 
       const { command, args = [], env = {}, cwd } = entry.config
       const childEnv = { ...process.env, ...env }
-      childEnv.PATH = buildMcpSpawnPath(childEnv.PATH)
+      childEnv.PATH = buildMcpSpawnPath(childEnv.PATH, {
+        preferNodeToolchain: shouldPreferManagedNodeToolchain(command),
+      })
 
       // Use a promise to detect early spawn failure
       const proc = spawn(command, args, {
@@ -296,7 +328,10 @@ export class McpManager {
           entry.status = 'disconnected'
           entry.transport = null
           entry.tools = [] // Clear tools when server disconnects
-          entry.error = `Process exited with code ${code}`
+          entry.error = formatMcpProcessExitMessage(
+            `Process exited with code ${code}`,
+            transport.stderr,
+          )
           entry.startedAt = null
           console.warn(`[MCP] "${name}" exited with code ${code}`)
           this.#scheduleRestart(name, entry)
@@ -364,7 +399,11 @@ export class McpManager {
       return { name, tools: entry.tools.length }
     } catch (err) {
       entry.status = 'error'
-      entry.error = err.message
+      const failureMessage = formatMcpProcessExitMessage(
+        err?.message || String(err),
+        entry.transport?.stderr,
+      )
+      entry.error = failureMessage
       entry.tools = []
       this.#setNextRetry(entry, now)
       // Cleanup transport if it was created
@@ -372,7 +411,11 @@ export class McpManager {
         entry.transport.close()
         entry.transport = null
       }
-      throw err
+      if (err instanceof Error) {
+        err.message = failureMessage
+        throw err
+      }
+      throw new Error(failureMessage)
     } finally {
       this.#startingLocks.delete(name)
     }

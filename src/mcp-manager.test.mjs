@@ -105,6 +105,17 @@ function handle(message) {
   return { scriptPath }
 }
 
+async function createStderrExitServer(tempDir, message = 'unsupported runtime') {
+  const scriptPath = path.join(tempDir, 'stderr-exit-mcp-server.mjs')
+  const source = `
+process.stderr.write(${JSON.stringify(message + '\n')})
+setTimeout(() => process.exit(1), 10)
+`
+
+  await writeFile(scriptPath, source, 'utf8')
+  return { scriptPath }
+}
+
 test('buildMcpSpawnPath appends common executable directories and nvm bins', async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-path-'))
   try {
@@ -128,6 +139,30 @@ test('buildMcpSpawnPath appends common executable directories and nvm bins', asy
     assert.ok(parts.includes('/usr/local/bin'))
     assert.ok(parts.includes('/opt/homebrew/bin'))
     assert.equal(new Set(parts).size, parts.length)
+  } finally {
+    await rm(tempHome, { recursive: true, force: true })
+  }
+})
+
+test('buildMcpSpawnPath can prefer managed node toolchains ahead of system bins', async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-node-pref-'))
+  try {
+    const nvmNodeRoot = path.join(tempHome, '.nvm', 'versions', 'node')
+    const olderNodeBin = path.join(nvmNodeRoot, 'v20.11.0', 'bin')
+    const newerNodeBin = path.join(nvmNodeRoot, 'v22.12.0', 'bin')
+    await mkdir(olderNodeBin, { recursive: true })
+    await mkdir(newerNodeBin, { recursive: true })
+
+    const built = buildMcpSpawnPath('/usr/local/bin:/usr/bin:/bin', {
+      homeDir: tempHome,
+      execDir: '/usr/local/bin',
+      preferNodeToolchain: true,
+    })
+
+    const parts = built.split(PATH_DELIMITER)
+    assert.equal(parts[0], newerNodeBin)
+    assert.equal(parts[1], olderNodeBin)
+    assert.equal(parts.indexOf('/usr/local/bin') > parts.indexOf(olderNodeBin), true)
   } finally {
     await rm(tempHome, { recursive: true, force: true })
   }
@@ -178,6 +213,31 @@ test('startServer surfaces spawn failures and marks server status as error', asy
   assert.ok(status)
   assert.equal(status.status, 'error')
   assert.match(status.error || '', /ENOENT|not found|spawn/i)
+})
+
+test('startServer includes MCP stderr when initialize exits before responding', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-mcp-stderr-'))
+  try {
+    const { scriptPath } = await createStderrExitServer(tempDir, 'unsupported runtime: upgrade node')
+    const manager = new McpManager({
+      broken: {
+        command: process.execPath,
+        args: [scriptPath],
+      },
+    })
+
+    await assert.rejects(
+      () => manager.startServer('broken'),
+      /unsupported runtime: upgrade node/i,
+    )
+
+    const status = manager.getServers().find((item) => item.name === 'broken')
+    assert.ok(status)
+    assert.equal(status.status, 'error')
+    assert.match(status.error || '', /unsupported runtime: upgrade node/i)
+  } finally {
+    await rm(tempDir, { recursive: true, force: true })
+  }
 })
 
 test('stopServer clears stale disconnected/error state', async () => {
