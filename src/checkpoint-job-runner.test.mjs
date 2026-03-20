@@ -260,3 +260,147 @@ test('submit persists step progress for status polling before the job completes'
     return status?.state === 'completed'
   })
 })
+
+test('runner keeps active jobs but trims older terminal jobs from persisted state', async () => {
+  const bundle = makeCheckpointJobBundle()
+  const nowTs = bundle.committedAt
+  const terminalJobs = Array.from({ length: 70 }, (_, index) => ({
+    jobId: `checkpoint-terminal-${index}`,
+    generation: `2026-03-12T08-00-${String(index).padStart(2, '0')}.000Z`,
+    state: index % 2 === 0 ? 'completed' : 'failed',
+    stage: index % 2 === 0 ? 'completed' : 'failed',
+    createdAt: nowTs + index,
+    updatedAt: nowTs + index,
+    startedAt: nowTs + index,
+    finishedAt: nowTs + index + 1,
+    attemptCount: 1,
+    error: index % 2 === 0 ? null : 'checkpoint_job_failed',
+    completedSteps: [],
+    publishBundle: {
+      ...bundle,
+      generation: `2026-03-12T08-00-${String(index).padStart(2, '0')}.000Z`,
+    },
+    result: index % 2 === 0
+      ? {
+          latestPointer: bundle.latestPointer,
+          latestPointerPayload: bundle.latestPointerPayload,
+          history: bundle.history,
+          historyPayload: bundle.historyPayload,
+          manifest: bundle.manifest,
+          manifestPayload: bundle.manifestPayload,
+          localAckPlan: bundle.localAckPlan,
+          verificationStatus: 'verified',
+        }
+      : null,
+  }))
+
+  const stateStore = createInMemoryCheckpointJobStateStore({
+    version: 1,
+    jobs: [
+      ...terminalJobs,
+      {
+        jobId: 'checkpoint-running',
+        generation: '2026-03-12T09-00-00.000Z',
+        state: 'running',
+        stage: 'publish_artifacts',
+        createdAt: nowTs + 10_000,
+        updatedAt: nowTs + 10_001,
+        startedAt: nowTs + 10_001,
+        finishedAt: null,
+        attemptCount: 2,
+        error: null,
+        completedSteps: ['publish_artifacts'],
+        publishBundle: {
+          ...bundle,
+          generation: '2026-03-12T09-00-00.000Z',
+        },
+        result: null,
+      },
+    ],
+  })
+
+  const snapshot = await stateStore.load()
+  const runner = createMemoryCheckpointJobRunner({
+    stateStore,
+    runMemoryCheckpointJob: async () => {
+      throw new Error('should_not_execute')
+    },
+  })
+
+  const retainedTerminal = snapshot.jobs.filter((job) => job.state === 'completed' || job.state === 'failed')
+  assert.equal(retainedTerminal.length, 64)
+  assert.equal(await runner.getStatus('checkpoint-terminal-0'), null)
+  assert.ok(await runner.getStatus('checkpoint-terminal-69'))
+  assert.equal((await runner.getStatus('checkpoint-running'))?.state, 'running')
+})
+
+test('completing a new job also prunes the oldest retained terminal entry', async () => {
+  const bundle = makeCheckpointJobBundle()
+  const nowTs = bundle.committedAt
+  const initialTerminalJobs = Array.from({ length: 64 }, (_, index) => ({
+    jobId: `checkpoint-complete-${index}`,
+    generation: `2026-03-12T10-00-${String(index).padStart(2, '0')}.000Z`,
+    state: 'completed',
+    stage: 'completed',
+    createdAt: nowTs + index,
+    updatedAt: nowTs + index,
+    startedAt: nowTs + index,
+    finishedAt: nowTs + index + 1,
+    attemptCount: 1,
+    error: null,
+    completedSteps: ['publish_artifacts'],
+    publishBundle: {
+      ...bundle,
+      generation: `2026-03-12T10-00-${String(index).padStart(2, '0')}.000Z`,
+    },
+    result: {
+      latestPointer: bundle.latestPointer,
+      latestPointerPayload: bundle.latestPointerPayload,
+      history: bundle.history,
+      historyPayload: bundle.historyPayload,
+      manifest: bundle.manifest,
+      manifestPayload: bundle.manifestPayload,
+      localAckPlan: bundle.localAckPlan,
+      verificationStatus: 'verified',
+    },
+  }))
+
+  const stateStore = createInMemoryCheckpointJobStateStore({
+    version: 1,
+    jobs: initialTerminalJobs,
+  })
+
+  const runner = createMemoryCheckpointJobRunner({
+    stateStore,
+    now: (() => {
+      let current = nowTs + 100_000
+      return () => current++
+    })(),
+    runMemoryCheckpointJob: async (job) => ({
+      latestPointer: job.publishBundle.latestPointer,
+      latestPointerPayload: job.publishBundle.latestPointerPayload,
+      history: job.publishBundle.history,
+      historyPayload: job.publishBundle.historyPayload,
+      manifest: job.publishBundle.manifest,
+      manifestPayload: job.publishBundle.manifestPayload,
+      localAckPlan: job.publishBundle.localAckPlan,
+      verificationStatus: 'verified',
+    }),
+  })
+
+  await runner.submit({
+    generation: '2026-03-12T11-00-00.000Z',
+    publishBundle: {
+      ...bundle,
+      generation: '2026-03-12T11-00-00.000Z',
+    },
+  })
+  await waitFor(async () => (await runner.getStatus('checkpoint-2026-03-12T11-00-00.000Z'))?.state === 'completed')
+
+  const snapshot = await stateStore.load()
+  const retainedTerminal = snapshot.jobs.filter((job) => job.state === 'completed' || job.state === 'failed')
+
+  assert.equal(retainedTerminal.length, 64)
+  assert.equal(await runner.getStatus('checkpoint-complete-0'), null)
+  assert.equal((await runner.getStatus('checkpoint-2026-03-12T11-00-00.000Z'))?.state, 'completed')
+})

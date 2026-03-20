@@ -5,6 +5,7 @@ import { createFileBackedStore } from './file-backed-store.mjs'
 
 const FILE_MODE = 0o600
 const DEFAULT_STATE_VERSION = 1
+const MAX_PERSISTED_TERMINAL_JOBS = 64
 
 function CHECKPOINT_JOBS_FILE() {
   return path.join(getConfigDir(), 'checkpoint-jobs.json')
@@ -120,9 +121,24 @@ function normalizePersistedState(input) {
   const jobs = Array.isArray(record?.jobs)
     ? record.jobs.map((job) => normalizePersistedJob(job)).filter(Boolean)
     : []
+  const activeJobs = jobs.filter((job) => job.state === 'queued' || job.state === 'running')
+  const retainedTerminalJobs = jobs
+    .filter((job) => job.state === 'completed' || job.state === 'failed')
+    .sort((left, right) => {
+      if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt
+      if (right.createdAt !== left.createdAt) return right.createdAt - left.createdAt
+      return right.jobId.localeCompare(left.jobId)
+    })
+    .slice(0, MAX_PERSISTED_TERMINAL_JOBS)
+  const normalizedJobs = [...activeJobs, ...retainedTerminalJobs]
+    .sort((left, right) => {
+      if (right.updatedAt !== left.updatedAt) return right.updatedAt - left.updatedAt
+      if (right.createdAt !== left.createdAt) return right.createdAt - left.createdAt
+      return right.jobId.localeCompare(left.jobId)
+    })
   return {
     version: DEFAULT_STATE_VERSION,
-    jobs,
+    jobs: normalizedJobs,
   }
 }
 
