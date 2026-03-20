@@ -96,6 +96,7 @@ import {
   createFileBackedMemoryShadowRefreshStateStore,
   createMemoryShadowPublisher,
 } from './memory-shadow-publisher.mjs'
+import { createMemoryCheckpointJobRunner } from './checkpoint-job-runner.mjs'
 import { getMediaNormalizationSupport, normalizeImagePayload } from './media-normalize.mjs'
 import { isChromeExtensionOrigin, normalizeExtensionOrigin } from './native-host.mjs'
 import { deliverAutomationRunResult } from './automation-executor.mjs'
@@ -164,13 +165,14 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload))
 }
 
-function buildCompanionCapabilitiesPayload() {
+function buildCompanionCapabilitiesPayload(dynamicFeatures = {}) {
   return {
     protocolVersion: `trapezohe-companion/${COMPANION_PROTOCOL_VERSION}`,
     version: COMPANION_VERSION,
     runContractVersion: RUN_CONTRACT_VERSION,
     supportedFeatures: {
       ...COMPANION_SUPPORTED_FEATURES,
+      ...(dynamicFeatures && typeof dynamicFeatures === 'object' ? dynamicFeatures : {}),
     },
   }
 }
@@ -670,6 +672,7 @@ export function createCompanionServer({
   shutdownFn = null,
   cleanupFn = null,
   publishMemoryShadowRefresh = null,
+  runMemoryCheckpointJob = null,
   normalizeMediaImage = normalizeImagePayload,
   getMediaSupport = getMediaNormalizationSupport,
   memoryShadowRefreshSlaHours = getDefaultMemoryShadowRefreshSlaHours(),
@@ -686,6 +689,12 @@ export function createCompanionServer({
     freshnessSlaHours: memoryShadowRefreshSlaHours,
     stateStore: createFileBackedMemoryShadowRefreshStateStore(),
   })
+  const checkpointJobRunner = createMemoryCheckpointJobRunner({
+    runMemoryCheckpointJob,
+  })
+  const getDynamicCompanionFeatures = () => ({
+    memoryCheckpointJobs: checkpointJobRunner.isAvailable(),
+  })
   const initStoresPromise = Promise.all([
     loadRunStore().catch(() => undefined),
     loadApprovalStore().catch(() => undefined),
@@ -694,6 +703,7 @@ export function createCompanionServer({
     loadAutomationOutboxStore().catch(() => undefined),
   ]).then(async () => {
     await restoreSessionRunStateOnStartup(sessionRunIndex).catch(() => undefined)
+    await checkpointJobRunner.resumePendingJobs().catch(() => undefined)
   })
   const detachAcpTransitionHook = setAcpSessionTransitionHook(async (event) => {
     const runId = event.runId || sessionRunIndex.get(event.sessionId)
@@ -920,7 +930,7 @@ export function createCompanionServer({
     if (req.method === 'GET' && pathname === '/healthz') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      const capabilities = buildCompanionCapabilitiesPayload()
+      const capabilities = buildCompanionCapabilitiesPayload(getDynamicCompanionFeatures())
       return sendJson(res, 200, {
         ok: true,
         ts: Date.now(),
@@ -983,7 +993,43 @@ export function createCompanionServer({
     if (req.method === 'GET' && pathname === '/api/system/capabilities') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      return sendJson(res, 200, buildCompanionCapabilitiesPayload())
+      return sendJson(res, 200, buildCompanionCapabilitiesPayload(getDynamicCompanionFeatures()))
+    }
+
+    if (req.method === 'POST' && pathname === '/api/checkpoint-jobs') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      if (!checkpointJobRunner.isAvailable()) {
+        return sendJson(res, 503, { error: 'memory_checkpoint_jobs_unavailable' })
+      }
+      try {
+        const body = await readJsonBody(req)
+        const result = await checkpointJobRunner.submit(body)
+        return sendJson(res, 200, result)
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message || 'Invalid request.' })
+      }
+    }
+
+    if (
+      req.method === 'GET'
+      && pathname.startsWith('/api/checkpoint-jobs/')
+      && pathname.endsWith('/status')
+    ) {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      if (!checkpointJobRunner.isAvailable()) {
+        return sendJson(res, 503, { error: 'memory_checkpoint_jobs_unavailable' })
+      }
+      const prefix = '/api/checkpoint-jobs/'
+      const suffix = '/status'
+      const encodedJobId = pathname.slice(prefix.length, pathname.length - suffix.length)
+      const jobId = decodeURIComponent(encodedJobId || '')
+      const status = await checkpointJobRunner.getStatus(jobId)
+      if (!status) {
+        return sendJson(res, 404, { error: 'checkpoint_job_not_found' })
+      }
+      return sendJson(res, 200, status)
     }
 
 
@@ -1026,7 +1072,7 @@ export function createCompanionServer({
     if (req.method === 'GET' && pathname === '/api/system/diagnostics') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      const capabilities = buildCompanionCapabilitiesPayload()
+      const capabilities = buildCompanionCapabilitiesPayload(getDynamicCompanionFeatures())
       const diagnostics = await buildDiagnosticsPayload({
         protocolVersion: capabilities.protocolVersion,
         version: capabilities.version,

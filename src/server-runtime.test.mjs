@@ -17,6 +17,7 @@ import {
 } from './approval-store.mjs'
 import { clearMemoryShadowStoreForTests } from './memory-shadow-store.mjs'
 import { clearMemoryShadowRefreshStateForTests } from './memory-shadow-publisher.mjs'
+import { clearCheckpointJobStoreForTests } from './checkpoint-job-runner.mjs'
 
 const previousConfigDir = process.env.TRAPEZOHE_CONFIG_DIR
 const testConfigDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-server-runtime-test-'))
@@ -28,6 +29,7 @@ after(async () => {
   await clearCronStoreForTests().catch(() => undefined)
   await clearMemoryShadowStoreForTests().catch(() => undefined)
   await clearMemoryShadowRefreshStateForTests().catch(() => undefined)
+  await clearCheckpointJobStoreForTests().catch(() => undefined)
   if (previousConfigDir === undefined) delete process.env.TRAPEZOHE_CONFIG_DIR
   else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
   await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
@@ -116,6 +118,27 @@ function makeShadowEnvelope() {
   }
 }
 
+function makeCheckpointJobBundle() {
+  const shadow = makeShadowEnvelope()
+  return {
+    generation: shadow.generation,
+    committedAt: shadow.committedAt,
+    coverageDay: shadow.history.coverageDay,
+    latestPointer: shadow.latestPointer,
+    latestPointerPayload: shadow.latestPointerPayload,
+    history: shadow.history,
+    historyPayload: shadow.historyPayload,
+    manifest: shadow.manifest,
+    manifestPayload: shadow.manifestPayload,
+    artifactPayloads: shadow.artifactPayloads,
+    localAckPlan: {
+      remoteStorageKeys: ['session-archives/conv-1/archive_001/messages.jsonl'],
+      generation: shadow.generation,
+      committedAt: shadow.committedAt,
+    },
+  }
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -141,6 +164,7 @@ async function startTestServer(options = {}) {
     await clearCronStoreForTests()
     await clearMemoryShadowStoreForTests()
     await clearMemoryShadowRefreshStateForTests()
+    await clearCheckpointJobStoreForTests()
     await clearBrowserLedgerForTests()
   }
   const token = 'test-token'
@@ -150,6 +174,9 @@ async function startTestServer(options = {}) {
     mcpManager,
     ...(typeof options.publishMemoryShadowRefresh === 'function'
       ? { publishMemoryShadowRefresh: options.publishMemoryShadowRefresh }
+      : {}),
+    ...(typeof options.runMemoryCheckpointJob === 'function'
+      ? { runMemoryCheckpointJob: options.runMemoryCheckpointJob }
       : {}),
     ...(typeof options.setMcpServerConfig === 'function'
       ? { setMcpServerConfig: options.setMcpServerConfig }
@@ -438,6 +465,64 @@ test('health and capabilities endpoints expose protocol contract fields', async 
   assert.equal(capabilities.payload.supportedFeatures.browserLedger, true)
   assert.equal(capabilities.payload.supportedFeatures.browserEvents, true)
   assert.equal(capabilities.payload.supportedFeatures.browserDrilldown, true)
+  assert.equal(capabilities.payload.supportedFeatures.memoryCheckpointJobs, false)
+})
+
+test('checkpoint job endpoints submit durable jobs, expose status, and dedupe by generation', async (t) => {
+  const executed = []
+  const ctx = await startTestServer({
+    runMemoryCheckpointJob: async (job) => {
+      executed.push(job)
+      return {
+        latestPointer: job.publishBundle.latestPointer,
+        latestPointerPayload: job.publishBundle.latestPointerPayload,
+        history: job.publishBundle.history,
+        historyPayload: job.publishBundle.historyPayload,
+        manifest: job.publishBundle.manifest,
+        manifestPayload: job.publishBundle.manifestPayload,
+        localAckPlan: job.publishBundle.localAckPlan,
+        verificationStatus: 'verified',
+      }
+    },
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const capabilities = await requestJson(ctx, '/api/system/capabilities')
+  assert.equal(capabilities.status, 200)
+  assert.equal(capabilities.payload.supportedFeatures.memoryCheckpointJobs, true)
+
+  const bundle = makeCheckpointJobBundle()
+  const submit = await requestJson(ctx, '/api/checkpoint-jobs', {
+    method: 'POST',
+    body: { generation: bundle.generation, publishBundle: bundle },
+  })
+
+  assert.equal(submit.status, 200)
+  assert.equal(submit.payload.ok, true)
+  assert.equal(submit.payload.job.generation, bundle.generation)
+
+  await delay(25)
+
+  const status = await requestJson(
+    ctx,
+    `/api/checkpoint-jobs/${encodeURIComponent(submit.payload.job.jobId)}/status`,
+  )
+  assert.equal(status.status, 200)
+  assert.equal(status.payload.state, 'completed')
+  assert.equal(status.payload.result.verificationStatus, 'verified')
+  assert.deepEqual(status.payload.result.localAckPlan, bundle.localAckPlan)
+  assert.equal(executed.length, 1)
+
+  const duplicate = await requestJson(ctx, '/api/checkpoint-jobs', {
+    method: 'POST',
+    body: { generation: bundle.generation, publishBundle: bundle },
+  })
+  assert.equal(duplicate.status, 200)
+  assert.equal(duplicate.payload.job.jobId, submit.payload.job.jobId)
+  assert.equal(executed.length, 1)
 })
 
 test('diagnostics and self-check endpoints return structured companion health details', async (t) => {

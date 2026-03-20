@@ -29,6 +29,7 @@ export const COMPANION_SUPPORTED_FEATURES = {
   browserDrilldown: true,
   mediaNormalization: true,
   memoryCheckpointShadow: true,
+  memoryCheckpointJobs: false,
 }
 
 const DEFAULT_CONFIG = {
