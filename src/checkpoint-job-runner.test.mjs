@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createMemoryCheckpointJobRunner } from './checkpoint-job-runner.mjs'
+import {
+  createInMemoryCheckpointJobStateStore,
+  createMemoryCheckpointJobRunner,
+} from './checkpoint-job-runner.mjs'
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -107,7 +110,7 @@ function makeCheckpointJobBundle() {
 
 async function waitFor(condition, timeoutMs = 250) {
   const started = Date.now()
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() - started > timeoutMs) {
       throw new Error('wait_timeout')
     }
@@ -156,4 +159,104 @@ test('submit serializes same-generation requests so only one create path persist
 
   assert.equal(first.job.jobId, second.job.jobId)
   assert.ok(stateStore.getSaveCount() <= 2)
+})
+
+test('resumePendingJobs passes persisted completed steps back into the checkpoint executor', async () => {
+  const bundle = makeCheckpointJobBundle()
+  const stateStore = createInMemoryCheckpointJobStateStore({
+    version: 1,
+    jobs: [{
+      jobId: `checkpoint-${bundle.generation}`,
+      generation: bundle.generation,
+      state: 'running',
+      stage: 'publish_artifacts',
+      createdAt: bundle.committedAt,
+      updatedAt: bundle.committedAt + 1,
+      startedAt: bundle.committedAt + 1,
+      finishedAt: null,
+      attemptCount: 1,
+      error: null,
+      completedSteps: ['publish_artifacts'],
+      publishBundle: bundle,
+      result: null,
+    }],
+  })
+
+  let seenCompletedSteps = null
+  const runner = createMemoryCheckpointJobRunner({
+    stateStore,
+    now: (() => {
+      let current = bundle.committedAt + 10
+      return () => current++
+    })(),
+    runMemoryCheckpointJob: async (job) => {
+      seenCompletedSteps = clone(job.resumeState?.completedSteps || [])
+      await job.markStepCompleted('write_history')
+      return {
+        latestPointer: job.publishBundle.latestPointer,
+        latestPointerPayload: job.publishBundle.latestPointerPayload,
+        history: job.publishBundle.history,
+        historyPayload: job.publishBundle.historyPayload,
+        manifest: job.publishBundle.manifest,
+        manifestPayload: job.publishBundle.manifestPayload,
+        localAckPlan: job.publishBundle.localAckPlan,
+        verificationStatus: 'verified',
+      }
+    },
+  })
+
+  const [resumed] = await runner.resumePendingJobs()
+
+  assert.deepEqual(seenCompletedSteps, ['publish_artifacts'])
+  assert.equal(resumed?.state, 'completed')
+  assert.deepEqual(resumed?.completedSteps, ['publish_artifacts', 'write_history'])
+})
+
+test('submit persists step progress for status polling before the job completes', async () => {
+  const bundle = makeCheckpointJobBundle()
+  let releaseJob = null
+  let progressReached = null
+  const progressPromise = new Promise((resolve) => {
+    progressReached = resolve
+  })
+  const finishPromise = new Promise((resolve) => {
+    releaseJob = resolve
+  })
+
+  const runner = createMemoryCheckpointJobRunner({
+    stateStore: createInMemoryCheckpointJobStateStore(),
+    now: (() => {
+      let current = bundle.committedAt
+      return () => current++
+    })(),
+    runMemoryCheckpointJob: async (job) => {
+      await job.markStepCompleted('publish_artifacts')
+      progressReached()
+      await finishPromise
+      return {
+        latestPointer: job.publishBundle.latestPointer,
+        latestPointerPayload: job.publishBundle.latestPointerPayload,
+        history: job.publishBundle.history,
+        historyPayload: job.publishBundle.historyPayload,
+        manifest: job.publishBundle.manifest,
+        manifestPayload: job.publishBundle.manifestPayload,
+        localAckPlan: job.publishBundle.localAckPlan,
+        verificationStatus: 'verified',
+      }
+    },
+  })
+
+  const submit = await runner.submit({ generation: bundle.generation, publishBundle: bundle })
+  await progressPromise
+
+  const inFlight = await runner.getStatus(submit.job.jobId)
+  assert.equal(inFlight?.state, 'running')
+  assert.equal(inFlight?.stage, 'publish_artifacts')
+  assert.deepEqual(inFlight?.completedSteps, ['publish_artifacts'])
+
+  releaseJob()
+  await waitFor(async () => {
+    const status = await runner.getStatus(submit.job.jobId)
+    return status?.state === 'completed'
+  })
 })

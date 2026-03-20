@@ -525,6 +525,68 @@ test('checkpoint job endpoints submit durable jobs, expose status, and dedupe by
   assert.equal(executed.length, 1)
 })
 
+test('checkpoint job status exposes in-flight completed steps for restart-safe polling', async (t) => {
+  let releaseJob = null
+  let progressReached = null
+  const progressPromise = new Promise((resolve) => {
+    progressReached = resolve
+  })
+  const finishPromise = new Promise((resolve) => {
+    releaseJob = resolve
+  })
+
+  const ctx = await startTestServer({
+    runMemoryCheckpointJob: async (job) => {
+      await job.markStepCompleted('publish_artifacts')
+      progressReached()
+      await finishPromise
+      return {
+        latestPointer: job.publishBundle.latestPointer,
+        latestPointerPayload: job.publishBundle.latestPointerPayload,
+        history: job.publishBundle.history,
+        historyPayload: job.publishBundle.historyPayload,
+        manifest: job.publishBundle.manifest,
+        manifestPayload: job.publishBundle.manifestPayload,
+        localAckPlan: job.publishBundle.localAckPlan,
+        verificationStatus: 'verified',
+      }
+    },
+  })
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const bundle = makeCheckpointJobBundle()
+  const submit = await requestJson(ctx, '/api/checkpoint-jobs', {
+    method: 'POST',
+    body: { generation: bundle.generation, publishBundle: bundle },
+  })
+  assert.equal(submit.status, 200)
+
+  await progressPromise
+
+  const inFlight = await requestJson(
+    ctx,
+    `/api/checkpoint-jobs/${encodeURIComponent(submit.payload.job.jobId)}/status`,
+  )
+  assert.equal(inFlight.status, 200)
+  assert.equal(inFlight.payload.state, 'running')
+  assert.equal(inFlight.payload.stage, 'publish_artifacts')
+  assert.deepEqual(inFlight.payload.completedSteps, ['publish_artifacts'])
+
+  releaseJob()
+  await delay(25)
+
+  const completed = await requestJson(
+    ctx,
+    `/api/checkpoint-jobs/${encodeURIComponent(submit.payload.job.jobId)}/status`,
+  )
+  assert.equal(completed.status, 200)
+  assert.equal(completed.payload.state, 'completed')
+  assert.deepEqual(completed.payload.completedSteps, ['publish_artifacts'])
+})
+
 test('diagnostics and self-check endpoints return structured companion health details', async (t) => {
   const ctx = await startTestServer({
     getMediaSupport: async () => ({ available: true, engine: 'test-engine' }),

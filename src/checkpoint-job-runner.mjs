@@ -109,6 +109,7 @@ function normalizePersistedJob(value) {
     finishedAt: asTimestamp(record.finishedAt),
     attemptCount: Math.max(0, Math.floor(Number(record.attemptCount) || 0)),
     error: asString(record.error),
+    completedSteps: normalizeStringArray(record.completedSteps),
     publishBundle,
     result: normalizeJobResult(record.result),
   }
@@ -187,6 +188,7 @@ function buildJobSummary(job) {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     attemptCount: job.attemptCount,
+    completedSteps: clone(job.completedSteps || []),
     ...(job.startedAt ? { startedAt: job.startedAt } : {}),
     ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
     ...(job.error ? { error: job.error } : {}),
@@ -267,16 +269,42 @@ export function createMemoryCheckpointJobRunner({
       if (current.state === 'completed') return buildJobSummary(current)
 
       const startedAt = current.startedAt || now()
+      const completedSteps = normalizeStringArray(current.completedSteps)
       state.jobs[index] = {
         ...current,
         state: 'running',
-        stage: 'running',
+        stage: completedSteps.length > 0 && current.stage !== 'queued' ? current.stage : 'running',
         startedAt,
         updatedAt: now(),
         attemptCount: (current.attemptCount || 0) + 1,
         error: null,
+        completedSteps,
       }
       await saveState(state)
+
+      const markStepCompleted = async (step) => {
+        const normalizedStep = asString(step)
+        if (!normalizedStep) {
+          throw new Error('checkpoint_job_step_invalid')
+        }
+        const progressState = await loadState()
+        const progressIndex = findJobIndexById(progressState, jobId)
+        if (progressIndex < 0) return null
+        const progressJob = progressState.jobs[progressIndex]
+        const nextCompletedSteps = normalizeStringArray(progressJob.completedSteps)
+        if (!nextCompletedSteps.includes(normalizedStep)) {
+          nextCompletedSteps.push(normalizedStep)
+        }
+        progressState.jobs[progressIndex] = {
+          ...progressJob,
+          state: 'running',
+          stage: normalizedStep,
+          updatedAt: now(),
+          completedSteps: nextCompletedSteps,
+        }
+        await saveState(progressState)
+        return buildJobSummary(progressState.jobs[progressIndex])
+      }
 
       try {
         const result = normalizeJobResult(await runMemoryCheckpointJob({
@@ -284,6 +312,10 @@ export function createMemoryCheckpointJobRunner({
           generation: current.generation,
           publishBundle: clone(current.publishBundle),
           attemptCount: (current.attemptCount || 0) + 1,
+          resumeState: {
+            completedSteps: clone(completedSteps),
+          },
+          markStepCompleted,
         }))
         if (!result) {
           throw new Error('checkpoint_job_result_invalid')
@@ -291,6 +323,7 @@ export function createMemoryCheckpointJobRunner({
         const nextState = await loadState()
         const nextIndex = findJobIndexById(nextState, jobId)
         if (nextIndex < 0) return null
+        const finalCompletedSteps = normalizeStringArray(nextState.jobs[nextIndex].completedSteps)
         nextState.jobs[nextIndex] = {
           ...nextState.jobs[nextIndex],
           state: 'completed',
@@ -298,6 +331,7 @@ export function createMemoryCheckpointJobRunner({
           updatedAt: now(),
           finishedAt: now(),
           error: null,
+          completedSteps: finalCompletedSteps,
           result,
         }
         await saveState(nextState)
@@ -313,6 +347,7 @@ export function createMemoryCheckpointJobRunner({
           updatedAt: now(),
           finishedAt: now(),
           error: error instanceof Error ? error.message : String(error || 'checkpoint_job_failed'),
+          completedSteps: normalizeStringArray(nextState.jobs[nextIndex].completedSteps),
         }
         await saveState(nextState)
         return buildJobSummary(nextState.jobs[nextIndex])
@@ -368,6 +403,7 @@ export function createMemoryCheckpointJobRunner({
           finishedAt: null,
           attemptCount: 0,
           error: null,
+          completedSteps: [],
           publishBundle,
           result: null,
         }
