@@ -42,7 +42,8 @@ test('listWorkflowTemplates returns all registered templates', () => {
   const templates = listWorkflowTemplates()
   assert.equal(templates.includes('research_synthesis'), true)
   assert.equal(templates.includes('research_decision'), true)
-  assert.equal(templates.length, 2)
+  assert.equal(templates.includes('conditional_monitor'), true)
+  assert.equal(templates.length, 3)
 })
 
 test('buildInitialSteps creates step array with first step running', () => {

@@ -81,6 +81,7 @@ export function advanceAutomationWorkflow(workflow, {
   terminalState = '',
   stepSummary = '',
   handoffSummary = '',
+  conditionResult = null,
 } = {}) {
   const currentWorkflow = initializeAutomationWorkflow(workflow)
   const { template, policy } = currentWorkflow
@@ -108,6 +109,46 @@ export function advanceAutomationWorkflow(workflow, {
   currentStep.finishedAt = now
   if (!currentStep.startedAt) currentStep.startedAt = now
   state.lastWorkflowSummary = normalizedSummary
+
+  // Handle condition result for next step routing
+  if (conditionResult) {
+    const { met, onFalse } = conditionResult
+    if (!met) {
+      const nextIndex = currentIndex + 1
+      if (nextIndex < state.steps.length) {
+        const nextStep = state.steps[nextIndex]
+        if (onFalse === 'skip') {
+          nextStep.state = 'skipped'
+          nextStep.summary = `Skipped: condition not met`
+          nextStep.finishedAt = now
+          const afterSkipIndex = nextIndex + 1
+          if (afterSkipIndex < state.steps.length) {
+            state.steps[afterSkipIndex].state = 'running'
+            state.steps[afterSkipIndex].startedAt = now
+            state.currentStepId = state.steps[afterSkipIndex].id
+            state.lastContinuationAt = now
+            currentStep.state = 'done'
+            return makeResult(template, policy, state, {
+              currentStep: clone(currentStep),
+              nextStep: clone(state.steps[afterSkipIndex]),
+              continued: true,
+              completed: false,
+              failed: false,
+            })
+          }
+        } else if (onFalse === 'stop') {
+          currentStep.state = 'done'
+          state.terminalState = 'done'
+          return makeResult(template, policy, state, {
+            currentStep: clone(currentStep),
+            continued: false,
+            completed: true,
+            failed: false,
+          })
+        }
+      }
+    }
+  }
 
   // Step failed
   if (terminalState && terminalState !== 'done') {

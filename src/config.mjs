@@ -14,7 +14,7 @@ const MIN_MEMORY_SHADOW_REFRESH_SLA_HOURS = 1
 const MAX_MEMORY_SHADOW_REFRESH_SLA_HOURS = 24 * 30
 
 const DEFAULT_PERMISSION_POLICY = normalizePermissionPolicy({ mode: 'full' })
-export const COMPANION_PROTOCOL_VERSION = '2026-03-07'
+export const COMPANION_PROTOCOL_VERSION = '2026-03-21'
 export const COMPANION_SUPPORTED_FEATURES = {
   acp: true,
   mcp: true,
@@ -30,6 +30,8 @@ export const COMPANION_SUPPORTED_FEATURES = {
   mediaNormalization: true,
   memoryCheckpointShadow: true,
   memoryCheckpointJobs: false,
+  workflow: '1.0.0',
+  browserCdp: '1.0.0',
 }
 
 const DEFAULT_CONFIG = {

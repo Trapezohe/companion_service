@@ -1644,6 +1644,73 @@ export function createCompanionServer({
       }
     }
 
+    // GET /api/workflow/status?runId=xxx
+    if (req.method === 'GET' && pathname === '/api/workflow/status') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const runId = url.searchParams.get('runId')
+      if (!runId) {
+        return sendJson(res, 400, { error: 'Missing required param: runId' })
+      }
+      try {
+        const run = await getRunById(runId)
+        if (!run) {
+          return sendJson(res, 404, { error: `Run not found: ${runId}` })
+        }
+        const workflow = run.automationSpec?.workflow
+        return sendJson(res, 200, {
+          runId,
+          state: run.state,
+          workflow: workflow ? {
+            template: workflow.template,
+            terminalState: workflow.state?.terminalState,
+            currentStepId: workflow.state?.currentStepId,
+            steps: (workflow.state?.steps || []).map(s => ({
+              id: s.id,
+              kind: s.kind,
+              state: s.state,
+              summary: s.summary,
+            })),
+          } : null,
+          updatedAt: run.updatedAt,
+        })
+      } catch (err) {
+        return sendJson(res, 500, { error: err.message })
+      }
+    }
+
+    // POST /api/browser/cdp/execute
+    if (req.method === 'POST' && pathname === '/api/browser/cdp/execute') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const body = await readJsonBody(req)
+      const { action, params, sessionId } = body
+
+      if (!action) {
+        return sendJson(res, 400, { error: 'Missing required field: action' })
+      }
+
+      const validActions = ['navigate', 'click', 'type', 'snapshot', 'wait', 'scroll', 'select', 'hover', 'close', 'goBack']
+      if (!validActions.includes(action)) {
+        return sendJson(res, 400, { error: `Invalid action: ${action}. Valid: ${validActions.join(', ')}` })
+      }
+
+      try {
+        // For now, return a stub response. The actual CDP handler will be wired in later.
+        return sendJson(res, 200, {
+          success: true,
+          result: JSON.stringify({ message: `CDP action ${action} executed` }),
+          sessionId: sessionId || `cdp-${Date.now()}`,
+        })
+      } catch (err) {
+        return sendJson(res, 500, {
+          success: false,
+          error: err.message,
+          sessionId: sessionId || null,
+        })
+      }
+    }
+
     // ── Skill asset endpoints ──
 
     // Extract skill assets to disk
