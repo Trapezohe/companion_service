@@ -8,6 +8,7 @@
 const WORKFLOW_TEMPLATES = {
   research_synthesis: {
     id: 'research_synthesis',
+    fallbackBehavior: 'run_first',
     steps: [
       { id: 'plan', kind: 'plan' },
       { id: 'research', kind: 'research' },
@@ -16,11 +17,21 @@ const WORKFLOW_TEMPLATES = {
   },
   research_decision: {
     id: 'research_decision',
+    fallbackBehavior: 'run_first',
     steps: [
       { id: 'plan', kind: 'plan' },
       { id: 'compare', kind: 'compare' },
       { id: 'decide', kind: 'decide' },
       { id: 'write', kind: 'write' },
+    ],
+  },
+  conditional_monitor: {
+    id: 'conditional_monitor',
+    fallbackBehavior: 'skip_all',
+    steps: [
+      { id: 'condition_check', kind: 'condition_check' },
+      { id: 'analyze', kind: 'analyze' },
+      { id: 'notify', kind: 'notify' },
     ],
   },
 }
@@ -40,6 +51,11 @@ export function isMultiTurnTemplate(templateName) {
 
 export function listWorkflowTemplates() {
   return Object.keys(WORKFLOW_TEMPLATES)
+}
+
+export function getTemplateFallbackBehavior(templateName) {
+  const template = getWorkflowTemplate(templateName)
+  return template?.fallbackBehavior || null
 }
 
 export function buildInitialSteps(templateName) {

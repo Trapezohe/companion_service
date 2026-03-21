@@ -485,3 +485,32 @@ test('cancelAutomationWorkflow returns workflow unchanged for single_turn', () =
   assert.equal(result.template, 'single_turn')
   assert.equal(result.state, null)
 })
+
+// --- Condition routing tests ---
+
+test('advanceAutomationWorkflow skips step when condition not met and onFalse is skip', () => {
+  const workflow = {
+    template: 'conditional_monitor',
+    policy: { maxStepAttempts: 1 },
+    state: {
+      currentStepId: 'condition_check',
+      steps: [
+        { id: 'condition_check', kind: 'condition_check', state: 'running', condition: null, runId: 'r1', source: null, attemptId: null, summary: null, startedAt: Date.now(), finishedAt: null, handoffSummary: null, retry: null },
+        { id: 'analyze', kind: 'analyze', state: 'queued', condition: { evaluated: false }, runId: null, source: null, attemptId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+        { id: 'notify', kind: 'notify', state: 'queued', condition: null, runId: null, source: null, attemptId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+      ],
+      lastWorkflowSummary: null,
+      lastContinuationAt: null,
+      terminalState: null,
+    },
+  }
+
+  const result = advanceAutomationWorkflow(workflow, {
+    terminalState: 'done',
+    stepSummary: 'Condition check complete',
+    handoffSummary: 'Price did not meet threshold',
+    conditionResult: { met: false, onFalse: 'skip' },
+  })
+
+  assert.equal(result.workflow.state.steps[1].state, 'skipped')
+})
