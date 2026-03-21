@@ -16,6 +16,12 @@ import {
 } from './automation-workflow.mjs'
 import { isMultiTurnTemplate } from './automation-workflow-templates.mjs'
 import { evaluateWatcherEscalation } from './automation-watcher.mjs'
+import { evaluateCondition } from './automation-condition-engine.mjs'
+import {
+  createConditionState,
+  shouldTrigger,
+  recordTrigger,
+} from './automation-condition-state.mjs'
 import { resolvePersistentAutomationSession } from './automation-session-store.mjs'
 import {
   createAcpSession,
@@ -234,6 +240,9 @@ function buildAutomationMeta(job, spec, extra = {}) {
   const workflow = cloneWorkflow(spec.workflow)
   const replayOf = cloneReplayOf(job?.replayOf)
   const retryPolicy = cloneRetryPolicy(workflow?.policy)
+  const conditionConfig = job?.condition && typeof job.condition === 'object' && !Array.isArray(job.condition)
+    ? JSON.parse(JSON.stringify(job.condition))
+    : null
   return {
     taskId: typeof job?.id === 'string' ? job.id : '',
     taskName: typeof job?.name === 'string' ? job.name : '',
@@ -248,6 +257,7 @@ function buildAutomationMeta(job, spec, extra = {}) {
     ...(workflow ? { workflow } : {}),
     ...(retryPolicy ? { retryPolicy } : {}),
     ...(replayOf ? { replayOf } : {}),
+    ...(conditionConfig ? { conditionConfig } : {}),
     taskState: 'queued',
     stepState: 'launch',
     ...(target ? { target } : {}),
@@ -595,11 +605,51 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     sessionKey: currentRun.meta?.sessionTarget ?? run.meta?.sessionTarget ?? '',
     outputText: budgetOutputText,
   })
-  const workflowProgress = advanceAutomationWorkflow(currentRun.meta?.workflow ?? run.meta?.workflow ?? null, {
+  // Evaluate condition if the current workflow step is a condition_check
+  let conditionResult = null
+  const currentWorkflowState = currentRun.meta?.workflow ?? run.meta?.workflow ?? null
+  if (currentWorkflowState?.state && terminalState === 'done') {
+    const currentStepId = currentWorkflowState.state.currentStepId
+    const currentStep = Array.isArray(currentWorkflowState.state.steps)
+      ? currentWorkflowState.state.steps.find((s) => s?.id === currentStepId)
+      : null
+    if (currentStep?.kind === 'condition_check') {
+      const conditionConfig = currentRun.meta?.conditionConfig ?? run.meta?.conditionConfig ?? null
+      if (conditionConfig?.type) {
+        const evalResult = await evaluateCondition(conditionConfig, deps)
+        const taskId = currentRun.meta?.taskId ?? run.meta?.taskId ?? ''
+        const condState = currentRun.meta?.conditionState
+          ? { ...createConditionState(), ...currentRun.meta.conditionState }
+          : createConditionState()
+        const triggered = shouldTrigger(condState, evalResult, {
+          cooldownMs: conditionConfig.cooldownMs ?? 0,
+          edgeTrigger: conditionConfig.edgeTrigger ?? false,
+        })
+        if (triggered) {
+          recordTrigger(condState)
+        }
+        // Persist updated condition state back to run meta
+        currentRun = await deps.updateRun(runId, {
+          meta: mergeRunMeta(currentRun, { conditionState: condState }),
+        }) || currentRun
+
+        conditionResult = {
+          met: evalResult.met && triggered,
+          onFalse: conditionConfig.onFalse || 'skip',
+          value: evalResult.value,
+          threshold: evalResult.threshold,
+          reason: evalResult.reason || evalResult.error || null,
+        }
+      }
+    }
+  }
+
+  const workflowProgress = advanceAutomationWorkflow(currentWorkflowState, {
     runId,
     terminalState,
     stepSummary: lifecycleText || lifecycleSummary || currentRun.summary || run.summary || '',
     handoffSummary: lifecycleText || lifecycleSummary || '',
+    conditionResult,
   })
 
   if (isMultiTurnTemplate(workflowProgress.workflow.template)) {
