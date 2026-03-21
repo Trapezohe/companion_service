@@ -1690,7 +1690,7 @@ export function createCompanionServer({
         return sendJson(res, 400, { error: 'Missing required field: action' })
       }
 
-      const validActions = ['navigate', 'click', 'type', 'snapshot', 'wait', 'scroll', 'select', 'hover', 'close', 'goBack', 'screenshot']
+      const validActions = ['navigate', 'click', 'type', 'snapshot', 'wait', 'scroll', 'select', 'hover', 'close', 'goBack', 'screenshot', 'list_tabs', 'new_tab', 'select_tab', 'close_tab']
       if (!validActions.includes(action)) {
         return sendJson(res, 400, { error: `Invalid action: ${action}. Valid: ${validActions.join(', ')}` })
       }
@@ -1710,6 +1710,10 @@ export function createCompanionServer({
         close: 'close_page',
         goBack: 'evaluate_script',
         screenshot: 'take_screenshot',
+        list_tabs: 'list_pages',
+        new_tab: 'new_page',
+        select_tab: 'select_page',
+        close_tab: 'close_page',
       }
 
       try {
