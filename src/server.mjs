@@ -1679,6 +1679,38 @@ export function createCompanionServer({
       }
     }
 
+    // POST /api/browser/cdp/execute
+    if (req.method === 'POST' && pathname === '/api/browser/cdp/execute') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const body = await readJsonBody(req)
+      const { action, params, sessionId } = body
+
+      if (!action) {
+        return sendJson(res, 400, { error: 'Missing required field: action' })
+      }
+
+      const validActions = ['navigate', 'click', 'type', 'snapshot', 'wait', 'scroll', 'select', 'hover', 'close', 'goBack']
+      if (!validActions.includes(action)) {
+        return sendJson(res, 400, { error: `Invalid action: ${action}. Valid: ${validActions.join(', ')}` })
+      }
+
+      try {
+        // For now, return a stub response. The actual CDP handler will be wired in later.
+        return sendJson(res, 200, {
+          success: true,
+          result: JSON.stringify({ message: `CDP action ${action} executed` }),
+          sessionId: sessionId || `cdp-${Date.now()}`,
+        })
+      } catch (err) {
+        return sendJson(res, 500, {
+          success: false,
+          error: err.message,
+          sessionId: sessionId || null,
+        })
+      }
+    }
+
     // ── Skill asset endpoints ──
 
     // Extract skill assets to disk
