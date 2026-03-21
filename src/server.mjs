@@ -1690,16 +1690,75 @@ export function createCompanionServer({
         return sendJson(res, 400, { error: 'Missing required field: action' })
       }
 
-      const validActions = ['navigate', 'click', 'type', 'snapshot', 'wait', 'scroll', 'select', 'hover', 'close', 'goBack']
+      const validActions = ['navigate', 'click', 'type', 'snapshot', 'wait', 'scroll', 'select', 'hover', 'close', 'goBack', 'screenshot']
       if (!validActions.includes(action)) {
         return sendJson(res, 400, { error: `Invalid action: ${action}. Valid: ${validActions.join(', ')}` })
       }
 
+      const DEVTOOLS_SERVER_NAME = 'chrome-devtools'
+
+      // Map our action names to Chrome DevTools MCP tool names
+      const ACTION_TO_TOOL = {
+        navigate: 'navigate_page',
+        click: 'click',
+        type: 'type_text',
+        snapshot: 'take_snapshot',
+        wait: 'wait_for',
+        scroll: 'evaluate_script',
+        select: 'click',
+        hover: 'hover',
+        close: 'close_page',
+        goBack: 'evaluate_script',
+        screenshot: 'take_screenshot',
+      }
+
       try {
-        // For now, return a stub response. The actual CDP handler will be wired in later.
+        // Ensure chrome-devtools MCP server is running
+        const servers = mcpManager.getServers()
+        const devtoolsServer = servers.find(s => s.name === DEVTOOLS_SERVER_NAME)
+
+        if (!devtoolsServer || devtoolsServer.status !== 'connected') {
+          await mcpManager.upsertServer(DEVTOOLS_SERVER_NAME, {
+            command: 'npx',
+            args: ['-y', 'chrome-devtools-mcp@latest', '--browserUrl', 'http://127.0.0.1:9222'],
+            requestTimeoutMs: 30000,
+          }, { start: true })
+        }
+
+        const toolName = ACTION_TO_TOOL[action]
+        if (!toolName) {
+          return sendJson(res, 400, { error: `No DevTools MCP mapping for action: ${action}` })
+        }
+
+        // Build tool args based on action type
+        let toolArgs = params || {}
+        if (action === 'scroll') {
+          const dir = toolArgs.direction === 'up' ? -1 : 1
+          const px = typeof toolArgs.amount === 'number' ? toolArgs.amount : 500
+          toolArgs = { expression: `window.scrollBy(0, ${dir * px})` }
+        } else if (action === 'goBack') {
+          toolArgs = { expression: 'history.back()' }
+        }
+
+        const result = await mcpManager.callTool(DEVTOOLS_SERVER_NAME, toolName, toolArgs)
+
+        if (!result.ok) {
+          return sendJson(res, 500, {
+            success: false,
+            error: result.error || 'DevTools MCP tool call failed',
+            sessionId: sessionId || null,
+          })
+        }
+
+        // Extract text content from MCP result
+        const textContent = result.content
+          ?.filter(c => c.type === 'text')
+          .map(c => c.text)
+          .join('\n') || ''
+
         return sendJson(res, 200, {
           success: true,
-          result: JSON.stringify({ message: `CDP action ${action} executed` }),
+          result: textContent,
           sessionId: sessionId || `cdp-${Date.now()}`,
         })
       } catch (err) {
