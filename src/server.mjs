@@ -1644,6 +1644,41 @@ export function createCompanionServer({
       }
     }
 
+    // GET /api/workflow/status?runId=xxx
+    if (req.method === 'GET' && pathname === '/api/workflow/status') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const runId = url.searchParams.get('runId')
+      if (!runId) {
+        return sendJson(res, 400, { error: 'Missing required param: runId' })
+      }
+      try {
+        const run = await getRunById(runId)
+        if (!run) {
+          return sendJson(res, 404, { error: `Run not found: ${runId}` })
+        }
+        const workflow = run.automationSpec?.workflow
+        return sendJson(res, 200, {
+          runId,
+          state: run.state,
+          workflow: workflow ? {
+            template: workflow.template,
+            terminalState: workflow.state?.terminalState,
+            currentStepId: workflow.state?.currentStepId,
+            steps: (workflow.state?.steps || []).map(s => ({
+              id: s.id,
+              kind: s.kind,
+              state: s.state,
+              summary: s.summary,
+            })),
+          } : null,
+          updatedAt: run.updatedAt,
+        })
+      } catch (err) {
+        return sendJson(res, 500, { error: err.message })
+      }
+    }
+
     // ── Skill asset endpoints ──
 
     // Extract skill assets to disk
