@@ -81,6 +81,7 @@ export function advanceAutomationWorkflow(workflow, {
   terminalState = '',
   stepSummary = '',
   handoffSummary = '',
+  handoffData = null,
   conditionResult = null,
 } = {}) {
   const currentWorkflow = initializeAutomationWorkflow(workflow)
@@ -190,6 +191,9 @@ export function advanceAutomationWorkflow(workflow, {
   currentStep.state = 'done'
   if (normalizedHandoff) {
     currentStep.handoffSummary = normalizedHandoff
+  }
+  if (handoffData && typeof handoffData === 'object' && !Array.isArray(handoffData)) {
+    currentStep.handoffData = handoffData
   }
 
   const nextStep = state.steps[currentIndex + 1] || null
@@ -344,6 +348,9 @@ export function buildAutomationWorkflowPrompt({
   const handoff = prevStep?.handoffSummary
     ? `Previous step handoff: ${prevStep.handoffSummary}`
     : null
+  const handoffDataSection = prevStep?.handoffData
+    ? `\n## Previous Step Data (structured)\n\`\`\`json\n${JSON.stringify(prevStep.handoffData, null, 2)}\n\`\`\``
+    : null
 
   // Include retry context if this is a retry attempt
   const retryContext = currentStep.retry?.lastError
@@ -366,6 +373,7 @@ export function buildAutomationWorkflowPrompt({
     recipeSections,
     ...recipeGuidanceLines,
     handoff,
+    handoffDataSection,
     retryContext,
     '',
     prompt,

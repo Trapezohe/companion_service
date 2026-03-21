@@ -644,11 +644,19 @@ export async function deliverAutomationRunResult(input, overrides = {}) {
     }
   }
 
+  const handoffData = conditionResult ? {
+    conditionMet: conditionResult.met,
+    value: conditionResult.value,
+    threshold: conditionResult.threshold,
+    reason: conditionResult.reason,
+  } : null
+
   const workflowProgress = advanceAutomationWorkflow(currentWorkflowState, {
     runId,
     terminalState,
     stepSummary: lifecycleText || lifecycleSummary || currentRun.summary || run.summary || '',
     handoffSummary: lifecycleText || lifecycleSummary || '',
+    handoffData,
     conditionResult,
   })
 

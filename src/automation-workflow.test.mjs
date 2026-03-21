@@ -495,9 +495,9 @@ test('advanceAutomationWorkflow skips step when condition not met and onFalse is
     state: {
       currentStepId: 'condition_check',
       steps: [
-        { id: 'condition_check', kind: 'condition_check', state: 'running', condition: null, runId: 'r1', source: null, attemptId: null, summary: null, startedAt: Date.now(), finishedAt: null, handoffSummary: null, retry: null },
-        { id: 'analyze', kind: 'analyze', state: 'queued', condition: { evaluated: false }, runId: null, source: null, attemptId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
-        { id: 'notify', kind: 'notify', state: 'queued', condition: null, runId: null, source: null, attemptId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, retry: null },
+        { id: 'condition_check', kind: 'condition_check', state: 'running', condition: null, runId: 'r1', source: null, attemptId: null, summary: null, startedAt: Date.now(), finishedAt: null, handoffSummary: null, handoffData: null, retry: null },
+        { id: 'analyze', kind: 'analyze', state: 'queued', condition: { evaluated: false }, runId: null, source: null, attemptId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, handoffData: null, retry: null },
+        { id: 'notify', kind: 'notify', state: 'queued', condition: null, runId: null, source: null, attemptId: null, summary: null, startedAt: null, finishedAt: null, handoffSummary: null, handoffData: null, retry: null },
       ],
       lastWorkflowSummary: null,
       lastContinuationAt: null,
@@ -513,4 +513,95 @@ test('advanceAutomationWorkflow skips step when condition not met and onFalse is
   })
 
   assert.equal(result.workflow.state.steps[1].state, 'skipped')
+})
+
+// --- handoffData tests ---
+
+test('advanceAutomationWorkflow passes handoffData to completed step', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  const handoffData = { price: 2450.30, tokenId: 'ethereum' }
+  const result = advanceAutomationWorkflow(workflow, {
+    runId: 'run-hd',
+    terminalState: 'done',
+    stepSummary: 'Plan complete.',
+    handoffSummary: 'ETH price checked',
+    handoffData,
+  })
+
+  // handoffData should be stored on the completed step (step 0)
+  assert.deepEqual(result.currentStep?.handoffData, { price: 2450.30, tokenId: 'ethereum' })
+  assert.equal(result.workflow.state?.steps[0]?.handoffData?.tokenId, 'ethereum')
+  assert.equal(result.workflow.state?.steps[0]?.handoffData?.price, 2450.30)
+  // handoffSummary still works alongside
+  assert.equal(result.currentStep?.handoffSummary, 'ETH price checked')
+})
+
+test('advanceAutomationWorkflow defaults handoffData to null when not provided', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  const result = advanceAutomationWorkflow(workflow, {
+    runId: 'run-no-hd',
+    terminalState: 'done',
+    stepSummary: 'Plan complete.',
+  })
+
+  assert.equal(result.currentStep?.handoffData, null)
+})
+
+test('buildAutomationWorkflowPrompt includes structured handoffData from previous step', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+  workflow.state.steps[0].state = 'done'
+  workflow.state.steps[0].handoffSummary = 'ETH price dropped'
+  workflow.state.steps[0].handoffData = { price: 2450.30, changePercent: -6.5, tokenId: 'ethereum' }
+  workflow.state.steps[1].state = 'running'
+  workflow.state.currentStepId = 'research'
+
+  const prompt = buildAutomationWorkflowPrompt({
+    workflow,
+    basePrompt: 'Continue.',
+  })
+
+  assert.match(prompt, /Previous Step Data \(structured\)/)
+  assert.match(prompt, /"price": 2450\.3/)
+  assert.match(prompt, /"tokenId": "ethereum"/)
+  assert.match(prompt, /"changePercent": -6\.5/)
+})
+
+test('buildAutomationWorkflowPrompt omits structured section when handoffData is null', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+  workflow.state.steps[0].state = 'done'
+  workflow.state.steps[0].handoffSummary = 'Plan done'
+  workflow.state.steps[1].state = 'running'
+  workflow.state.currentStepId = 'research'
+
+  const prompt = buildAutomationWorkflowPrompt({
+    workflow,
+    basePrompt: 'Continue.',
+  })
+
+  assert.ok(!prompt.includes('Previous Step Data (structured)'))
+})
+
+test('initializeAutomationWorkflow seeds steps with handoffData as null', () => {
+  const workflow = initializeAutomationWorkflow({
+    template: 'research_synthesis',
+    state: null,
+  })
+
+  for (const step of workflow.state.steps) {
+    assert.equal(step.handoffData, null)
+  }
 })

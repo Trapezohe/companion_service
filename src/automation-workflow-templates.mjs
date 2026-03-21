@@ -72,6 +72,7 @@ export function buildInitialSteps(templateName) {
     startedAt: null,
     finishedAt: null,
     handoffSummary: null,
+    handoffData: null,
     retry: null,
   }))
 }
