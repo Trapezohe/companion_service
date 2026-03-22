@@ -497,10 +497,27 @@
         }).join('');
       }
 
+      function isVersionNewer(latest, current) {
+        if (!latest || !current) return false;
+        const parse = (v) => (v.replace(/^v/, '')).split('.').map(Number);
+        const l = parse(latest), c = parse(current);
+        if (l.length < 3 || c.length < 3) return false;
+        for (let i = 0; i < 3; i++) {
+          if (l[i] > c[i]) return true;
+          if (l[i] < c[i]) return false;
+        }
+        return false;
+      }
+
       function renderUpdate(snapshot) {
         const update = snapshot?.update;
         const el = $('updateBanner');
-        if (update?.available) {
+        // Double-check: only show banner if latest_version is actually newer
+        // than current_version. This prevents stale update state from showing
+        // after the user has already updated.
+        const trulyNewer = update?.available
+          && isVersionNewer(update.latest_version, update.current_version);
+        if (trulyNewer) {
           el.innerHTML = `
             <span class="update-text">v${esc(update.latest_version)} available</span>
             <span class="update-action">Download &rarr;</span>
