@@ -207,7 +207,7 @@ test('package, tray Cargo, and tauri config versions stay aligned for the next r
   const cargoToml = read('tray/Cargo.toml')
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
 
-  assert.equal(pkg.version, '0.1.15')
-  assert.match(cargoToml, /^version = "0\.1\.15"$/m)
-  assert.equal(tauriConfig.version, '0.1.15')
+  assert.equal(pkg.version, '0.1.16')
+  assert.match(cargoToml, /^version = "0\.1\.16"$/m)
+  assert.equal(tauriConfig.version, '0.1.16')
 })
