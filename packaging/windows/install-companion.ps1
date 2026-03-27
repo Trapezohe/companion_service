@@ -330,6 +330,13 @@ function Ensure-NpmGlobalBinOnPath {
   }
 }
 
+function Ensure-LocalNodeOnPath {
+  if ((Test-Path $localNodeDir) -and ($env:PATH -notlike "*$localNodeDir*")) {
+    $env:PATH = "$localNodeDir;$env:PATH"
+    Write-InstallerLog "Added local Node dir to PATH: $localNodeDir"
+  }
+}
+
 function Resolve-InstalledCompanionCliScript {
   param(
     [Parameter(Mandatory = $true)]
@@ -356,6 +363,44 @@ function Resolve-InstalledCompanionCliScript {
   }
 
   return $null
+}
+
+function Stop-InstalledCompanionDaemon {
+  try {
+    Ensure-LocalNodeOnPath
+    Ensure-NpmGlobalBinOnPath
+
+    $nodeCli = Resolve-InstallerCommand @("node.exe", "node")
+    $npmCli = Resolve-InstallerCommand @("npm.cmd", "npm")
+    $companionCliScript = if ($npmCli) {
+      Resolve-InstalledCompanionCliScript -NpmCli $npmCli
+    } else {
+      $null
+    }
+
+    if ($nodeCli -and $companionCliScript) {
+      $exitCode = Invoke-LoggedProcess -FilePath $nodeCli -ArgumentList @($companionCliScript, "stop", "--force") -LogPrefix "companion-stop"
+      if ($exitCode -eq 0) {
+        Write-InstallerLog "Requested companion daemon stop via installed CLI script."
+        return
+      }
+      Write-InstallerLog "Warning: installed companion CLI script stop returned exit code $exitCode"
+    }
+
+    $companionCli = Resolve-InstallerCommand @("trapezohe-companion.cmd", "trapezohe-companion")
+    if ($companionCli) {
+      $exitCode = Invoke-LoggedProcess -FilePath $companionCli -ArgumentList @("stop", "--force") -LogPrefix "companion-stop"
+      if ($exitCode -eq 0) {
+        Write-InstallerLog "Requested companion daemon stop via installed command shim."
+        return
+      }
+      Write-InstallerLog "Warning: installed companion command shim stop returned exit code $exitCode"
+    } else {
+      Write-InstallerLog "No installed companion CLI found; skipping daemon stop."
+    }
+  } catch {
+    Write-InstallerLog "Warning: failed to stop installed companion daemon: $_"
+  }
 }
 
 function Bootstrap-Companion {
@@ -583,6 +628,7 @@ function Remove-TrayAutoStart {
 if ($StopTrayOnly) {
   Write-InstallerLog "Windows installer tray pre-stop started."
   Stop-RunningTrayProcesses
+  Stop-InstalledCompanionDaemon
   Write-InstallerLog "Windows installer tray pre-stop finished."
   exit 0
 }
@@ -590,6 +636,7 @@ if ($StopTrayOnly) {
 if ($Cleanup) {
   Write-InstallerLog "Windows installer uninstall cleanup started."
   Stop-RunningTrayProcesses
+  Stop-InstalledCompanionDaemon
   Remove-DesktopShortcut
   Remove-StartMenuShortcut
   Remove-TrayAutoStart

@@ -2,9 +2,9 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 
-import { buildDiagnosticsPayload } from './diagnostics.mjs'
+import { buildDiagnosticsPayload, resolveExecutable } from './diagnostics.mjs'
 import { clearRunStoreForTests, createRun, flushRunStore } from './run-store.mjs'
 import { clearApprovalStoreForTests, createApproval, flushApprovalStore } from './approval-store.mjs'
 import {
@@ -61,6 +61,21 @@ const BASE_FEATURES = {
   browserDrilldown: true,
   mediaNormalization: true,
 }
+
+test('resolveExecutable honors Windows PATHEXT launchers such as .cmd', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-diagnostics-path-test-'))
+  try {
+    await writeFile(path.join(tempDir, 'npm.cmd'), '@echo off\r\n', 'utf8')
+    const found = await resolveExecutable('npm', {
+      platform: 'win32',
+      envPath: tempDir,
+      pathext: '.COM;.EXE;.BAT;.CMD',
+    })
+    assert.equal(found, true)
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+  }
+})
 
 
 function makeShadowEnvelope() {

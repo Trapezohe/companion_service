@@ -39,6 +39,33 @@ pub fn start_daemon() -> Result<()> {
     Ok(())
 }
 
+pub fn stop_daemon_via_cli(force: bool) -> Result<()> {
+    let cli = resolve_cli_invocation()?;
+    let args = if force {
+        vec!["stop", "--force"]
+    } else {
+        vec!["stop"]
+    };
+    let output = build_cli_command(&cli, &args)
+        .output()
+        .context("Failed to invoke companion CLI")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("CLI exited with status {}", output.status)
+        };
+        anyhow::bail!(message)
+    }
+
+    Ok(())
+}
+
 pub async fn start_daemon_and_wait(config: Option<&CompanionConfig>) -> Result<()> {
     start_daemon()?;
 

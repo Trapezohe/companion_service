@@ -49,23 +49,56 @@ async function exists(target) {
   }
 }
 
-function getPathEntries(envPath) {
+function getPathEntries(envPath, delimiter = path.delimiter) {
   return String(envPath || '')
-    .split(path.delimiter)
+    .split(delimiter)
     .map((item) => item.trim())
     .filter(Boolean)
 }
 
-async function resolveExecutable(command) {
+function getWindowsPathExtEntries(pathExt) {
+  const normalized = String(pathExt || '')
+    .split(';')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+  return normalized.length > 0 ? normalized : ['.com', '.exe', '.bat', '.cmd']
+}
+
+function hasPathSeparators(value) {
+  return value.includes('/') || value.includes('\\')
+}
+
+function buildExecutableCandidates(basePath, { platform, pathExtEntries }) {
+  const candidates = [basePath]
+  if (platform === 'win32' && path.extname(basePath) === '') {
+    for (const ext of pathExtEntries) {
+      candidates.push(`${basePath}${ext}`)
+    }
+  }
+  return Array.from(new Set(candidates))
+}
+
+export async function resolveExecutable(command, options = {}) {
   const trimmed = String(command || '').trim()
   if (!trimmed) return false
-  if (trimmed.includes(path.sep)) {
-    return exists(trimmed)
+  const platform = typeof options.platform === 'string' && options.platform.trim()
+    ? options.platform.trim()
+    : process.platform
+  const envPath = options.envPath ?? process.env.PATH
+  const pathExtEntries = getWindowsPathExtEntries(options.pathext ?? process.env.PATHEXT)
+  const pathDelimiter = platform === 'win32' ? ';' : path.delimiter
+
+  if (hasPathSeparators(trimmed)) {
+    for (const candidate of buildExecutableCandidates(trimmed, { platform, pathExtEntries })) {
+      if (await exists(candidate)) return true
+    }
+    return false
   }
-  for (const entry of getPathEntries(process.env.PATH)) {
+  for (const entry of getPathEntries(envPath, pathDelimiter)) {
     const candidate = path.join(entry, trimmed)
-    if (await exists(candidate)) return true
-    if (process.platform === 'win32' && await exists(`${candidate}.exe`)) return true
+    for (const resolvedCandidate of buildExecutableCandidates(candidate, { platform, pathExtEntries })) {
+      if (await exists(resolvedCandidate)) return true
+    }
   }
   return false
 }

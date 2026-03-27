@@ -16,7 +16,7 @@ use startup::{
 use std::sync::Mutex;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconEvent},
-    AppHandle, Emitter, Manager, Wry,
+    AppHandle, Emitter, Manager, RunEvent, Wry,
 };
 use tokio::time::interval;
 
@@ -27,11 +27,38 @@ struct ShellResources {
     snapshot: Mutex<StatusViewModel>,
     startup_context: Mutex<Option<StartupContextView>>,
     update_info: Mutex<Option<UpdateInfo>>,
+    exit_in_progress: Mutex<bool>,
+}
+
+fn claim_exit_shutdown(flag: &Mutex<bool>) -> bool {
+    if let Ok(mut guard) = flag.lock() {
+        if *guard {
+            false
+        } else {
+            *guard = true;
+            true
+        }
+    } else {
+        false
+    }
 }
 
 fn current_config(app: &AppHandle<Wry>) -> Option<CompanionConfig> {
     let state = app.state::<ShellResources>();
     state.config.lock().ok().and_then(|guard| guard.clone())
+}
+
+fn begin_exit_shutdown(app: &AppHandle<Wry>) -> bool {
+    let state = app.state::<ShellResources>();
+    claim_exit_shutdown(&state.exit_in_progress)
+}
+
+fn spawn_exit_shutdown(app: AppHandle<Wry>, code: Option<i32>) {
+    let exit_code = code.unwrap_or(0);
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(|| daemon::stop_daemon_via_cli(true)).await;
+        app.exit(exit_code);
+    });
 }
 
 fn replace_config(app: &AppHandle<Wry>, config: Option<CompanionConfig>) {
@@ -369,7 +396,7 @@ fn spawn_update_checker(app: AppHandle<Wry>) {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_status_snapshot,
             refresh_status_snapshot,
@@ -406,6 +433,7 @@ pub fn run() {
                 snapshot: Mutex::new(initial_snapshot.clone()),
                 startup_context: Mutex::new(startup_note),
                 update_info: Mutex::new(None),
+                exit_in_progress: Mutex::new(false),
             });
 
             window::ensure_status_window(&app.handle())?;
@@ -492,7 +520,7 @@ pub fn run() {
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .unwrap_or_else(|err| {
             let msg = format!("Trapezohe Companion tray failed to start:\n\n{err}");
             eprintln!("{msg}");
@@ -536,6 +564,14 @@ pub fn run() {
             }
             std::process::exit(1);
         });
+    app.run(|app, event| {
+        if let RunEvent::ExitRequested { api, code, .. } = event {
+            if begin_exit_shutdown(app) {
+                api.prevent_exit();
+                spawn_exit_shutdown(app.clone(), code);
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -587,5 +623,13 @@ mod tests {
             decide_startup_action(Some(&startup_policy_enabled()), false, &snapshot).action,
             StartupAction::RevealPanel
         );
+    }
+
+    #[test]
+    fn exit_shutdown_is_claimed_only_once() {
+        let claimed = Mutex::new(false);
+
+        assert_eq!(claim_exit_shutdown(&claimed), true);
+        assert_eq!(claim_exit_shutdown(&claimed), false);
     }
 }

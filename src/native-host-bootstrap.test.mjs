@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -79,6 +79,11 @@ async function runBootstrap(tempHome, args = []) {
   return JSON.parse(String(stdout))
 }
 
+async function readPackageVersion() {
+  const raw = await fs.readFile(path.join(REPO_ROOT, 'package.json'), 'utf8')
+  return JSON.parse(raw).version
+}
+
 async function readManifestPayloads(tempHome) {
   const targets = getNativeHostManifestTargets({ homeDir: tempHome })
   const payloads = []
@@ -116,6 +121,52 @@ async function seedManifestPayloads(tempHome, allowedOrigins) {
       'utf8',
     )
   }
+}
+
+async function sendNativeHostRequest(scriptPath, tempHome, request) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        HOME: tempHome,
+        USERPROFILE: tempHome,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    const stdoutChunks = []
+    const stderrChunks = []
+
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk))
+    child.on('error', reject)
+
+    const payload = Buffer.from(JSON.stringify(request), 'utf8')
+    const header = Buffer.alloc(4)
+    header.writeUInt32LE(payload.length, 0)
+    child.stdin.end(Buffer.concat([header, payload]))
+
+    child.on('close', (code) => {
+      try {
+        const stdout = Buffer.concat(stdoutChunks)
+        const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
+        if (stderr) {
+          reject(new Error(`native-host stderr: ${stderr}`))
+          return
+        }
+        if (stdout.length < 4) {
+          reject(new Error(`native-host produced no length-prefixed payload (exit=${code})`))
+          return
+        }
+        const bodyLength = stdout.readUInt32LE(0)
+        const body = stdout.subarray(4, 4 + bodyLength).toString('utf8')
+        resolve(JSON.parse(body))
+      } catch (error) {
+        reject(error)
+      }
+    })
+  })
 }
 
 function assertManifestOrigins(tempHome, manifests, expectedOrigins) {
@@ -190,5 +241,31 @@ test('bootstrap replaces stale native-host manifests with the fixed extension or
 
     const manifests = await readManifestPayloads(tempHome)
     assertManifestOrigins(tempHome, manifests, [FIXED_ORIGIN])
+  })
+})
+
+test('bootstrap deploys a runnable native-host bundle with the real package version', async () => {
+  await withTempHome(async (tempHome) => {
+    await runBootstrap(tempHome)
+
+    const deployedHostScript = path.join(tempHome, '.trapezohe', 'bin', 'native-host.mjs')
+    const deployedCliScript = path.join(tempHome, '.trapezohe', 'bin', 'cli.mjs')
+    const deployedPackage = path.join(tempHome, '.trapezohe', 'package.json')
+    const deployedVersionModule = path.join(tempHome, '.trapezohe', 'src', 'version.mjs')
+
+    await fs.access(deployedHostScript)
+    await fs.access(deployedCliScript)
+    await fs.access(deployedPackage)
+    await fs.access(deployedVersionModule)
+
+    const expectedVersion = await readPackageVersion()
+    const ping = await sendNativeHostRequest(deployedHostScript, tempHome, { type: 'ping' })
+    const config = await sendNativeHostRequest(deployedHostScript, tempHome, { type: 'get_config' })
+
+    assert.deepEqual(ping, { ok: true, version: expectedVersion })
+    assert.equal(config.version, expectedVersion)
+    assert.equal(config.url.startsWith('http://127.0.0.1:'), true)
+    assert.equal(typeof config.token, 'string')
+    assert.equal(config.token.length > 0, true)
   })
 })

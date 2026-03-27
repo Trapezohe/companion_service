@@ -667,11 +667,31 @@ async function resolveNativeHostExecutable(nativeHostScript) {
   // Chrome on macOS cannot execute files under ~/Desktop/ due to TCC sandbox restrictions.
   // Chrome on Windows cannot execute .mjs files directly — needs a .cmd wrapper.
   const deployDir = path.join(os.homedir(), '.trapezohe')
-  await fs.mkdir(deployDir, { recursive: true })
+  const deployBinDir = path.join(deployDir, 'bin')
+  const deploySrcDir = path.join(deployDir, 'src')
+  const sourceBinDir = path.dirname(nativeHostScript)
+  const sourceRootDir = path.resolve(sourceBinDir, '..')
+  const sourceCliPath = path.join(sourceBinDir, 'cli.mjs')
+  const sourcePackagePath = path.join(sourceRootDir, 'package.json')
+  const sourceSrcDir = path.join(sourceRootDir, 'src')
+  await fs.mkdir(deployBinDir, { recursive: true })
+  await fs.mkdir(deploySrcDir, { recursive: true })
 
-  // Copy native-host.mjs to the deploy directory
-  const deployedScript = path.join(deployDir, 'native-host.mjs')
+  // Deploy the runnable companion bundle so the native host can report the
+  // real version and start the daemon even outside the source tree.
+  const deployedScript = path.join(deployBinDir, 'native-host.mjs')
   await fs.copyFile(nativeHostScript, deployedScript)
+  await fs.copyFile(sourceCliPath, path.join(deployBinDir, 'cli.mjs'))
+  await fs.copyFile(sourcePackagePath, path.join(deployDir, 'package.json'))
+
+  const sourceEntries = await fs.readdir(sourceSrcDir, { withFileTypes: true })
+  for (const entry of sourceEntries) {
+    if (!entry.isFile() || !entry.name.endsWith('.mjs')) continue
+    await fs.copyFile(
+      path.join(sourceSrcDir, entry.name),
+      path.join(deploySrcDir, entry.name),
+    )
+  }
 
   if (process.platform === 'win32') {
     // Windows: Chrome native messaging requires .cmd/.exe — create a .cmd wrapper

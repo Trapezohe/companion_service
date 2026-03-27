@@ -19,20 +19,49 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
+
+function uniquePaths(paths) {
+  return Array.from(new Set(paths.filter((value) => typeof value === 'string' && value.trim())))
+}
+
 // Inline version resolution — this file is copied to ~/.trapezohe/ at install
-// time, so relative imports like '../src/version.mjs' will break.
+// time, so relative imports like '../src/version.mjs' will break. Support the
+// repo layout, the deployed native-host bundle, and the installer service bundle.
 const COMPANION_VERSION = (() => {
+  const require = createRequire(import.meta.url)
+  const packageCandidates = uniquePaths([
+    path.join(SCRIPT_DIR, '..', 'package.json'),
+    path.join(SCRIPT_DIR, 'package.json'),
+    path.join(SCRIPT_DIR, 'service', 'package.json'),
+    path.join(SCRIPT_DIR, '..', 'service', 'package.json'),
+  ])
+
   try {
-    const require = createRequire(import.meta.url)
-    const pkg = require('../package.json')
-    return typeof pkg?.version === 'string' && pkg.version.trim() ? pkg.version.trim() : '0.0.0'
+    for (const candidate of packageCandidates) {
+      try {
+        const pkg = require(candidate)
+        if (typeof pkg?.version === 'string' && pkg.version.trim()) {
+          return pkg.version.trim()
+        }
+      } catch {
+        // Keep scanning candidate layouts.
+      }
+    }
   } catch {
-    return '0.0.0'
+    // Fall through to the synthetic default below.
   }
+
+  return '0.0.0'
 })()
 
 const CONFIG_FILE = path.join(os.homedir(), '.trapezohe', 'companion.json')
 const DEFAULT_PORT = 41591
+const CLI_SCRIPT_CANDIDATES = uniquePaths([
+  path.join(SCRIPT_DIR, 'cli.mjs'),
+  path.join(SCRIPT_DIR, 'service', 'bin', 'cli.mjs'),
+  path.join(SCRIPT_DIR, '..', 'service', 'bin', 'cli.mjs'),
+])
 
 // ── Native Messaging Protocol ──
 
@@ -134,11 +163,24 @@ async function isCompanionRunning(config) {
   }
 }
 
-function spawnCompanionDaemon() {
+async function resolveCompanionCliPath() {
+  for (const candidate of CLI_SCRIPT_CANDIDATES) {
+    try {
+      await fs.access(candidate)
+      return candidate
+    } catch {
+      // Keep scanning candidate layouts.
+    }
+  }
+  return ''
+}
+
+async function spawnCompanionDaemon() {
+  const cliPath = await resolveCompanionCliPath()
+  if (!cliPath) return false
+
   return new Promise((resolve) => {
     try {
-      const __dirname = path.dirname(fileURLToPath(import.meta.url))
-      const cliPath = path.join(__dirname, 'cli.mjs')
       const child = fork(cliPath, ['start'], {
         detached: true,
         stdio: 'ignore',
@@ -171,7 +213,7 @@ async function handleRequest(msg) {
 
   switch (msg.type) {
     case 'ping':
-      return { ok: true, version: VERSION }
+      return { ok: true, version: COMPANION_VERSION }
 
     case 'get_config': {
       const config = await loadCompanionConfig()
