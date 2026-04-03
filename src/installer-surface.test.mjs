@@ -406,6 +406,7 @@ test('release workflow publishes macOS updater archive, signature, and latest ma
   const workflow = read('.github/workflows/release-installers.yml')
   const updaterScript = read('scripts/build-macos-updater-artifacts.sh')
   const updaterLib = read('scripts/lib/tauri-updater.sh')
+  const signingLib = read('scripts/lib/macos-signing.sh')
 
   assert.match(workflow, /build-macos-updater-artifacts\.sh/)
   assert.match(workflow, /trapezohe-companion-macos\.app\.tar\.gz/)
@@ -417,11 +418,16 @@ test('release workflow publishes macOS updater archive, signature, and latest ma
   assert.match(updaterScript, /\.app\.tar\.gz/)
   assert.match(updaterScript, /\.sig/)
   assert.match(updaterScript, /github\.com\/Trapezohe\/companion_service\/releases\/download\/v\$\{VERSION\}/)
+  assert.match(updaterScript, /macos_notarize_app_bundle "\$\{APP_PATH\}"/)
+  assert.doesNotMatch(updaterScript, /macos_notarize_artifact "\$\{APP_PATH\}"/)
 
   assert.match(updaterLib, /@tauri-apps\/cli@2\.10\.1/)
   assert.match(updaterLib, /signer sign/)
   assert.match(updaterLib, /TAURI_PRIVATE_KEY_PASSWORD="\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD\}"/)
   assert.match(updaterLib, /case "\$\{TAURI_PRIVATE_KEY_PASSWORD:-\}" in[\s\S]+EMPTY[\s\S]+TAURI_PRIVATE_KEY_PASSWORD=""/)
+  assert.match(signingLib, /macos_notarize_app_bundle\(\)/)
+  assert.match(signingLib, /ditto -c -k --sequesterRsrc --keepParent/)
+  assert.match(signingLib, /xcrun stapler staple "\$\{app_path\}"/)
 })
 
 test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {

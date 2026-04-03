@@ -97,3 +97,27 @@ macos_notarize_artifact() {
 
   xcrun stapler staple "${artifact_path}"
 }
+
+macos_notarize_app_bundle() {
+  local app_path="${1:?app path is required}"
+  local temp_dir=""
+  local archive_path=""
+
+  if ! macos_notary_enabled; then
+    echo "Skipping macOS notarization: notary credentials are not available."
+    return 0
+  fi
+
+  temp_dir="$(mktemp -d)"
+  archive_path="${temp_dir}/$(basename "${app_path}").zip"
+  COPYFILE_DISABLE=1 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${app_path}" "${archive_path}"
+
+  xcrun notarytool submit "${archive_path}" \
+    --apple-id "${APPLE_ID}" \
+    --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+    --team-id "${APPLE_TEAM_ID}" \
+    --wait
+
+  xcrun stapler staple "${app_path}"
+  rm -rf "${temp_dir}"
+}

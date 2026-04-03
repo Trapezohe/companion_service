@@ -36,7 +36,7 @@ if ! tauri_updater_has_signing_key; then
 fi
 
 /usr/bin/xattr -cr "${APP_PATH}" 2>/dev/null || true
-macos_notarize_artifact "${APP_PATH}"
+macos_notarize_app_bundle "${APP_PATH}"
 rm -f "${ARCHIVE_PATH}" "${SIGNATURE_PATH}" "${LATEST_JSON_PATH}"
 COPYFILE_DISABLE=1 /usr/bin/tar -C "${STAGE_ROOT}" -czf "${ARCHIVE_PATH}" "${APP_NAME}"
 tauri_sign_archive "${ARCHIVE_PATH}" "${SIGNATURE_PATH}"
