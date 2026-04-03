@@ -47,10 +47,18 @@ async function startServer() {
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
+  const baseUrl = `http://127.0.0.1:${address.port}`
+  await fetch(`${baseUrl}/healthz`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Origin: 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    },
+  })
   return {
     token,
     server,
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl,
   }
 }
 
