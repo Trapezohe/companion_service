@@ -3,21 +3,24 @@ mod config;
 mod daemon;
 mod health;
 mod models;
+mod preferences;
 mod startup;
 mod tray;
 mod update;
 mod window;
 
-use models::{CompanionConfig, StartupContextView, StatusViewModel, UpdateInfo};
+use models::{CompanionConfig, DisplayLanguage, StartupContextView, StatusViewModel, UpdateInfo};
+use preferences::TrayPreferences;
 use startup::{
     context_from_decision, decide_post_ensure_action, decide_startup_action, startup_context,
     StartupAction,
 };
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconEvent},
     AppHandle, Emitter, Manager, RunEvent, Wry,
 };
+use tauri_plugin_updater::Builder as UpdaterPluginBuilder;
 use tokio::time::interval;
 
 const STATUS_EVENT: &str = "companion://status";
@@ -27,6 +30,7 @@ struct ShellResources {
     snapshot: Mutex<StatusViewModel>,
     startup_context: Mutex<Option<StartupContextView>>,
     update_info: Mutex<Option<UpdateInfo>>,
+    preferences: Mutex<TrayPreferences>,
     exit_in_progress: Mutex<bool>,
 }
 
@@ -89,11 +93,37 @@ fn current_update_info(app: &AppHandle<Wry>) -> Option<UpdateInfo> {
     state.update_info.lock().ok().and_then(|guard| guard.clone())
 }
 
+fn current_preferences(app: &AppHandle<Wry>) -> TrayPreferences {
+    let state = app.state::<ShellResources>();
+    state
+        .preferences
+        .lock()
+        .ok()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+fn current_language(app: &AppHandle<Wry>) -> DisplayLanguage {
+    current_preferences(app).language
+}
+
+fn replace_preferences(app: &AppHandle<Wry>, preferences: TrayPreferences) {
+    let state = app.state::<ShellResources>();
+    if let Ok(mut guard) = state.preferences.lock() {
+        *guard = preferences;
+    };
+}
+
 fn replace_update_info(app: &AppHandle<Wry>, info: Option<UpdateInfo>) {
     let state = app.state::<ShellResources>();
     if let Ok(mut guard) = state.update_info.lock() {
         *guard = info;
     };
+}
+
+fn set_update_info(app: &AppHandle<Wry>, info: Option<UpdateInfo>) {
+    replace_update_info(app, info);
+    publish_snapshot(app, current_snapshot(app));
 }
 
 fn current_snapshot(app: &AppHandle<Wry>) -> StatusViewModel {
@@ -106,6 +136,7 @@ fn current_snapshot(app: &AppHandle<Wry>) -> StatusViewModel {
         .unwrap_or_default();
     snapshot.startup = current_startup_context(app);
     snapshot.update = current_update_info(app);
+    snapshot.language = current_language(app);
     snapshot
 }
 
@@ -113,11 +144,13 @@ fn publish_snapshot(app: &AppHandle<Wry>, snapshot: StatusViewModel) {
     let mut snapshot = snapshot;
     snapshot.startup = current_startup_context(app);
     snapshot.update = current_update_info(app);
+    snapshot.language = current_language(app);
     let state = app.state::<ShellResources>();
     if let Ok(mut guard) = state.snapshot.lock() {
         *guard = snapshot.clone();
     }
     let _ = tray::apply_snapshot(app, &snapshot);
+    let _ = window::sync_status_window_title(app, snapshot.language);
     let _ = app.emit(STATUS_EVENT, &snapshot);
 }
 
@@ -328,15 +361,72 @@ fn open_logs(app: AppHandle<Wry>) -> Result<(), String> {
 
 #[tauri::command]
 async fn check_update(app: AppHandle<Wry>) -> Result<StatusViewModel, String> {
-    match update::check_for_update(update::CURRENT_VERSION).await {
+    set_update_info(
+        &app,
+        Some(update::checking_update_info(update::CURRENT_VERSION)),
+    );
+    match update::check_for_update(&app, update::CURRENT_VERSION).await {
         Ok(info) => {
-            replace_update_info(&app, Some(info));
-            let snapshot = current_snapshot(&app);
-            publish_snapshot(&app, snapshot.clone());
-            Ok(snapshot)
+            set_update_info(&app, Some(info));
+            Ok(current_snapshot(&app))
         }
-        Err(error) => Err(error.to_string()),
+        Err(error) => {
+            set_update_info(
+                &app,
+                Some(update::install_failure_info(
+                    current_update_info(&app),
+                    update::CURRENT_VERSION,
+                    &error.to_string(),
+                )),
+            );
+            Err(error.to_string())
+        }
     }
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle<Wry>) -> Result<StatusViewModel, String> {
+    let progress_app = app.clone();
+    let emit_progress: Arc<dyn Fn(UpdateInfo) + Send + Sync> = Arc::new(move |info| {
+        set_update_info(&progress_app, Some(info));
+    });
+
+    match update::install_update(&app, update::CURRENT_VERSION, emit_progress).await {
+        Ok(info) => {
+            set_update_info(&app, Some(info));
+            #[cfg(target_os = "macos")]
+            {
+                app.restart();
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Ok(current_snapshot(&app))
+            }
+        }
+        Err(error) => {
+            set_update_info(
+                &app,
+                Some(update::install_failure_info(
+                    current_update_info(&app),
+                    update::CURRENT_VERSION,
+                    &error.to_string(),
+                )),
+            );
+            Err(error.to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn set_display_language(app: AppHandle<Wry>, language: String) -> Result<StatusViewModel, String> {
+    let next_language = DisplayLanguage::from_code(&language)
+        .ok_or_else(|| format!("Unsupported language: {language}"))?;
+    let mut preferences = current_preferences(&app);
+    preferences.language = next_language;
+    preferences::save_preferences(&preferences).map_err(|error| error.to_string())?;
+    replace_preferences(&app, preferences);
+    publish_snapshot(&app, current_snapshot(&app));
+    Ok(current_snapshot(&app))
 }
 
 #[tauri::command]
@@ -345,13 +435,13 @@ fn open_release_page(app: AppHandle<Wry>) -> Result<(), String> {
     let url = info
         .as_ref()
         .and_then(|u| {
-            if u.available {
+            if u.available && !u.can_install {
                 u.download_url.as_deref().or(Some(u.release_url.as_str()))
             } else {
-                None
+                Some(u.release_url.as_str())
             }
         })
-        .unwrap_or("https://github.com/Trapezohe/companion_service/releases");
+        .unwrap_or(update::RELEASES_PAGE_URL);
 
     #[cfg(target_os = "macos")]
     {
@@ -384,10 +474,8 @@ fn spawn_update_checker(app: AppHandle<Wry>) {
         // Wait 30 seconds after launch before first check
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         loop {
-            if let Ok(info) = update::check_for_update(update::CURRENT_VERSION).await {
-                replace_update_info(&app, Some(info));
-                let snapshot = current_snapshot(&app);
-                publish_snapshot(&app, snapshot);
+            if let Ok(info) = update::check_for_update(&app, update::CURRENT_VERSION).await {
+                set_update_info(&app, Some(info));
             }
             // Check every hour
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
@@ -395,25 +483,42 @@ fn spawn_update_checker(app: AppHandle<Wry>) {
     });
 }
 
+fn should_open_status_panel_for_tray_event(
+    button: MouseButton,
+    button_state: Option<MouseButtonState>,
+    is_double_click: bool,
+) -> bool {
+    if is_double_click {
+        return button == MouseButton::Left;
+    }
+
+    matches!(button_state, Some(MouseButtonState::Up))
+        && matches!(button, MouseButton::Left | MouseButton::Right)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(UpdaterPluginBuilder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_status_snapshot,
             refresh_status_snapshot,
             run_self_check,
             set_autostart_enabled,
+            set_display_language,
             start_service,
             stop_service,
             restart_service,
             run_repair,
             open_logs,
             check_update,
+            install_update,
             open_release_page,
             quit_tray,
         ])
         .setup(|app| {
             let config_result = config::load_config();
             let loaded_config = config_result.as_ref().ok().cloned();
+            let preferences = preferences::load_preferences().unwrap_or_default();
             let startup_note = Some(startup_context(
                 "tray_boot",
                 "checking",
@@ -427,16 +532,19 @@ pub fn run() {
                 initial_snapshot.autostart = Some(status);
             }
             initial_snapshot.startup = startup_note.clone();
+            initial_snapshot.language = preferences.language;
 
             app.manage(ShellResources {
                 config: Mutex::new(loaded_config),
                 snapshot: Mutex::new(initial_snapshot.clone()),
                 startup_context: Mutex::new(startup_note),
                 update_info: Mutex::new(None),
+                preferences: Mutex::new(preferences.clone()),
                 exit_in_progress: Mutex::new(false),
             });
 
             window::ensure_status_window(&app.handle())?;
+            window::sync_status_window_title(&app.handle(), preferences.language)?;
             tray::build_tray(&app.handle(), &initial_snapshot)?;
             spawn_status_poller(app.handle().clone());
             spawn_update_checker(app.handle().clone());
@@ -453,70 +561,34 @@ pub fn run() {
         .on_tray_icon_event(|app, event| match event {
             TrayIconEvent::Click {
                 id,
-                button: MouseButton::Left,
+                rect,
+                button,
                 button_state: MouseButtonState::Up,
                 ..
-            } if id == tray::TRAY_ID => {
-                let _ =
-                    window::apply_status_window_intent(app, window::StatusWindowTrigger::TrayClick);
+            } if id == tray::TRAY_ID
+                && should_open_status_panel_for_tray_event(button, Some(MouseButtonState::Up), false) =>
+            {
+                let anchor = window::StatusWindowAnchor::from_tray_rect(rect);
+                let _ = window::apply_status_window_intent_with_anchor(
+                    app,
+                    window::StatusWindowTrigger::TrayClick,
+                    anchor,
+                );
             }
             TrayIconEvent::DoubleClick {
                 id,
-                button: MouseButton::Left,
+                rect,
+                button,
                 ..
-            } if id == tray::TRAY_ID => {
-                let _ =
-                    window::apply_status_window_intent(app, window::StatusWindowTrigger::TrayClick);
-            }
-            _ => {}
-        })
-        .on_menu_event(|app, event| match event.id().0.as_str() {
-            tray::MENU_QUIT => app.exit(0),
-            tray::MENU_OPEN_STATUS => {
-                let _ = window::open_or_focus_status_window(app);
-            }
-            tray::MENU_START => {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = start_service(handle).await;
-                });
-            }
-            tray::MENU_STOP => {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = stop_service(handle).await;
-                });
-            }
-            tray::MENU_RESTART => {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = restart_service(handle).await;
-                });
-            }
-            tray::MENU_UPDATE => {
-                let _ = open_release_page(app.clone());
-            }
-            tray::MENU_DIAGNOSTICS => {
-                let _ = window::open_or_focus_status_window(app);
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = refresh_status_snapshot(handle).await;
-                });
-            }
-            tray::MENU_OPEN_LOGS => {
-                let handle = app.clone();
-                let _ = open_logs(handle);
-            }
-            tray::MENU_TOGGLE_AUTOSTART => {
-                let handle = app.clone();
-                let enable = !current_snapshot(app)
-                    .autostart
-                    .as_ref()
-                    .map(|item| item.enabled)
-                    .unwrap_or(false);
-                tauri::async_runtime::spawn(async move {
-                    let _ = set_autostart_enabled(handle, enable).await;
-                });
+            } if id == tray::TRAY_ID
+                && should_open_status_panel_for_tray_event(button, None, true) =>
+            {
+                let anchor = window::StatusWindowAnchor::from_tray_rect(rect);
+                let _ = window::apply_status_window_intent_with_anchor(
+                    app,
+                    window::StatusWindowTrigger::TrayClick,
+                    anchor,
+                );
             }
             _ => {}
         })
@@ -631,5 +703,38 @@ mod tests {
 
         assert_eq!(claim_exit_shutdown(&claimed), true);
         assert_eq!(claim_exit_shutdown(&claimed), false);
+    }
+
+    #[test]
+    fn tray_click_helper_accepts_left_and_right_button_up() {
+        assert!(should_open_status_panel_for_tray_event(
+            MouseButton::Left,
+            Some(MouseButtonState::Up),
+            false
+        ));
+        assert!(should_open_status_panel_for_tray_event(
+            MouseButton::Right,
+            Some(MouseButtonState::Up),
+            false
+        ));
+        assert!(!should_open_status_panel_for_tray_event(
+            MouseButton::Right,
+            Some(MouseButtonState::Down),
+            false
+        ));
+    }
+
+    #[test]
+    fn tray_click_helper_only_accepts_left_double_clicks() {
+        assert!(should_open_status_panel_for_tray_event(
+            MouseButton::Left,
+            None,
+            true
+        ));
+        assert!(!should_open_status_panel_for_tray_event(
+            MouseButton::Right,
+            None,
+            true
+        ));
     }
 }

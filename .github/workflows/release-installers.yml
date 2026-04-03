@@ -83,6 +83,14 @@ jobs:
       - test-tray
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: macos-latest
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_DEVELOPER_ID_APP_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APP_IDENTITY }}
+      APPLE_DEVELOPER_ID_INSTALLER_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_IDENTITY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,14 +103,158 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Validate macOS signing inputs
+        run: |
+          missing=()
+          for name in \
+            APPLE_ID \
+            APPLE_TEAM_ID \
+            APPLE_APP_SPECIFIC_PASSWORD \
+            APPLE_DEVELOPER_ID_APP_P12_BASE64 \
+            APPLE_DEVELOPER_ID_APP_P12_PASSWORD \
+            APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64 \
+            APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD \
+            TAURI_SIGNING_PRIVATE_KEY
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required macOS signing secrets:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+      - name: Import Apple Developer ID certificates
+        env:
+          APPLE_DEVELOPER_ID_APP_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_APP_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_APP_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APP_P12_PASSWORD }}
+          APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="${RUNNER_TEMP}/trapezohe-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          APP_P12="${RUNNER_TEMP}/developer-id-app.p12"
+          INSTALLER_P12="${RUNNER_TEMP}/developer-id-installer.p12"
+          export APP_P12 INSTALLER_P12
+
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["APP_P12"]).write_bytes(base64.b64decode(os.environ["APPLE_DEVELOPER_ID_APP_P12_BASE64"]))
+          Path(os.environ["INSTALLER_P12"]).write_bytes(base64.b64decode(os.environ["APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64"]))
+          PY
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}" login.keychain-db
+          security default-keychain -d user -s "${KEYCHAIN_PATH}"
+
+          security import "${APP_P12}" \
+            -k "${KEYCHAIN_PATH}" \
+            -P "${APPLE_DEVELOPER_ID_APP_P12_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -T /usr/bin/productsign
+
+          security import "${INSTALLER_P12}" \
+            -k "${KEYCHAIN_PATH}" \
+            -P "${APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -T /usr/bin/productsign
+
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
+
+          DETECTED_APP_IDENTITY="$(openssl pkcs12 -in "${APP_P12}" -passin "pass:${APPLE_DEVELOPER_ID_APP_P12_PASSWORD}" -clcerts -nokeys 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 | sed -n 's/^subject=.*CN=//p')"
+          DETECTED_INSTALLER_IDENTITY="$(openssl pkcs12 -in "${INSTALLER_P12}" -passin "pass:${APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD}" -clcerts -nokeys 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 | sed -n 's/^subject=.*CN=//p')"
+
+          if [[ -z "${DETECTED_APP_IDENTITY}" || -z "${DETECTED_INSTALLER_IDENTITY}" ]]; then
+            echo "Failed to detect Developer ID certificate identities from the provided .p12 files." >&2
+            exit 1
+          fi
+
+          echo "DETECTED_APPLE_DEVELOPER_ID_APP_IDENTITY=${DETECTED_APP_IDENTITY}" >> "$GITHUB_ENV"
+          echo "DETECTED_APPLE_DEVELOPER_ID_INSTALLER_IDENTITY=${DETECTED_INSTALLER_IDENTITY}" >> "$GITHUB_ENV"
+
+      - name: Prepare macOS signing environment
+        run: |
+          APP_IDENTITY="${APPLE_DEVELOPER_ID_APP_IDENTITY:-${DETECTED_APPLE_DEVELOPER_ID_APP_IDENTITY:-}}"
+          INSTALLER_IDENTITY="${APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-${DETECTED_APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-}}"
+          SIGNING_ENV_FILE="${RUNNER_TEMP}/trapezohe-macos-signing.env"
+
+          if [[ -z "${APP_IDENTITY}" || -z "${INSTALLER_IDENTITY}" ]]; then
+            echo "Missing Developer ID identity names after certificate import." >&2
+            exit 1
+          fi
+
+          cat > "${SIGNING_ENV_FILE}" <<EOF
+          export APPLE_ID="${APPLE_ID}"
+          export APPLE_TEAM_ID="${APPLE_TEAM_ID}"
+          export APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD}"
+          export APPLE_DEVELOPER_ID_APP_IDENTITY="${APP_IDENTITY}"
+          export APPLE_DEVELOPER_ID_INSTALLER_IDENTITY="${INSTALLER_IDENTITY}"
+          export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY}"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-EMPTY}"
+          EOF
+
+          echo "TRAPEZOHE_MACOS_SIGNING_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
+          echo "TRAPEZOHE_UPDATER_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
+
       - name: Build .pkg
         run: ./scripts/build-macos-pkg.sh "${{ needs.check-version.outputs.version }}"
+
+      - name: Build macOS updater artifacts
+        run: ./scripts/build-macos-updater-artifacts.sh "${{ needs.check-version.outputs.version }}"
+
+      - name: Verify signed macOS release artifacts
+        run: |
+          pkgutil --check-signature dist/installers/trapezohe-companion-macos.pkg
+          xcrun stapler validate dist/installers/trapezohe-companion-macos.pkg
+          test -f dist/installers/trapezohe-companion-macos.app.tar.gz
+          test -f dist/installers/trapezohe-companion-macos.app.tar.gz.sig
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          latest = json.loads(Path("dist/installers/latest.json").read_text())
+          platform = next(iter(latest["platforms"].values()))
+          assert latest["version"] == "${{ needs.check-version.outputs.version }}"
+          assert platform["url"].endswith("/trapezohe-companion-macos.app.tar.gz")
+          assert platform["signature"]
+          PY
+
+      - name: Cleanup temporary keychain and signing env
+        if: always()
+        run: |
+          if [[ -n "${TRAPEZOHE_MACOS_SIGNING_ENV_FILE:-}" ]]; then
+            rm -f "${TRAPEZOHE_MACOS_SIGNING_ENV_FILE}"
+          fi
+          rm -f "${RUNNER_TEMP}/developer-id-app.p12" "${RUNNER_TEMP}/developer-id-installer.p12" || true
+          security default-keychain -d user -s login.keychain-db || true
+          security list-keychains -d user -s login.keychain-db || true
+          security delete-keychain "${RUNNER_TEMP}/trapezohe-build.keychain-db" || true
 
       - name: Upload macOS installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: companion-macos-pkg
           path: dist/installers/trapezohe-companion-macos.pkg
+
+      - name: Upload macOS updater artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-macos-updater
+          path: |
+            dist/installers/trapezohe-companion-macos.app.tar.gz
+            dist/installers/trapezohe-companion-macos.app.tar.gz.sig
+            dist/installers/latest.json
 
   build-windows-msi:
     needs:
@@ -161,10 +313,17 @@ jobs:
           name: companion-windows-msi
           path: dist/release
 
+      - name: Download macOS updater artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: companion-macos-updater
+          path: dist/release
+
       - name: Generate SHA256SUMS
         run: |
           cd dist/release
           sha256sum trapezohe-companion-macos.pkg > SHA256SUMS.txt
+          sha256sum trapezohe-companion-macos.app.tar.gz >> SHA256SUMS.txt
           sha256sum trapezohe-companion-windows.msi >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -183,6 +342,9 @@ jobs:
           name: Trapezohe Companion v${{ needs.check-version.outputs.version }}
           files: |
             dist/release/trapezohe-companion-macos.pkg
+            dist/release/trapezohe-companion-macos.app.tar.gz
+            dist/release/trapezohe-companion-macos.app.tar.gz.sig
+            dist/release/latest.json
             dist/release/trapezohe-companion-windows.msi
             dist/release/SHA256SUMS.txt
           body: |
@@ -197,6 +359,7 @@ jobs:
             | Platform | File | Type |
             |----------|------|------|
             | macOS | `trapezohe-companion-macos.pkg` | Installer for daemon + tray app |
+            | macOS | `trapezohe-companion-macos.app.tar.gz` + `latest.json` | In-app updater feed for installed tray apps |
             | Windows | `trapezohe-companion-windows.msi` | Installer for daemon + tray app |
 
             ---
@@ -219,25 +382,11 @@ jobs:
 
             ## Security Notice — First Launch
 
-            Since these installers are not code-signed, your OS will show a security warning on first launch. This is expected for open-source software distributed outside app stores.
+            The macOS installer is Developer ID signed and notarized, so the normal install flow should open directly on supported macOS systems.
 
-            ### macOS — Gatekeeper
+            ### macOS — Signed installer
 
-            Double-clicking the `.pkg` file will show a warning:
-
-            > "Apple could not verify whether trapezohe-companion-macos.pkg contains software that is harmful to your Mac or compromises your privacy."
-
-            **To install:**
-
-            1. Open **System Settings → Privacy & Security**
-            2. Scroll down to the **Security** section
-            3. You will see a message about the blocked installer — click **"Open Anyway"**
-            4. Double-click the `.pkg` file again and it will install normally
-
-            **Alternative** — Remove quarantine via Terminal (skip the dialog entirely):
-            ```bash
-            xattr -cr ~/Downloads/trapezohe-companion-macos.pkg
-            ```
+            If macOS still shows a warning, first confirm the file came from the official release page and matches `SHA256SUMS.txt`, then re-download and try again.
 
             ### Windows — SmartScreen
 

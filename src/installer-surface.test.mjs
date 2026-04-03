@@ -52,6 +52,25 @@ test('tray shell exposes the global Tauri bridge required by the static panel UI
   assert.equal(trayConfig.app?.withGlobalTauri, true)
 })
 
+test('status panel window is configured like a tray dropdown instead of a normal app window', () => {
+  const trayConfig = JSON.parse(read('tray/tauri.conf.json'))
+  const statusWindow = trayConfig.app?.windows?.find((window) => window.label === 'status')
+
+  assert.equal(statusWindow?.decorations, false)
+  assert.equal(statusWindow?.alwaysOnTop, true)
+  assert.equal(statusWindow?.skipTaskbar, true)
+})
+
+test('tray clicks are unified around the custom panel instead of a native right-click menu', () => {
+  const trayRs = read('tray/src/tray.rs')
+  const libRs = read('tray/src/lib.rs')
+
+  assert.doesNotMatch(trayRs, /\.menu\(&menu\)/)
+  assert.doesNotMatch(trayRs, /MenuBuilder::new/)
+  assert.match(libRs, /MouseButton::Right/)
+  assert.match(libRs, /should_open_status_panel_for_tray_event/)
+})
+
 test('macOS installer bootstrap writes its temp script to a user-accessible path and targets the installed app bundle', () => {
   const postinstall = read('packaging/macos/postinstall')
 
@@ -70,14 +89,75 @@ test('macOS installer registers the fixed production extension origin for native
   assert.doesNotMatch(postinstall, /olngglipkifpkolknipcbdcifbkcfhkk/)
 })
 
-test('macOS installer hands runtime over to the installed CLI after deploying the service payload', () => {
+test('macOS installer keeps the runtime inside the installed app bundle instead of deploying a second macOS service copy', () => {
   const postinstall = read('packaging/macos/postinstall')
+  const trayScript = read('scripts/build-tray-macos.sh')
+  const pkgScript = read('scripts/build-macos-pkg.sh')
 
+  assert.match(trayScript, /COMPANION_DIR="\$\{RESOURCES_DIR\}\/companion"/)
+  assert.match(trayScript, /RUNTIME_NODE_DIR="\$\{RESOURCES_DIR\}\/runtime\/node"/)
+  assert.match(trayScript, /cp "\$\{ROOT_DIR\}\/bin\/cli\.mjs" "\$\{COMPANION_DIR\}\/bin\/cli\.mjs"/)
+  assert.match(trayScript, /cp "\$\{ROOT_DIR\}\/bin\/native-host\.mjs" "\$\{COMPANION_DIR\}\/bin\/native-host\.mjs"/)
+  assert.match(trayScript, /cp "\$\{ROOT_DIR\}\/package\.json" "\$\{COMPANION_DIR\}\/package\.json"/)
+  assert.match(trayScript, /find "\$\{ROOT_DIR\}\/src" -maxdepth 1 -type f -name '\*\.mjs' ! -name '\*\.test\.mjs'/)
+  assert.doesNotMatch(trayScript, /cp "\$\{ROOT_DIR\}"\/src\/\*\.mjs "\$\{COMPANION_DIR\}\/src\/"/)
+
+  assert.doesNotMatch(pkgScript, /cp "\$\{ROOT_DIR\}\/bin\/native-host\.mjs" "\$\{PAYLOAD_DIR\}\/native-host\.mjs"/)
+  assert.doesNotMatch(pkgScript, /cp "\$\{ROOT_DIR\}\/bin\/cli\.mjs" "\$\{PAYLOAD_DIR\}\/cli\.mjs"/)
+  assert.doesNotMatch(pkgScript, /cp "\$\{ROOT_DIR\}\/package\.json" "\$\{PAYLOAD_DIR\}\/package\.json"/)
+  assert.doesNotMatch(pkgScript, /mkdir -p "\$\{PAYLOAD_DIR\}\/src"/)
+
+  assert.match(postinstall, /APP_RUNTIME_DIR="\$\{TRAY_APP_PATH\}\/Contents\/Resources\/companion"/)
+  assert.match(postinstall, /APP_NODE_DIR="\$\{TRAY_APP_PATH\}\/Contents\/Resources\/runtime\/node"/)
   assert.match(postinstall, /restart_companion_daemon\(\)/)
-  assert.match(postinstall, /local wrapper="\$\{LOCAL_NODE_DIR\}\/bin\/trapezohe-companion"/)
-  assert.match(postinstall, /"\$\{wrapper\}" stop --force/)
-  assert.match(postinstall, /"\$\{wrapper\}" start -d/)
-  assert.match(postinstall, /deploy_companion_service \|\| true\s+restart_companion_daemon \|\| true/s)
+  assert.match(postinstall, /"\$\{node_bin\}" "\$\{APP_RUNTIME_DIR\}\/bin\/cli\.mjs" stop --force/)
+  assert.match(postinstall, /"\$\{node_bin\}" "\$\{APP_RUNTIME_DIR\}\/bin\/cli\.mjs" start -d/)
+  assert.doesNotMatch(postinstall, /deploy_companion_service/)
+  assert.doesNotMatch(postinstall, /service_dir="\$\{TRAPEZOHE_DIR\}\/service"/)
+  assert.doesNotMatch(postinstall, /wrapper="\$\{LOCAL_NODE_DIR\}\/bin\/trapezohe-companion"/)
+})
+
+test('macOS build scripts wire Developer ID signing and notarization into the installer flow', () => {
+  const trayScript = read('scripts/build-tray-macos.sh')
+  const pkgScript = read('scripts/build-macos-pkg.sh')
+  const signingLib = read('scripts/lib/macos-signing.sh')
+
+  assert.match(trayScript, /source "\$\{ROOT_DIR\}\/scripts\/lib\/macos-signing\.sh"/)
+  assert.match(trayScript, /TRAPEZOHE_MACOS_STAGE_ROOT/)
+  assert.match(trayScript, /macos_sign_app_bundle "\$\{APP_DIR\}"/)
+
+  assert.match(pkgScript, /source "\$\{ROOT_DIR\}\/scripts\/lib\/macos-signing\.sh"/)
+  assert.match(pkgScript, /TRAPEZOHE_MACOS_STAGE_ROOT/)
+  assert.match(pkgScript, /SIGNED_PACKAGE_FILE=/)
+  assert.match(pkgScript, /macos_sign_pkg "\$\{PACKAGE_FILE\}" "\$\{SIGNED_PACKAGE_FILE\}"/)
+  assert.match(pkgScript, /macos_notarize_artifact "\$\{PACKAGE_FILE\}"/)
+
+  assert.match(signingLib, /APPLE_DEVELOPER_ID_APP_IDENTITY/)
+  assert.match(signingLib, /APPLE_DEVELOPER_ID_INSTALLER_IDENTITY/)
+  assert.match(signingLib, /TRAPEZOHE_MACOS_SIGNING_ENV_FILE/)
+  assert.match(signingLib, /codesign --force --sign/)
+  assert.match(signingLib, /productsign --sign/)
+  assert.match(signingLib, /xcrun notarytool submit/)
+  assert.match(signingLib, /xcrun stapler staple/)
+})
+
+test('macOS tray control and native host registration prefer the bundled app runtime', () => {
+  const daemonRs = read('tray/src/daemon.rs')
+  const cli = read('bin/cli.mjs')
+
+  assert.match(daemonRs, /resolve_bundled_cli_invocation_from/)
+  assert.match(daemonRs, /Resources"\)\s*\.join\("runtime"\)\s*\.join\("node"\)\s*\.join\("bin"\)\s*\.join\("node"/)
+  assert.match(daemonRs, /Resources"\)\s*\.join\("companion"\)\s*\.join\("bin"\)\s*\.join\("cli\.mjs"/)
+
+  assert.match(cli, /function resolveBundledMacosRuntime/)
+  assert.match(cli, /async function resolveCliLaunchSpec/)
+  assert.match(cli, /process\.platform === 'darwin'/)
+  assert.match(cli, /native-host-launcher\.sh/)
+  assert.match(cli, /const runtime = await resolveBundledMacosRuntime\(entryScript\)/)
+  assert.match(cli, /const launchSpec = await resolveCliLaunchSpec\(\)/)
+  assert.match(cli, /<string>\$\{launchSpec\.program\}<\/string>/)
+  assert.match(cli, /launchSpec\.args\.map\(\(arg\) => `  <string>\$\{arg\}<\/string>`\)\.join\('\\n'\)/)
+  assert.match(cli, /await execFileAsync\(launchSpec\.program, \[\.\.\.launchSpec\.args, '-d'\]\)/)
 })
 
 test('Windows installer hands runtime over to the installed CLI after bootstrap', () => {
@@ -211,4 +291,139 @@ test('package, tray Cargo, and tauri config versions stay aligned for the next r
   assert.equal(pkg.version, '0.1.16')
   assert.match(cargoToml, /^version = "0\.1\.16"$/m)
   assert.equal(tauriConfig.version, '0.1.16')
+})
+
+test('README and release copy describe the signed macOS flow without claiming every installer is unsigned', () => {
+  const readme = read('README.md')
+  const releaseWorkflow = read('.github/workflows/release-installers.yml')
+
+  assert.doesNotMatch(readme, /Installers are currently unsigned/i)
+  assert.match(readme, /macOS installer is signed and notarized/i)
+  assert.match(readme, /Windows installer may still trigger SmartScreen/i)
+
+  assert.doesNotMatch(releaseWorkflow, /Since these installers are not code-signed/i)
+  assert.match(releaseWorkflow, /macOS installer is Developer ID signed and notarized/i)
+  assert.match(releaseWorkflow, /Windows — SmartScreen/i)
+})
+
+test('macOS tray updater is wired for signed in-app updates instead of release-page downloads', () => {
+  const cargoToml = read('tray/Cargo.toml')
+  const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
+  const capabilities = read('tray/capabilities/default.json')
+  const trayUi = read('tray/ui/index.html')
+  const trayLib = read('tray/src/lib.rs')
+  const updaterRs = read('tray/src/update.rs')
+
+  assert.match(cargoToml, /tauri-plugin-updater\s*=\s*(?:"2"|\{\s*version\s*=\s*"2")/)
+  assert.match(capabilities, /updater:default/)
+
+  assert.equal(tauriConfig.plugins?.updater?.active, true)
+  assert.match(
+    String(tauriConfig.plugins?.updater?.endpoints?.[0] || ''),
+    /https:\/\/github\.com\/Trapezohe\/companion_service\/releases\/latest\/download\/latest\.json/,
+  )
+  assert.match(String(tauriConfig.plugins?.updater?.pubkey || ''), /\S+/)
+
+  assert.match(trayLib, /tauri_plugin_updater::Builder/)
+  assert.match(trayLib, /install_update/)
+  assert.match(updaterRs, /download_and_install/)
+
+  assert.match(trayUi, /install_update/)
+  assert.match(trayUi, /Download & Install|Installing|Downloading update/)
+  assert.doesNotMatch(trayUi, /\$\('updateBanner'\)\.addEventListener\('click', async \(\) => \{\s*if \(invoke\) await invoke\('open_release_page'\)/)
+})
+
+test('tray panel surface is a narrow unified dashboard with built-in language switching', () => {
+  const trayUi = read('tray/ui/index.html')
+
+  assert.match(trayUi, /set_display_language/)
+  assert.match(trayUi, /recentActions|action_logs/)
+  assert.match(trayUi, /language-picker|language-option/)
+  assert.match(trayUi, /panel-shell|panel-card|panel-footer/)
+  assert.doesNotMatch(trayUi, /menuBtn/)
+  assert.doesNotMatch(trayUi, /dropdown-item/)
+})
+
+test('tray panel exposes a release-page fallback and stable MCP status styling helpers', () => {
+  const trayUi = read('tray/ui/index.html')
+
+  assert.match(trayUi, /id="releasePageButton"/)
+  assert.match(trayUi, /open_release_page/)
+  assert.match(trayUi, /function serverStatusClass\(/)
+  assert.match(trayUi, /function localizedServerStatus\(/)
+  assert.match(trayUi, /status-\$\{esc\(serverStatusClass\(server\.status\)\)\}/)
+})
+
+test('tray panel uses a dark anchored dropdown surface instead of the previous light popup look', () => {
+  const trayUi = read('tray/ui/index.html')
+  const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
+
+  assert.match(trayUi, /color-scheme:\s*dark/)
+  assert.match(trayUi, /--window-bg:\s*#08111b/i)
+  assert.match(trayUi, /\.panel-shell::before/)
+  assert.match(trayUi, /--panel:\s*linear-gradient\(180deg,\s*rgba\(15,\s*24,\s*37/i)
+  assert.equal(tauriConfig.app?.windows?.[0]?.width, 344)
+  assert.equal(tauriConfig.app?.windows?.[0]?.minWidth, 344)
+})
+
+test('tray panel keeps only settings on the main footer, moves logs and service actions into settings, and hides latest-version noise', () => {
+  const trayUi = read('tray/ui/index.html')
+
+  assert.match(trayUi, /id="logsEntryButton"/)
+  assert.match(trayUi, /id="serviceActionButton"/)
+  assert.match(trayUi, /id="quitQuickButton"/)
+  assert.match(trayUi, /id="versionMeta"/)
+  assert.match(trayUi, /function shouldShowUpdateNote\(/)
+  assert.match(trayUi, /updateNote'\)\.hidden = !shouldShowUpdateNote/)
+  assert.doesNotMatch(trayUi, /id="showLogsButton"/)
+  assert.doesNotMatch(trayUi, /id="serviceButton"/)
+  assert.doesNotMatch(trayUi, /id="versionPill"/)
+})
+
+test('release workflow publishes macOS updater archive, signature, and latest manifest', () => {
+  const workflow = read('.github/workflows/release-installers.yml')
+  const updaterScript = read('scripts/build-macos-updater-artifacts.sh')
+  const updaterLib = read('scripts/lib/tauri-updater.sh')
+
+  assert.match(workflow, /build-macos-updater-artifacts\.sh/)
+  assert.match(workflow, /trapezohe-companion-macos\.app\.tar\.gz/)
+  assert.match(workflow, /trapezohe-companion-macos\.app\.tar\.gz\.sig/)
+  assert.match(workflow, /latest\.json/)
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY|TRAPEZOHE_UPDATER_PRIVATE_KEY/)
+
+  assert.match(updaterScript, /latest\.json/)
+  assert.match(updaterScript, /\.app\.tar\.gz/)
+  assert.match(updaterScript, /\.sig/)
+  assert.match(updaterScript, /github\.com\/Trapezohe\/companion_service\/releases\/download\/v\$\{VERSION\}/)
+
+  assert.match(updaterLib, /@tauri-apps\/cli@2\.10\.1/)
+  assert.match(updaterLib, /signer sign/)
+  assert.match(updaterLib, /TAURI_PRIVATE_KEY_PASSWORD="\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD\}"/)
+  assert.match(updaterLib, /case "\$\{TAURI_PRIVATE_KEY_PASSWORD:-\}" in[\s\S]+EMPTY[\s\S]+TAURI_PRIVATE_KEY_PASSWORD=""/)
+})
+
+test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {
+  const workflow = read('.github/workflows/release-installers.yml')
+  const signingLib = read('scripts/lib/macos-signing.sh')
+
+  assert.match(workflow, /Validate macOS signing inputs/)
+  assert.match(workflow, /Missing required macOS signing secrets:/)
+  assert.match(workflow, /APPLE_DEVELOPER_ID_APP_P12_BASE64/)
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/)
+  assert.match(workflow, /openssl pkcs12 -in "\$\{APP_P12\}"/)
+  assert.match(workflow, /DETECTED_APPLE_DEVELOPER_ID_APP_IDENTITY/)
+  assert.match(workflow, /DETECTED_APPLE_DEVELOPER_ID_INSTALLER_IDENTITY/)
+  assert.match(workflow, /SIGNING_ENV_FILE="\$\{RUNNER_TEMP\}\/trapezohe-macos-signing\.env"/)
+  assert.match(workflow, /APP_IDENTITY="\$\{APPLE_DEVELOPER_ID_APP_IDENTITY:-\$\{DETECTED_APPLE_DEVELOPER_ID_APP_IDENTITY:-\}\}"/)
+  assert.match(workflow, /INSTALLER_IDENTITY="\$\{APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-\$\{DETECTED_APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-\}\}"/)
+  assert.match(workflow, /export APPLE_DEVELOPER_ID_APP_IDENTITY="\$\{APP_IDENTITY\}"/)
+  assert.match(workflow, /export APPLE_DEVELOPER_ID_INSTALLER_IDENTITY="\$\{INSTALLER_IDENTITY\}"/)
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY="\$\{TAURI_SIGNING_PRIVATE_KEY\}"/)
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD="\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-EMPTY\}"/)
+  assert.match(workflow, /echo "TRAPEZOHE_MACOS_SIGNING_ENV_FILE=\$\{SIGNING_ENV_FILE\}" >> "\$GITHUB_ENV"/)
+  assert.match(workflow, /echo "TRAPEZOHE_UPDATER_ENV_FILE=\$\{SIGNING_ENV_FILE\}" >> "\$GITHUB_ENV"/)
+  assert.match(workflow, /Verify signed macOS release artifacts/)
+  assert.match(workflow, /xcrun stapler validate dist\/installers\/trapezohe-companion-macos\.pkg/)
+  assert.match(workflow, /latest = json\.loads\(Path\("dist\/installers\/latest\.json"\)\.read_text\(\)\)/)
+  assert.match(signingLib, /source "\$\{TRAPEZOHE_MACOS_SIGNING_ENV_FILE\}"/)
 })

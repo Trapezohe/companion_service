@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayLanguage {
+    #[default]
+    En,
+    Zh,
+}
+
+impl DisplayLanguage {
+    pub fn from_code(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "en" | "en_us" | "en-us" => Some(Self::En),
+            "zh" | "zh_cn" | "zh-cn" | "zh_hans" | "zh-hans" => Some(Self::Zh),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CompanionShellState {
@@ -58,6 +76,22 @@ pub struct McpServerSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ActionLogEntry {
+    #[serde(rename = "runId", default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub timestamp: u64,
+    #[serde(rename = "actionName", default)]
+    pub action_name: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RecentFailure {
     pub run_id: String,
     pub summary: String,
@@ -83,6 +117,8 @@ pub struct DiagnosticsSnapshot {
     pub recent_failures: Vec<RecentFailure>,
     #[serde(default)]
     pub servers: Vec<McpServerSnapshot>,
+    #[serde(default)]
+    pub action_logs: Vec<ActionLogEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -119,12 +155,20 @@ pub struct StartupContextView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UpdateInfo {
     pub available: bool,
+    #[serde(default)]
+    pub can_install: bool,
     pub current_version: String,
     pub latest_version: String,
     pub release_url: String,
     pub download_url: Option<String>,
     pub release_notes: Option<String>,
     pub checked_at_ms: u64,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -178,6 +222,8 @@ impl StatusActions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StatusViewModel {
+    #[serde(default)]
+    pub language: DisplayLanguage,
     pub state: CompanionShellState,
     pub config_path: String,
     pub logs_dir: String,
@@ -215,6 +261,7 @@ impl StatusViewModel {
         );
 
         Self {
+            language: DisplayLanguage::default(),
             state,
             config_path: config.config_path.clone(),
             logs_dir: config.logs_dir.clone(),
@@ -237,43 +284,13 @@ impl StatusViewModel {
             reason: reason.clone(),
         };
         Self {
+            language: DisplayLanguage::default(),
             state: state.clone(),
             checked_at_ms,
             last_error: Some(reason),
             actions: StatusActions::from_state(&state, false, false),
             ..Self::default()
         }
-    }
-
-    pub fn headline(&self) -> &'static str {
-        match self.state {
-            CompanionShellState::Checking => "Checking local companion",
-            CompanionShellState::Healthy { .. } => "Companion is ready",
-            CompanionShellState::Degraded { .. } => "Companion needs attention",
-            CompanionShellState::Stopped => "Companion is offline",
-            CompanionShellState::Misconfigured { .. } => "Companion needs setup",
-        }
-    }
-
-    pub fn pending_approvals(&self) -> u32 {
-        self.diagnostics
-            .as_ref()
-            .map(|item| item.pending_approvals)
-            .unwrap_or(0)
-    }
-
-    pub fn running_sessions(&self) -> u32 {
-        self.diagnostics
-            .as_ref()
-            .map(|item| item.running_acp_sessions)
-            .unwrap_or(0)
-    }
-
-    pub fn repair_actions(&self) -> &[RepairAction] {
-        self.self_check
-            .as_ref()
-            .map(|item| item.repair_actions.as_slice())
-            .unwrap_or(&[])
     }
 }
 
@@ -429,6 +446,14 @@ mod tests {
                 tool_count: 3,
                 command: "node".into(),
             }],
+            action_logs: vec![ActionLogEntry {
+                run_id: "run_action_1".into(),
+                timestamp: 1_710_000_000_000,
+                action_name: "open_url".into(),
+                target: "https://example.com".into(),
+                status: "success".into(),
+                detail: "page opened".into(),
+            }],
         }
     }
 
@@ -455,10 +480,30 @@ mod tests {
             snapshot.state,
             CompanionShellState::Degraded { .. }
         ));
-        assert_eq!(snapshot.pending_approvals(), 2);
-        assert_eq!(snapshot.running_sessions(), 1);
-        assert_eq!(snapshot.repair_actions().len(), 1);
-        assert_eq!(snapshot.headline(), "Companion needs attention");
+        assert_eq!(
+            snapshot
+                .diagnostics
+                .as_ref()
+                .map(|item| item.pending_approvals)
+                .unwrap_or(0),
+            2
+        );
+        assert_eq!(
+            snapshot
+                .diagnostics
+                .as_ref()
+                .map(|item| item.running_acp_sessions)
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .self_check
+                .as_ref()
+                .map(|item| item.repair_actions.len())
+                .unwrap_or(0),
+            1
+        );
         assert!(!snapshot.actions.can_start);
         assert!(snapshot.actions.can_restart);
     }
@@ -479,9 +524,7 @@ mod tests {
         );
 
         assert!(matches!(snapshot.state, CompanionShellState::Stopped));
-        assert_eq!(snapshot.pending_approvals(), 0);
-        assert_eq!(snapshot.running_sessions(), 0);
-        assert_eq!(snapshot.headline(), "Companion is offline");
+        assert!(snapshot.diagnostics.is_none());
         assert!(snapshot.actions.can_start);
         assert!(!snapshot.actions.can_stop);
         assert!(!snapshot.actions.can_restart);
@@ -510,6 +553,5 @@ mod tests {
         );
 
         assert!(matches!(snapshot.state, CompanionShellState::Healthy { .. }));
-        assert_eq!(snapshot.headline(), "Companion is ready");
     }
 }

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::{
     daemon,
     models::{
-        CompanionConfig, CompanionShellState, DiagnosticsSnapshot, HealthSnapshot,
+        ActionLogEntry, CompanionConfig, CompanionShellState, DiagnosticsSnapshot, HealthSnapshot,
         McpServerSnapshot, RecentFailure, StatusActions, StatusViewModel,
     },
 };
@@ -63,6 +63,8 @@ struct DiagnosticsMcpServerPayload {
 struct DiagnosticsRunsPayload {
     #[serde(rename = "recentFailed", default)]
     recent_failed: Vec<DiagnosticsRunPayload>,
+    #[serde(rename = "recentActions", default)]
+    recent_actions: Vec<DiagnosticsActionLogPayload>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -73,6 +75,22 @@ struct DiagnosticsRunPayload {
     summary: String,
     #[serde(default)]
     error: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DiagnosticsActionLogPayload {
+    #[serde(rename = "runId", default)]
+    run_id: String,
+    #[serde(default)]
+    timestamp: u64,
+    #[serde(rename = "actionName", default)]
+    action_name: String,
+    #[serde(default)]
+    target: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    detail: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -148,6 +166,19 @@ fn map_diagnostics_payload(payload: DiagnosticsPayload) -> DiagnosticsSnapshot {
                 status: item.status,
                 tool_count: item.tool_count,
                 command: item.command,
+            })
+            .collect(),
+        action_logs: payload
+            .runs
+            .recent_actions
+            .into_iter()
+            .map(|item| ActionLogEntry {
+                run_id: item.run_id,
+                timestamp: item.timestamp,
+                action_name: item.action_name,
+                target: item.target,
+                status: item.status,
+                detail: item.detail,
             })
             .collect(),
     }
@@ -278,6 +309,14 @@ mod tests {
                     summary: "Restart failed".into(),
                     error: "runtime_restart_failed".into(),
                 }],
+                recent_actions: vec![DiagnosticsActionLogPayload {
+                    run_id: "run_action_1".into(),
+                    timestamp: 1_710_000_000_000,
+                    action_name: "open_url".into(),
+                    target: "https://example.com".into(),
+                    status: "success".into(),
+                    detail: "page opened".into(),
+                }],
             },
             approvals: DiagnosticsApprovalsPayload {
                 pending: vec![serde_json::json!({ "approvalId": "ap_1" })],
@@ -293,6 +332,8 @@ mod tests {
         assert_eq!(mapped.pending_approvals, 1);
         assert_eq!(mapped.running_acp_sessions, 1);
         assert_eq!(mapped.recent_failures.len(), 1);
+        assert_eq!(mapped.action_logs.len(), 1);
+        assert_eq!(mapped.action_logs[0].action_name, "open_url");
         assert_eq!(mapped.servers[0].tool_count, 4);
     }
 
@@ -305,6 +346,7 @@ mod tests {
                     summary: "Session orphaned after companion restart".into(),
                     error: "companion_restart_recovery".into(),
                 }],
+                recent_actions: Vec::new(),
             },
             ..DiagnosticsPayload::default()
         };

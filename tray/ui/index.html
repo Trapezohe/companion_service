@@ -7,603 +7,1276 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #0c1117;
-        --surface: #161b22;
-        --border: rgba(255, 255, 255, 0.08);
-        --text: #e6edf3;
-        --muted: #8b949e;
-        --green: #3fb950;
-        --yellow: #d29922;
-        --red: #f85149;
-        --blue: #58a6ff;
-        --green-bg: rgba(63, 185, 80, 0.1);
-        --yellow-bg: rgba(210, 153, 34, 0.1);
-        --red-bg: rgba(248, 81, 73, 0.1);
+        --window-bg: #08111b;
+        --panel: linear-gradient(180deg, rgba(15, 24, 37, 0.98), rgba(10, 17, 27, 0.98));
+        --panel-border: rgba(159, 182, 212, 0.18);
+        --panel-shadow: 0 24px 60px rgba(2, 6, 14, 0.58);
+        --card: rgba(16, 24, 36, 0.9);
+        --card-border: rgba(144, 170, 201, 0.14);
+        --text: #f1f5fb;
+        --muted: #a8b6c8;
+        --soft: #74859a;
+        --line: rgba(153, 176, 204, 0.14);
+        --surface: rgba(20, 31, 46, 0.82);
+        --surface-2: rgba(13, 22, 34, 0.92);
+        --blue: #5da0ff;
+        --blue-soft: rgba(93, 160, 255, 0.14);
+        --green: #50d39a;
+        --green-soft: rgba(80, 211, 154, 0.14);
+        --yellow: #ffbe5c;
+        --yellow-soft: rgba(255, 190, 92, 0.14);
+        --red: #ff8c8c;
+        --red-soft: rgba(255, 140, 140, 0.14);
+        --title-font: "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif;
+        --body-font: "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+        font-family: var(--body-font);
       }
 
-      * { box-sizing: border-box; margin: 0; }
+      * {
+        box-sizing: border-box;
+      }
+
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--window-bg);
+        color: var(--text);
+      }
 
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-        background: var(--bg);
-        color: var(--text);
-        min-height: 100vh;
+        padding: 16px 8px 8px;
         -webkit-user-select: none;
         user-select: none;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at top, rgba(102, 146, 209, 0.12), transparent 44%),
+          linear-gradient(180deg, #09121d 0%, #08111b 100%);
       }
 
-      /* ── Header ── */
-      .header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 16px 20px;
-        border-bottom: 1px solid var(--border);
-      }
-
-      .header-title {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--muted);
-        letter-spacing: 0.02em;
-      }
-
-      .menu-btn {
-        width: 32px;
-        height: 32px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--surface);
-        color: var(--muted);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 16px;
-        transition: background 120ms, color 120ms;
-        position: relative;
-      }
-
-      .menu-btn:hover { background: #1f2937; color: var(--text); }
-
-      /* ── Dropdown ── */
-      .dropdown-anchor { position: relative; }
-
-      .dropdown {
-        display: none;
-        position: absolute;
-        top: 40px;
-        right: 0;
-        width: 220px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
-        z-index: 100;
-        padding: 6px;
-        animation: dropdown-in 120ms ease-out;
-      }
-
-      .dropdown.open { display: block; }
-
-      .dropdown-item {
-        display: block;
-        width: 100%;
-        padding: 8px 12px;
-        border: none;
-        border-radius: 8px;
-        background: none;
-        color: var(--text);
+      button {
         font: inherit;
-        font-size: 13px;
-        text-align: left;
-        cursor: pointer;
-        transition: background 80ms;
       }
 
-      .dropdown-item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
-      .dropdown-item:disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
-      .dropdown-item.danger { color: var(--red); }
-      .dropdown-sep { height: 1px; background: var(--border); margin: 4px 8px; }
-
-      @keyframes dropdown-in {
-        from { opacity: 0; transform: translateY(-4px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-
-      /* ── Status Center ── */
-      .status-center {
+      .panel-shell {
+        position: relative;
+        width: 100%;
+        min-height: calc(100vh - 24px);
+        border-radius: 18px;
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        box-shadow: var(--panel-shadow);
+        padding: 12px 12px 10px;
         display: flex;
         flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 48px 20px 24px;
+        gap: 10px;
+        backdrop-filter: blur(24px);
+        isolation: isolate;
+        overflow: hidden;
       }
 
-      .status-dot {
-        width: 64px;
-        height: 64px;
-        border-radius: 50%;
-        margin-bottom: 20px;
-        position: relative;
-      }
-
-      .status-dot::after {
+      .panel-shell::before {
         content: "";
         position: absolute;
-        inset: -8px;
-        border-radius: 50%;
-        opacity: 0.2;
+        top: -7px;
+        left: 50%;
+        width: 16px;
+        height: 16px;
+        background: rgba(15, 24, 37, 0.98);
+        border-left: 1px solid rgba(159, 182, 212, 0.18);
+        border-top: 1px solid rgba(159, 182, 212, 0.18);
+        transform: translateX(-50%) rotate(45deg);
+        box-shadow: -6px -6px 16px rgba(2, 6, 14, 0.16);
       }
 
-      .status-dot.healthy { background: var(--green); }
-      .status-dot.healthy::after { background: var(--green); }
-      .status-dot.degraded, .status-dot.checking { background: var(--yellow); }
-      .status-dot.degraded::after, .status-dot.checking::after { background: var(--yellow); }
-      .status-dot.stopped, .status-dot.misconfigured { background: var(--red); }
-      .status-dot.stopped::after, .status-dot.misconfigured::after { background: var(--red); }
-
-      .status-dot.checking {
-        animation: pulse 1.6s ease-in-out infinite;
+      .banner {
+        display: none;
+        padding: 10px 11px;
+        border-radius: 12px;
+        background: var(--red-soft);
+        border: 1px solid rgba(255, 140, 140, 0.18);
+        color: var(--red);
+        font-size: 12px;
+        line-height: 1.45;
       }
 
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
-      }
-
-      .status-label {
-        font-size: 22px;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        margin-bottom: 6px;
-      }
-
-      .status-sub {
-        font-size: 13px;
-        color: var(--muted);
-        text-align: center;
-        max-width: 280px;
-        line-height: 1.5;
-      }
-
-      /* ── Info Cards ── */
-      .info-section {
-        padding: 0 20px 20px;
-        display: grid;
-        gap: 8px;
-      }
-
-      .info-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 12px 14px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-      }
-
-      .info-label {
-        font-size: 13px;
-        color: var(--muted);
-      }
-
-      .info-value {
-        font-size: 13px;
-        font-weight: 500;
-        font-variant-numeric: tabular-nums;
-      }
-
-      /* ── Action Button ── */
-      .primary-action {
-        padding: 0 20px 20px;
-      }
-
-      .primary-btn {
+      .banner.visible {
         display: block;
-        width: 100%;
-        padding: 12px;
-        border: none;
-        border-radius: 10px;
-        font: inherit;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: opacity 120ms;
       }
 
-      .primary-btn:hover:not(:disabled) { opacity: 0.85; }
-      .primary-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-      .primary-btn.start { background: var(--green); color: #0c1117; }
-      .primary-btn.stop { background: var(--red); color: #fff; }
-      .primary-btn.restart { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
-
-      /* ── Footer ── */
-      .footer {
-        padding: 12px 20px;
-        border-top: 1px solid var(--border);
-        display: flex;
+      .panel-header {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
         align-items: center;
-        justify-content: center;
-        gap: 6px;
       }
 
-      .footer-text {
+      .brand-wrap {
+        min-width: 0;
+      }
+
+      .brand-title {
+        font-family: var(--title-font);
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-subtitle {
+        margin-top: 4px;
         font-size: 11px;
         color: var(--muted);
       }
 
-      /* ── Banner ── */
-      .banner {
-        display: none;
-        margin: 12px 20px 0;
-        padding: 10px 14px;
-        border-radius: 10px;
-        border: 1px solid rgba(248, 81, 73, 0.2);
-        background: var(--red-bg);
-        color: var(--red);
-        font-size: 13px;
-        line-height: 1.4;
+      .header-meta {
+        display: flex;
+        align-items: flex-start;
       }
 
-      .banner.visible { display: block; }
-
-      /* ── Startup note ── */
-      .startup-note {
-        display: none;
-        margin: 0 20px 12px;
-        padding: 10px 14px;
-        border-radius: 10px;
-        border: 1px solid rgba(88, 166, 255, 0.15);
-        background: rgba(88, 166, 255, 0.06);
-        color: var(--blue);
-        font-size: 12px;
-        line-height: 1.4;
-      }
-
-      .startup-note.visible { display: block; }
-
-      /* ── Update banner ── */
-      .update-banner {
-        display: none;
-        margin: 12px 20px 0;
-        padding: 12px 14px;
-        border-radius: 10px;
-        border: 1px solid rgba(63, 185, 80, 0.2);
-        background: rgba(63, 185, 80, 0.08);
+      .update-button {
+        border: 1px solid transparent;
+        border-radius: 11px;
+        padding: 9px 12px;
+        min-width: 108px;
+        font-size: 11px;
+        font-weight: 700;
         cursor: pointer;
-        transition: background 120ms;
+        background: var(--blue);
+        color: #06111d;
+        box-shadow: 0 10px 20px rgba(40, 104, 197, 0.22);
       }
 
-      .update-banner:hover { background: rgba(63, 185, 80, 0.14); }
-      .update-banner.visible { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-
-      .update-text {
-        font-size: 13px;
-        color: var(--green);
-        font-weight: 500;
+      .update-button.install {
+        background: #eaf2ff;
+        color: #07111d;
+        box-shadow: 0 10px 20px rgba(200, 223, 255, 0.18);
       }
 
-      .update-action {
-        font-size: 12px;
-        color: var(--green);
-        opacity: 0.7;
+      .update-button.busy,
+      .update-button:disabled {
+        cursor: default;
+        opacity: 0.72;
+        box-shadow: none;
+      }
+
+      .update-button.secondary {
+        background: rgba(20, 31, 46, 0.92);
+        border: 1px solid var(--line);
+        color: var(--text);
+        box-shadow: none;
+      }
+
+      .panel-note {
+        padding: 10px 11px;
+        border-radius: 12px;
+        background: rgba(26, 40, 58, 0.92);
+        border: 1px solid rgba(98, 132, 171, 0.18);
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+
+      .panel-note[hidden] {
+        display: none;
+      }
+
+      .panel-card {
+        background: rgba(14, 23, 34, 0.72);
+        border: 1px solid rgba(144, 170, 201, 0.12);
+        border-radius: 14px;
+        padding: 11px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .card-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--soft);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .card-title {
+        margin-top: 2px;
+        font-family: var(--title-font);
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+      }
+
+      .status-main {
+        font-family: var(--title-font);
+        font-size: 26px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.03em;
+      }
+
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 650;
+        border: 1px solid transparent;
         white-space: nowrap;
+      }
+
+      .status-chip::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .status-healthy {
+        color: var(--green);
+        background: var(--green-soft);
+        border-color: rgba(80, 211, 154, 0.18);
+      }
+
+      .status-checking,
+      .status-pending_approval,
+      .status-running,
+      .status-degraded {
+        color: var(--yellow);
+        background: var(--yellow-soft);
+        border-color: rgba(255, 190, 92, 0.18);
+      }
+
+      .status-failed,
+      .status-stopped,
+      .status-misconfigured,
+      .status-cancelled {
+        color: var(--red);
+        background: var(--red-soft);
+        border-color: rgba(255, 140, 140, 0.18);
+      }
+
+      .status-detail {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .stat-box {
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 10px;
+        padding: 8px 0;
+        border: none;
+      }
+
+      .stat-label {
+        font-size: 10px;
+        color: var(--soft);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .stat-value {
+        margin-top: 4px;
+        font-family: var(--title-font);
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.15;
+      }
+
+      .single-line-box {
+        padding: 8px 0 0;
+        border-radius: 0;
+        background: transparent;
+        border: none;
+        font-size: 11px;
+        color: var(--muted);
+        border-top: 1px solid var(--line);
+      }
+
+      .list-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .list-item {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 0;
+        border-radius: 0;
+        background: transparent;
+        border: none;
+        border-top: 1px solid rgba(153, 176, 204, 0.1);
+      }
+
+      .list-stack > .list-item:first-child {
+        border-top: none;
+      }
+
+      .item-title {
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .item-subtitle {
+        margin-top: 3px;
+        font-size: 11px;
+        color: var(--soft);
+      }
+
+      .activity-item {
+        border-radius: 0;
+        padding: 8px 0;
+        background: transparent;
+        border: none;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        border-top: 1px solid rgba(153, 176, 204, 0.1);
+      }
+
+      .list-stack > .activity-item:first-child {
+        border-top: none;
+      }
+
+      .activity-item.pending_approval .activity-status {
+        color: var(--yellow);
+      }
+
+      .activity-item.failed .activity-status,
+      .activity-item.cancelled .activity-status {
+        color: var(--red);
+      }
+
+      .activity-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        align-items: center;
+        font-size: 10px;
+        color: var(--soft);
+      }
+
+      .activity-name {
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .activity-target,
+      .activity-detail {
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+
+      .activity-status {
+        font-weight: 700;
+      }
+
+      .panel-actions {
+        display: none;
+      }
+
+      .action-button {
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 10px 10px;
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+        background: var(--blue);
+        color: #06111d;
+      }
+
+      .action-button.secondary {
+        background: var(--surface);
+        border-color: var(--line);
+        color: var(--text);
+      }
+
+      .action-button.attention {
+        background: rgba(52, 41, 18, 0.78);
+        border-color: rgba(255, 190, 92, 0.2);
+        color: var(--yellow);
+      }
+
+      .action-button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      .empty-state {
+        border-radius: 10px;
+        padding: 10px 0 2px;
+        background: transparent;
+        border: none;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+        text-align: left;
+      }
+
+      .overlay {
+        position: absolute;
+        inset: 0;
+        padding: 12px 8px 8px;
+        background: rgba(3, 7, 13, 0.66);
+        display: none;
+        align-items: stretch;
+        justify-content: stretch;
+        backdrop-filter: blur(10px);
+        z-index: 5;
+      }
+
+      .overlay.open {
+        display: flex;
+      }
+
+      .overlay-card {
+        width: 100%;
+        max-height: calc(100vh - 20px);
+        overflow: auto;
+        background: linear-gradient(180deg, rgba(14, 22, 34, 0.98), rgba(10, 17, 27, 0.98));
+        border: 1px solid var(--card-border);
+        border-radius: 16px;
+        box-shadow: var(--panel-shadow);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .overlay-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .overlay-title {
+        font-family: var(--title-font);
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .close-button {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        width: 30px;
+        height: 30px;
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      .settings-row {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 12px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+      }
+
+      .settings-label {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .language-picker {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .language-option {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-2);
+        color: var(--text);
+        padding: 10px;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .language-option.active {
+        border-color: rgba(93, 160, 255, 0.24);
+        background: rgba(93, 160, 255, 0.12);
+      }
+
+      .language-name {
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .language-help {
+        margin-top: 3px;
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .overlay-actions {
+        display: grid;
+        gap: 8px;
+      }
+
+      .panel-body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding-right: 2px;
+      }
+
+      .panel-body::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      .panel-body::-webkit-scrollbar-thumb {
+        background: rgba(153, 176, 204, 0.18);
+        border-radius: 999px;
+      }
+
+      .panel-footer {
+        margin-top: auto;
+        padding-top: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-top: 1px solid rgba(153, 176, 204, 0.12);
+      }
+
+      .footer-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .footer-button {
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface);
+        color: var(--text);
+        padding: 7px 12px;
+        font-size: 11px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .footer-button.danger {
+        border-color: rgba(255, 140, 140, 0.18);
+        color: #ffd0d0;
+      }
+
+      .footer-note {
+        text-align: left;
+        font-size: 10px;
+        color: var(--soft);
+      }
+
+      .footer-meta {
+        display: none;
+      }
+
+      .version-meta {
+        font-size: 11px;
+        color: var(--soft);
       }
     </style>
   </head>
   <body>
-    <header class="header">
-      <span class="header-title">TRAPEZOHE COMPANION</span>
-      <div class="dropdown-anchor">
-        <button class="menu-btn" id="menuBtn">
-          <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="8" cy="3" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="8" cy="13" r="1"/>
-          </svg>
-        </button>
-        <div class="dropdown" id="dropdown"></div>
+    <div class="panel-shell">
+      <div class="banner" id="banner"></div>
+      <header class="panel-header">
+        <div class="brand-wrap">
+          <div class="brand-title" id="brandTitle">Companion</div>
+          <div class="brand-subtitle" id="brandSubtitle">Local companion control panel</div>
+        </div>
+        <div class="header-meta">
+          <button class="update-button secondary" id="updateButton" type="button"></button>
+        </div>
+      </header>
+
+      <div class="panel-note" id="updateNote" hidden></div>
+
+      <div class="panel-body">
+        <section class="panel-card" id="statusCard"></section>
+        <section class="panel-card" id="mcpCard"></section>
+        <section class="panel-card" id="activityCard"></section>
       </div>
-    </header>
 
-    <div class="banner" id="banner"></div>
-    <div class="update-banner" id="updateBanner"></div>
+      <div class="panel-footer">
+        <div class="version-meta" id="versionMeta"></div>
+        <div class="footer-actions">
+          <button class="footer-button" id="settingsButton" type="button"></button>
+          <button class="footer-button danger" id="quitQuickButton" type="button"></button>
+        </div>
+      </div>
+      <div class="footer-note" id="footerNote"></div>
+    </div>
 
-    <section class="status-center" id="statusCenter">
-      <div class="status-dot checking"></div>
-      <div class="status-label">Checking</div>
-      <div class="status-sub">Connecting to local companion runtime...</div>
-    </section>
+    <div class="overlay" id="settingsOverlay">
+      <div class="overlay-card">
+        <div class="overlay-header">
+          <div class="overlay-title" id="settingsTitle"></div>
+          <button class="close-button" id="closeSettingsButton" type="button">×</button>
+        </div>
 
-    <div class="startup-note" id="startupNote"></div>
+        <div class="settings-row">
+          <div class="settings-label" id="languageLabel"></div>
+          <div class="language-picker">
+            <button class="language-option" id="languageEn" data-language="en" type="button"></button>
+            <button class="language-option" id="languageZh" data-language="zh" type="button"></button>
+          </div>
+        </div>
 
-    <section class="info-section" id="infoSection"></section>
+        <div class="overlay-actions">
+          <button class="action-button secondary" id="logsEntryButton" type="button"></button>
+          <button class="action-button secondary" id="serviceActionButton" type="button"></button>
+          <button class="action-button secondary" id="releasePageButton" type="button"></button>
+          <button class="action-button secondary" id="autostartButton" type="button"></button>
+          <button class="action-button secondary" id="openFolderButton" type="button"></button>
+          <button class="action-button secondary" id="stopButton" type="button"></button>
+          <button class="action-button secondary" id="quitButton" type="button"></button>
+        </div>
+      </div>
+    </div>
 
-    <section class="primary-action" id="primaryAction"></section>
-
-    <footer class="footer">
-      <span class="footer-text" id="footerText">Awaiting status</span>
-    </footer>
+    <div class="overlay" id="logsOverlay">
+      <div class="overlay-card">
+        <div class="overlay-header">
+          <div class="overlay-title" id="logsTitle"></div>
+          <button class="close-button" id="closeLogsButton" type="button">×</button>
+        </div>
+        <div class="list-stack" id="allLogsList"></div>
+      </div>
+    </div>
 
     <script>
       const tauri = window.__TAURI__ || {};
       const invoke = tauri.core?.invoke;
       const listen = tauri.event?.listen;
 
-      const state = { snapshot: null, busy: false };
+      const TRANSLATIONS = {
+        en: {
+          brandTitle: 'Companion',
+          brandSubtitle: 'Local bridge for the browser extension',
+          checkUpdates: 'Check Updates',
+          installNow: 'Install Now',
+          downloading: 'Downloading...',
+          installing: 'Installing...',
+          retryUpdate: 'Retry Update',
+          upToDate: 'You are on the latest version.',
+          updateReady: 'A newer version is ready. Use the button above to install it.',
+          updateBusy: 'Update is being downloaded and installed.',
+          updateFailed: 'Update failed. You can retry here or open the release page from Settings.',
+          statusHeading: 'Service Status',
+          statusHealthy: 'Healthy',
+          statusChecking: 'Checking',
+          statusStopped: 'Stopped',
+          statusDegraded: 'Needs Attention',
+          statusMisconfigured: 'Setup Needed',
+          serviceHealthyDetail: 'Local companion is reachable and ready for plugin requests.',
+          serviceCheckingDetail: 'Checking the local runtime and refreshing current status.',
+          serviceStoppedDetail: 'The companion service is not running yet.',
+          pid: 'PID',
+          approvals: 'Approvals',
+          updated: 'Updated',
+          autostart: 'Autostart',
+          on: 'On',
+          off: 'Off',
+          yes: 'Yes',
+          no: 'No',
+          mcpHeading: 'MCP Services',
+          mcpSummary: '{connected} online / {tools} tools',
+          mcpRecent: 'Recently active',
+          noMcp: 'No MCP service data yet.',
+          activityHeading: 'Plugin Activity',
+          activitySubtitle: 'Recent actions requested by the browser extension',
+          noActivity: 'No recent plugin actions yet.',
+          showLogs: 'All Logs',
+          restart: 'Restart',
+          start: 'Start',
+          settings: 'Settings',
+          settingsTitle: 'Panel Settings',
+          languageLabel: 'Language',
+          languageEnglish: 'English',
+          languageEnglishHelp: 'Default',
+          languageChinese: '中文',
+          languageChineseHelp: 'Simplified Chinese',
+          disableAutostart: 'Disable Autostart',
+          enableAutostart: 'Enable Autostart',
+          openLogsFolder: 'Open Logs Folder',
+          stopService: 'Stop Service',
+          quit: 'Quit Companion',
+          quitShort: 'Quit',
+          logsTitle: 'Recent Plugin Activity',
+          footer: 'Click outside to close',
+          waitingApproval: 'Waiting for user approval',
+          requestCancelled: 'Request was rejected or cancelled',
+          actionRunning: 'Action is still running',
+          justNow: 'Just now',
+          minutesAgo: '{count}m ago',
+          hoursAgo: '{count}h ago',
+          statusSuccess: 'Success',
+          statusFailed: 'Failed',
+          statusPendingApproval: 'Pending Approval',
+          statusRunning: 'Running',
+          statusCancelled: 'Cancelled',
+          statusUnknown: 'Unknown',
+          latestVersion: 'Latest: v{version}',
+          currentVersion: 'Current: v{version}',
+          releaseFallback: 'Open release page',
+          versionFooter: 'Version v{version}',
+          toolCount: '{count} tool | {count} tools',
+          serverConnected: 'Connected',
+          serverIdle: 'Idle',
+          serverStarting: 'Starting',
+          serverDisconnected: 'Disconnected',
+          serverError: 'Error',
+          serverStopped: 'Stopped',
+          serverUnknown: 'Unknown',
+        },
+        zh: {
+          brandTitle: 'Companion',
+          brandSubtitle: '浏览器插件使用的本地桥接服务',
+          checkUpdates: '检查更新',
+          installNow: '立即安装',
+          downloading: '下载中...',
+          installing: '安装中...',
+          retryUpdate: '重试更新',
+          upToDate: '当前已经是最新版本。',
+          updateReady: '发现新版本，点击上方按钮可直接安装。',
+          updateBusy: '更新正在下载并安装。',
+          updateFailed: '更新失败，你可以在这里重试，或去设置里打开发布页。',
+          statusHeading: '运行状态',
+          statusHealthy: '正常',
+          statusChecking: '检查中',
+          statusStopped: '已停止',
+          statusDegraded: '需注意',
+          statusMisconfigured: '需设置',
+          serviceHealthyDetail: '本地 companion 已就绪，可以响应插件请求。',
+          serviceCheckingDetail: '正在检查本地运行状态并刷新当前信息。',
+          serviceStoppedDetail: 'companion 服务当前还没有运行。',
+          pid: 'PID',
+          approvals: '审批',
+          updated: '更新时间',
+          autostart: '开机启动',
+          on: '开',
+          off: '关',
+          yes: '是',
+          no: '否',
+          mcpHeading: 'MCP 服务',
+          mcpSummary: '{connected} 在线 / {tools} 个工具',
+          mcpRecent: '最近活跃',
+          noMcp: '暂时还没有 MCP 服务信息。',
+          activityHeading: '插件动作日志',
+          activitySubtitle: '这里显示插件请求 companion 执行的最近动作',
+          noActivity: '最近还没有插件动作记录。',
+          showLogs: '全部日志',
+          restart: '重启',
+          start: '启动',
+          settings: '设置',
+          settingsTitle: '面板设置',
+          languageLabel: '语言',
+          languageEnglish: 'English',
+          languageEnglishHelp: '默认',
+          languageChinese: '中文',
+          languageChineseHelp: '简体中文',
+          disableAutostart: '关闭开机启动',
+          enableAutostart: '开启开机启动',
+          openLogsFolder: '打开日志文件夹',
+          stopService: '停止服务',
+          quit: '退出 Companion',
+          quitShort: '退出',
+          logsTitle: '最近插件动作日志',
+          footer: '点面板外即可关闭',
+          waitingApproval: '等待用户审批',
+          requestCancelled: '请求已被拒绝或取消',
+          actionRunning: '动作仍在执行中',
+          justNow: '刚刚',
+          minutesAgo: '{count} 分钟前',
+          hoursAgo: '{count} 小时前',
+          statusSuccess: '成功',
+          statusFailed: '失败',
+          statusPendingApproval: '审批中',
+          statusRunning: '执行中',
+          statusCancelled: '已取消',
+          statusUnknown: '未知',
+          latestVersion: '最新：v{version}',
+          currentVersion: '当前：v{version}',
+          releaseFallback: '打开发布页',
+          versionFooter: '版本 v{version}',
+          toolCount: '{count} 个工具',
+          serverConnected: '已连接',
+          serverIdle: '空闲',
+          serverStarting: '启动中',
+          serverDisconnected: '已断开',
+          serverError: '错误',
+          serverStopped: '已停止',
+          serverUnknown: '未知',
+        },
+      };
+
+      const state = {
+        snapshot: null,
+        busy: false,
+      };
 
       const $ = (id) => document.getElementById(id);
-      const esc = (v) => String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const esc = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 
-      function relativeTime(ts) {
-        if (!ts) return 'Awaiting status';
+      function languageOf(snapshot = state.snapshot) {
+        return snapshot?.language === 'zh' ? 'zh' : 'en';
+      }
+
+      function t(key, vars = {}, language = languageOf()) {
+        const table = TRANSLATIONS[language] || TRANSLATIONS.en;
+        let value = table[key] || TRANSLATIONS.en[key] || key;
+        for (const [name, replacement] of Object.entries(vars)) {
+          value = value.replaceAll(`{${name}}`, String(replacement));
+        }
+        return value;
+      }
+
+      function statusKind(snapshot) {
+        return snapshot?.state?.kind || 'checking';
+      }
+
+      function formatRelativeTime(ts, language = languageOf()) {
+        if (!ts) return t('justNow', {}, language);
         const diff = Math.max(0, Date.now() - Number(ts));
-        if (diff < 10000) return 'Updated just now';
-        const s = Math.floor(diff / 1000);
-        if (s < 60) return `Updated ${s}s ago`;
-        const m = Math.floor(s / 60);
-        if (m < 60) return `Updated ${m}m ago`;
-        return `Updated ${Math.floor(m / 60)}h ago`;
-      }
-
-      function statusMeta(snapshot) {
-        const kind = snapshot?.state?.kind || 'checking';
-        const map = {
-          healthy:       { label: 'Running',       css: 'healthy' },
-          degraded:      { label: 'Needs Attention', css: 'degraded' },
-          stopped:       { label: 'Stopped',       css: 'stopped' },
-          misconfigured: { label: 'Setup Needed',  css: 'misconfigured' },
-          checking:      { label: 'Checking',      css: 'checking' },
-        };
-        return map[kind] || map.checking;
-      }
-
-      function statusSub(snapshot) {
-        const kind = snapshot?.state?.kind || 'checking';
-        const reason = snapshot?.state?.reason;
-        if (reason) return reason;
-        if (kind === 'healthy') {
-          const port = snapshot?.endpoint?.match(/:(\d+)/)?.[1] || '41591';
-          return `Service is online at port ${port}`;
-        }
-        if (kind === 'stopped') return 'Service is not running';
-        if (kind === 'misconfigured') return 'Configuration needs repair';
-        return 'Connecting to local runtime...';
-      }
-
-      function renderStatus(snapshot) {
-        const meta = statusMeta(snapshot);
-        const center = $('statusCenter');
-        center.innerHTML = `
-          <div class="status-dot ${meta.css}"></div>
-          <div class="status-label">${esc(meta.label)}</div>
-          <div class="status-sub">${esc(statusSub(snapshot))}</div>
-        `;
-      }
-
-      function renderInfo(snapshot) {
-        const kind = snapshot?.state?.kind || 'checking';
-        const health = snapshot?.health || snapshot?.state || {};
-        const diag = snapshot?.diagnostics || {};
-        const rows = [];
-
-        const version = health.version || snapshot?.state?.version;
-        if (version) rows.push(['Version', `v${version}`]);
-
-        const port = snapshot?.endpoint?.match(/:(\d+)/)?.[1];
-        if (port) rows.push(['Port', port]);
-
-        const mcpServers = diag.connected_mcp_servers ?? health.mcp_servers;
-        if (mcpServers != null) rows.push(['MCP Servers', mcpServers]);
-
-        const mcpTools = diag.total_mcp_tools ?? health.mcp_tools;
-        if (mcpTools != null) rows.push(['MCP Tools', mcpTools]);
-
-        const sessions = diag.running_acp_sessions;
-        if (sessions != null) rows.push(['Active Sessions', sessions]);
-
-        const approvals = diag.pending_approvals;
-        if (approvals != null && approvals > 0) rows.push(['Pending Approvals', approvals]);
-
-        const pid = health.pid ?? snapshot?.state?.pid;
-        if (pid && kind === 'healthy') rows.push(['PID', pid]);
-
-        $('infoSection').innerHTML = rows.length
-          ? rows.map(([l, v]) => `
-              <div class="info-row">
-                <span class="info-label">${esc(l)}</span>
-                <span class="info-value">${esc(v)}</span>
-              </div>`).join('')
-          : '';
-      }
-
-      function renderStartupNote(snapshot) {
-        const note = snapshot?.startup?.note;
-        const phase = snapshot?.startup?.phase;
-        const el = $('startupNote');
-        if (note && (phase === 'ensuring' || phase === 'attention')) {
-          el.textContent = note;
-          el.classList.add('visible');
-        } else {
-          el.classList.remove('visible');
-        }
-      }
-
-      function renderPrimaryAction(snapshot) {
-        const actions = snapshot?.actions || {};
-        const kind = snapshot?.state?.kind || 'checking';
-        let html = '';
-
-        if (kind === 'stopped' || kind === 'misconfigured') {
-          html = `<button class="primary-btn start" data-cmd="start_service" ${!actions.can_start || state.busy ? 'disabled' : ''}>Start Service</button>`;
-        } else if (kind === 'healthy') {
-          html = `<button class="primary-btn restart" data-cmd="restart_service" ${!actions.can_restart || state.busy ? 'disabled' : ''}>Restart Service</button>`;
-        }
-
-        $('primaryAction').innerHTML = html;
-      }
-
-      function renderDropdown(snapshot) {
-        const actions = snapshot?.actions || {};
-        const kind = snapshot?.state?.kind || 'checking';
-        const autostartEnabled = Boolean(snapshot?.autostart?.enabled);
-        const items = [];
-
-        if (kind === 'healthy' || kind === 'degraded') {
-          items.push({ label: 'Stop Service', cmd: 'stop_service', disabled: !actions.can_stop, cls: 'danger' });
-          items.push({ label: 'Restart Service', cmd: 'restart_service', disabled: !actions.can_restart });
-        } else {
-          items.push({ label: 'Start Service', cmd: 'start_service', disabled: !actions.can_start });
-        }
-
-        items.push({ sep: true });
-        items.push({ label: 'Refresh Status', cmd: 'refresh_status_snapshot' });
-        items.push({ label: 'Run Self-Check', cmd: 'run_self_check', disabled: !actions.can_run_self_check });
-        items.push({ label: 'Open Logs Folder', cmd: 'open_logs', disabled: !actions.can_open_logs });
-        items.push({ sep: true });
-        items.push({
-          label: autostartEnabled ? 'Disable Autostart' : 'Enable Autostart',
-          cmd: 'set_autostart_enabled',
-          payload: { enabled: !autostartEnabled },
-          disabled: !actions.can_toggle_autostart,
-        });
-
-        // Self-check repair actions
-        const repairs = snapshot?.self_check?.repair_actions || [];
-        if (repairs.length) {
-          items.push({ sep: true });
-          for (const r of repairs) {
-            items.push({ label: `Repair: ${r.title || r.id}`, repair: r.id });
-          }
-        }
-
-        items.push({ sep: true });
-        items.push({ label: 'Check for Updates', cmd: 'check_update' });
-        items.push({ label: 'Quit Tray', special: 'quit' });
-
-        $('dropdown').innerHTML = items.map((item) => {
-          if (item.sep) return '<div class="dropdown-sep"></div>';
-          const dis = item.disabled || state.busy ? 'disabled' : '';
-          const cls = item.cls ? ` ${item.cls}` : '';
-          if (item.repair) {
-            return `<button class="dropdown-item${cls}" data-repair="${esc(item.repair)}" ${dis}>${esc(item.label)}</button>`;
-          }
-          if (item.special === 'quit') {
-            return `<button class="dropdown-item" data-quit="1">${esc(item.label)}</button>`;
-          }
-          const payload = item.payload ? ` data-payload='${JSON.stringify(item.payload)}'` : '';
-          return `<button class="dropdown-item${cls}" data-cmd="${esc(item.cmd)}"${payload} ${dis}>${esc(item.label)}</button>`;
-        }).join('');
+        if (diff < 60_000) return t('justNow', {}, language);
+        const minutes = Math.floor(diff / 60_000);
+        if (minutes < 60) return t('minutesAgo', { count: minutes }, language);
+        return t('hoursAgo', { count: Math.floor(minutes / 60) }, language);
       }
 
       function isVersionNewer(latest, current) {
         if (!latest || !current) return false;
-        const parse = (v) => (v.replace(/^v/, '')).split('.').map(Number);
-        const l = parse(latest), c = parse(current);
-        if (l.length < 3 || c.length < 3) return false;
-        for (let i = 0; i < 3; i++) {
-          if (l[i] > c[i]) return true;
-          if (l[i] < c[i]) return false;
+        const parse = (value) => value.replace(/^v/, '').split('.').map((part) => Number(part || 0));
+        const left = parse(latest);
+        const right = parse(current);
+        const size = Math.max(left.length, right.length);
+        for (let index = 0; index < size; index += 1) {
+          const a = left[index] || 0;
+          const b = right[index] || 0;
+          if (a > b) return true;
+          if (a < b) return false;
         }
         return false;
       }
 
-      function renderUpdate(snapshot) {
-        const update = snapshot?.update;
-        const el = $('updateBanner');
-        // Double-check: only show banner if latest_version is actually newer
-        // than current_version. This prevents stale update state from showing
-        // after the user has already updated.
-        const trulyNewer = update?.available
-          && isVersionNewer(update.latest_version, update.current_version);
-        if (trulyNewer) {
-          el.innerHTML = `
-            <span class="update-text">v${esc(update.latest_version)} available</span>
-            <span class="update-action">Download &rarr;</span>
-          `;
-          el.classList.add('visible');
-        } else {
-          el.classList.remove('visible');
+      function actionLogs(snapshot = state.snapshot) {
+        return snapshot?.diagnostics?.action_logs || snapshot?.diagnostics?.actionLogs || [];
+      }
+
+      function activeServers(snapshot = state.snapshot) {
+        return (snapshot?.diagnostics?.servers || []).slice(0, 2);
+      }
+
+      function localizedStateLabel(kind, language = languageOf()) {
+        const map = {
+          healthy: t('statusHealthy', {}, language),
+          checking: t('statusChecking', {}, language),
+          stopped: t('statusStopped', {}, language),
+          degraded: t('statusDegraded', {}, language),
+          misconfigured: t('statusMisconfigured', {}, language),
+        };
+        return map[kind] || t('statusChecking', {}, language);
+      }
+
+      function localizedActionStatus(status, language = languageOf()) {
+        const map = {
+          success: t('statusSuccess', {}, language),
+          failed: t('statusFailed', {}, language),
+          pending_approval: t('statusPendingApproval', {}, language),
+          running: t('statusRunning', {}, language),
+          cancelled: t('statusCancelled', {}, language),
+          unknown: t('statusUnknown', {}, language),
+        };
+        return map[status] || map.unknown;
+      }
+
+      function toolCountLabel(count, language = languageOf()) {
+        const normalized = Number(count) || 0;
+        if (language === 'en') {
+          return normalized === 1 ? '1 tool' : `${normalized} tools`;
         }
+        return t('toolCount', { count: normalized }, language);
+      }
+
+      function serverStatusClass(status) {
+        const normalized = String(status || '').trim().toLowerCase();
+        if (['connected', 'ready', 'active', 'idle'].includes(normalized)) return 'healthy';
+        if (['starting', 'connecting', 'running'].includes(normalized)) return 'checking';
+        if (['disconnected', 'stopped'].includes(normalized)) return 'stopped';
+        if (['error', 'failed'].includes(normalized)) return 'failed';
+        return 'checking';
+      }
+
+      function localizedServerStatus(status, language = languageOf()) {
+        const normalized = String(status || '').trim().toLowerCase();
+        const map = {
+          connected: t('serverConnected', {}, language),
+          ready: t('serverConnected', {}, language),
+          active: t('serverConnected', {}, language),
+          idle: t('serverIdle', {}, language),
+          starting: t('serverStarting', {}, language),
+          connecting: t('serverStarting', {}, language),
+          running: t('statusRunning', {}, language),
+          disconnected: t('serverDisconnected', {}, language),
+          stopped: t('serverStopped', {}, language),
+          error: t('serverError', {}, language),
+          failed: t('statusFailed', {}, language),
+        };
+        return map[normalized] || t('serverUnknown', {}, language);
+      }
+
+      function statusDescription(snapshot = state.snapshot, language = languageOf(snapshot)) {
+        const kind = statusKind(snapshot);
+        if (kind === 'healthy') return '';
+        if (kind === 'checking') return t('serviceCheckingDetail', {}, language);
+        if (kind === 'stopped') return t('serviceStoppedDetail', {}, language);
+        return snapshot?.state?.reason || snapshot?.last_error || snapshot?.lastError || updateNote(snapshot);
+      }
+
+      function primaryServiceCommand(snapshot = state.snapshot) {
+        const kind = statusKind(snapshot);
+        if (kind === 'stopped' || kind === 'misconfigured') {
+          return { cmd: 'start_service', label: t('start') };
+        }
+        return { cmd: 'restart_service', label: t('restart') };
+      }
+
+      function updateButtonModel(snapshot = state.snapshot) {
+        const update = snapshot?.update;
+        if (!update) {
+          return { cmd: 'check_update', label: t('checkUpdates'), className: 'secondary', disabled: state.busy };
+        }
+        if (update.status === 'downloading') {
+          return { cmd: null, label: t('downloading'), className: 'busy', disabled: true };
+        }
+        if (update.status === 'installing' || update.status === 'installed') {
+          return { cmd: null, label: t('installing'), className: 'busy install', disabled: true };
+        }
+        if (update.status === 'error') {
+          return { cmd: 'check_update', label: t('retryUpdate'), className: 'secondary', disabled: state.busy };
+        }
+        if (update.available && update.can_install && isVersionNewer(update.latest_version, update.current_version)) {
+          return { cmd: 'install_update', label: t('installNow'), className: 'install', disabled: state.busy };
+        }
+        return { cmd: 'check_update', label: t('checkUpdates'), className: 'secondary', disabled: state.busy };
+      }
+
+      function updateNote(snapshot = state.snapshot) {
+        const update = snapshot?.update;
+        if (!update) return '';
+        if (update.status === 'error') return update.last_error || t('updateFailed');
+        if (update.status === 'downloading' || update.status === 'installing' || update.status === 'installed') {
+          return t('updateBusy');
+        }
+        if (update.available && update.can_install && isVersionNewer(update.latest_version, update.current_version)) {
+          return `${t('latestVersion', { version: update.latest_version })} · ${t('updateReady')}`;
+        }
+        return '';
+      }
+
+      function shouldShowUpdateNote(snapshot = state.snapshot) {
+        return Boolean(updateNote(snapshot));
+      }
+
+      function setBanner(message, visible) {
+        const banner = $('banner');
+        banner.textContent = message || '';
+        banner.classList.toggle('visible', Boolean(visible && message));
+      }
+
+      function renderStaticText(snapshot) {
+        const language = languageOf(snapshot);
+        document.documentElement.lang = language;
+        document.title = t('brandTitle', {}, language);
+        $('brandTitle').textContent = t('brandTitle', {}, language);
+        $('brandSubtitle').textContent = t('brandSubtitle', {}, language);
+        $('settingsTitle').textContent = t('settingsTitle', {}, language);
+        $('languageLabel').textContent = t('languageLabel', {}, language);
+        $('languageEn').innerHTML = `<div class="language-name">${esc(t('languageEnglish', {}, language))}</div><div class="language-help">${esc(t('languageEnglishHelp', {}, language))}</div>`;
+        $('languageZh').innerHTML = `<div class="language-name">${esc(t('languageChinese', {}, language))}</div><div class="language-help">${esc(t('languageChineseHelp', {}, language))}</div>`;
+        $('settingsButton').textContent = t('settings', {}, language);
+        $('quitQuickButton').textContent = t('quitShort', {}, language);
+        $('logsTitle').textContent = t('logsTitle', {}, language);
+        $('footerNote').textContent = t('footer', {}, language);
+      }
+
+      function renderHeader(snapshot) {
+        const updateModel = updateButtonModel(snapshot);
+        $('updateNote').textContent = updateNote(snapshot);
+        $('updateNote').hidden = !shouldShowUpdateNote(snapshot);
+        const button = $('updateButton');
+        button.textContent = updateModel.label;
+        button.dataset.cmd = updateModel.cmd || '';
+        button.className = `update-button ${updateModel.className}`.trim();
+        button.disabled = Boolean(updateModel.disabled || !updateModel.cmd);
+      }
+
+      function renderFooter(snapshot) {
+        const language = languageOf(snapshot);
+        const version = snapshot?.state?.version || snapshot?.health?.version || snapshot?.update?.current_version || '0.1.16';
+        $('versionMeta').textContent = t('versionFooter', { version }, language);
+      }
+
+      function renderStatusCard(snapshot) {
+        const language = languageOf(snapshot);
+        const kind = statusKind(snapshot);
+        const autostartEnabled = Boolean(snapshot?.autostart?.enabled);
+        const checkedAt = snapshot?.checked_at_ms || snapshot?.checkedAtMs;
+        const pid = snapshot?.health?.pid ?? snapshot?.state?.pid ?? '-';
+        const approvals = snapshot?.diagnostics?.pending_approvals ?? snapshot?.diagnostics?.pendingApprovals ?? 0;
+        const detail = statusDescription(snapshot, language);
+
+        const card = $('statusCard');
+        card.className = `panel-card status-card state-${kind}`;
+        card.innerHTML = `
+          <div class="card-heading">
+            <div>
+              <div class="eyebrow">${esc(t('statusHeading', {}, language))}</div>
+              <div class="status-main">${esc(localizedStateLabel(kind, language))}</div>
+            </div>
+          </div>
+          ${detail ? `<div class="status-detail">${esc(detail)}</div>` : ''}
+          <div class="stats-grid">
+            <div class="stat-box">
+              <div class="stat-label">${esc(t('pid', {}, language))}</div>
+              <div class="stat-value">${esc(pid)}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">${esc(t('approvals', {}, language))}</div>
+              <div class="stat-value">${esc(approvals)}</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">${esc(t('updated', {}, language))}</div>
+              <div class="stat-value">${esc(formatRelativeTime(checkedAt, language))}</div>
+            </div>
+          </div>
+          <div class="single-line-box">${esc(t('autostart', {}, language))}: ${esc(autostartEnabled ? t('on', {}, language) : t('off', {}, language))}</div>
+        `;
+      }
+
+      function renderMcpCard(snapshot) {
+        const language = languageOf(snapshot);
+        const connected = snapshot?.diagnostics?.connected_mcp_servers ?? snapshot?.diagnostics?.connectedMcpServers ?? 0;
+        const tools = snapshot?.diagnostics?.total_mcp_tools ?? snapshot?.diagnostics?.totalMcpTools ?? 0;
+        const servers = activeServers(snapshot);
+        $('mcpCard').className = 'panel-card';
+
+        let content = '';
+        if (!servers.length) {
+          content = `<div class="empty-state">${esc(t('noMcp', {}, language))}</div>`;
+        } else {
+          content = servers.map((server) => `
+            <div class="list-item">
+              <div>
+                <div class="item-title">${esc(server.name || 'MCP')}</div>
+                <div class="item-subtitle">${esc(toolCountLabel(server.tool_count || server.toolCount || 0, language))}</div>
+              </div>
+              <div class="status-chip status-${esc(serverStatusClass(server.status))}">${esc(localizedServerStatus(server.status, language))}</div>
+            </div>
+          `).join('');
+        }
+
+        $('mcpCard').innerHTML = `
+          <div class="card-heading">
+            <div>
+              <div class="eyebrow">${esc(t('mcpHeading', {}, language))}</div>
+              <div class="card-title">${esc(t('mcpSummary', { connected, tools }, language))}</div>
+            </div>
+            <div class="eyebrow">${esc(t('mcpRecent', {}, language))}</div>
+          </div>
+          <div class="list-stack">${content}</div>
+        `;
+      }
+
+      function activityItem(entry, language) {
+        const status = entry.status || 'unknown';
+        const target = entry.target ? `<div class="activity-target">${esc(entry.target)}</div>` : '';
+        const detail = entry.detail ? `<div class="activity-detail">${esc(entry.detail)}</div>` : '';
+        return `
+          <div class="activity-item ${esc(status)}">
+            <div class="activity-top">
+              <span>${esc(formatRelativeTime(entry.timestamp, language))}</span>
+              <span class="activity-status">${esc(localizedActionStatus(status, language))}</span>
+            </div>
+            <div class="activity-name">${esc(entry.action_name || entry.actionName || 'action')}</div>
+            ${target}
+            ${detail}
+          </div>
+        `;
+      }
+
+      function renderActivityCard(snapshot) {
+        const language = languageOf(snapshot);
+        const entries = actionLogs(snapshot).slice(0, 3);
+        $('activityCard').className = 'panel-card';
+        const content = entries.length
+          ? entries.map((entry) => activityItem(entry, language)).join('')
+          : `<div class="empty-state">${esc(t('noActivity', {}, language))}</div>`;
+
+        $('activityCard').innerHTML = `
+          <div class="card-heading">
+            <div>
+              <div class="card-title">${esc(t('activityHeading', {}, language))}</div>
+            </div>
+          </div>
+          <div class="list-stack">${content}</div>
+        `;
+      }
+
+      function renderLogsOverlay(snapshot) {
+        const language = languageOf(snapshot);
+        const entries = actionLogs(snapshot);
+        $('allLogsList').innerHTML = entries.length
+          ? entries.map((entry) => activityItem(entry, language)).join('')
+          : `<div class="empty-state">${esc(t('noActivity', {}, language))}</div>`;
+      }
+
+      function renderSettings(snapshot) {
+        const language = languageOf(snapshot);
+        const autostartEnabled = Boolean(snapshot?.autostart?.enabled);
+        const service = primaryServiceCommand(snapshot);
+        $('languageEn').classList.toggle('active', language === 'en');
+        $('languageZh').classList.toggle('active', language === 'zh');
+        $('logsEntryButton').textContent = t('showLogs', {}, language);
+        $('serviceActionButton').textContent = service.label;
+        $('serviceActionButton').dataset.cmd = service.cmd;
+        $('releasePageButton').textContent = t('releaseFallback', {}, language);
+        $('releasePageButton').className = `action-button ${snapshot?.update?.status === 'error' ? 'attention' : 'secondary'}`.trim();
+        $('autostartButton').textContent = autostartEnabled ? t('disableAutostart', {}, language) : t('enableAutostart', {}, language);
+        $('openFolderButton').textContent = t('openLogsFolder', {}, language);
+        $('stopButton').textContent = t('stopService', {}, language);
+        $('quitButton').textContent = t('quit', {}, language);
       }
 
       function render(snapshot) {
         state.snapshot = snapshot;
-        renderUpdate(snapshot);
-        renderStatus(snapshot);
-        renderInfo(snapshot);
-        renderStartupNote(snapshot);
-        renderPrimaryAction(snapshot);
-        renderDropdown(snapshot);
-        $('footerText').textContent = relativeTime(snapshot?.checked_at_ms);
-      }
-
-      function setBanner(msg, visible) {
-        const el = $('banner');
-        el.textContent = msg || '';
-        el.classList.toggle('visible', Boolean(visible && msg));
+        renderStaticText(snapshot);
+        renderHeader(snapshot);
+        renderStatusCard(snapshot);
+        renderMcpCard(snapshot);
+        renderActivityCard(snapshot);
+        renderLogsOverlay(snapshot);
+        renderSettings(snapshot);
+        renderFooter(snapshot);
       }
 
       async function runCommand(cmd, payload) {
-        if (!invoke) { setBanner('Tauri bridge unavailable.', true); return; }
+        if (!invoke) {
+          setBanner('Tauri bridge unavailable.', true);
+          return;
+        }
         state.busy = true;
-        render(state.snapshot || {});
-        setBanner('', false);
         try {
           const result = await invoke(cmd, payload || {});
-          if (result?.state) render(result);
-        } catch (e) {
-          setBanner(String(e), true);
+          if (result?.state || result?.diagnostics || result?.actions) {
+            render(result);
+          } else if (state.snapshot) {
+            render(state.snapshot);
+          }
+          setBanner('', false);
+        } catch (error) {
+          setBanner(String(error), true);
         } finally {
           state.busy = false;
-          render(state.snapshot || {});
         }
       }
 
-      // Menu toggle
-      const menuBtn = $('menuBtn');
-      const dropdown = $('dropdown');
-      menuBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        dropdown.classList.toggle('open');
-      });
-      document.addEventListener('click', () => dropdown.classList.remove('open'));
-      dropdown.addEventListener('click', (e) => e.stopPropagation());
+      function openOverlay(id) {
+        $(id).classList.add('open');
+      }
 
-      // Dropdown actions
-      dropdown.addEventListener('click', async (e) => {
-        const btn = e.target.closest('button');
-        if (!btn || btn.disabled) return;
-        dropdown.classList.remove('open');
+      function closeOverlay(id) {
+        $(id).classList.remove('open');
+      }
 
-        if (btn.dataset.quit) {
-          if (invoke) await invoke('quit_tray').catch(() => {});
-          return;
-        }
-        if (btn.dataset.repair) {
-          await runCommand('run_repair', { action: btn.dataset.repair });
-          return;
-        }
-        if (btn.dataset.cmd) {
-          const payload = btn.dataset.payload ? JSON.parse(btn.dataset.payload) : undefined;
-          await runCommand(btn.dataset.cmd, payload);
-        }
+      $('updateButton').addEventListener('click', async (event) => {
+        const cmd = event.currentTarget.dataset.cmd;
+        if (!cmd) return;
+        await runCommand(cmd);
       });
 
-      // Update banner click
-      $('updateBanner').addEventListener('click', async () => {
-        if (invoke) await invoke('open_release_page').catch(() => {});
+      $('settingsButton').addEventListener('click', () => openOverlay('settingsOverlay'));
+      $('closeSettingsButton').addEventListener('click', () => closeOverlay('settingsOverlay'));
+      $('closeLogsButton').addEventListener('click', () => closeOverlay('logsOverlay'));
+
+      $('logsEntryButton').addEventListener('click', () => openOverlay('logsOverlay'));
+
+      $('serviceActionButton').addEventListener('click', async (event) => {
+        const cmd = event.currentTarget.dataset.cmd;
+        if (!cmd) return;
+        await runCommand(cmd);
       });
 
-      // Primary action button
-      $('primaryAction').addEventListener('click', async (e) => {
-        const btn = e.target.closest('button[data-cmd]');
-        if (!btn || btn.disabled) return;
-        await runCommand(btn.dataset.cmd);
+      $('languageEn').addEventListener('click', async () => {
+        await runCommand('set_display_language', { language: 'en' });
+      });
+      $('languageZh').addEventListener('click', async () => {
+        await runCommand('set_display_language', { language: 'zh' });
       });
 
-      // Bootstrap
+      $('autostartButton').addEventListener('click', async () => {
+        const enabled = Boolean(state.snapshot?.autostart?.enabled);
+        await runCommand('set_autostart_enabled', { enabled: !enabled });
+      });
+      $('releasePageButton').addEventListener('click', async () => {
+        await runCommand('open_release_page');
+      });
+      $('openFolderButton').addEventListener('click', async () => {
+        await runCommand('open_logs');
+      });
+      $('stopButton').addEventListener('click', async () => {
+        await runCommand('stop_service');
+      });
+      $('quitQuickButton').addEventListener('click', async () => {
+        await runCommand('quit_tray');
+      });
+      $('quitButton').addEventListener('click', async () => {
+        await runCommand('quit_tray');
+      });
+
+      for (const id of ['settingsOverlay', 'logsOverlay']) {
+        $(id).addEventListener('click', (event) => {
+          if (event.target === event.currentTarget) closeOverlay(id);
+        });
+      }
+
       async function bootstrap() {
         if (!invoke) {
           setBanner('This panel must run inside the Tauri tray shell.', true);
@@ -612,13 +1285,13 @@
         const initial = await invoke('get_status_snapshot');
         render(initial);
         if (listen) {
-          await listen('companion://status', (e) => {
-            if (e?.payload) render(e.payload);
+          await listen('companion://status', (event) => {
+            if (event?.payload) render(event.payload);
           });
         }
       }
 
-      bootstrap().catch((e) => setBanner(String(e), true));
+      bootstrap().catch((error) => setBanner(String(error), true));
     </script>
   </body>
 </html>
