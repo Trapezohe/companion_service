@@ -133,13 +133,30 @@ jobs:
 
       - name: Import Apple Developer ID certificates
         run: |
+          OPENSSL_BIN="$(command -v openssl || true)"
+          if [[ -n "${OPENSSL_BIN}" ]] && "${OPENSSL_BIN}" pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
+            :
+          else
+            BREW_OPENSSL_PREFIX="$(brew --prefix openssl@3 2>/dev/null || true)"
+            if [[ -n "${BREW_OPENSSL_PREFIX}" && -x "${BREW_OPENSSL_PREFIX}/bin/openssl" ]] && "${BREW_OPENSSL_PREFIX}/bin/openssl" pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
+              OPENSSL_BIN="${BREW_OPENSSL_PREFIX}/bin/openssl"
+            fi
+          fi
+
+          if [[ -z "${OPENSSL_BIN}" ]]; then
+            echo "Failed to find an OpenSSL binary that supports pkcs12 -legacy." >&2
+            (command -v openssl && openssl version) || true
+            (command -v brew && brew --prefix openssl@3) || true
+            exit 1
+          fi
+
           KEYCHAIN_PATH="${RUNNER_TEMP}/trapezohe-build.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          KEYCHAIN_PASSWORD="$("${OPENSSL_BIN}" rand -hex 16)"
           APP_P12="${RUNNER_TEMP}/developer-id-app.p12"
           APP_PEM="${RUNNER_TEMP}/developer-id-app.pem"
           INSTALLER_P12="${RUNNER_TEMP}/developer-id-installer.p12"
           INSTALLER_PEM="${RUNNER_TEMP}/developer-id-installer.pem"
-          export APP_P12 APP_PEM INSTALLER_P12 INSTALLER_PEM
+          export APP_P12 APP_PEM INSTALLER_P12 INSTALLER_PEM OPENSSL_BIN
 
           python3 - <<'PY'
           import base64
@@ -156,13 +173,13 @@ jobs:
           security list-keychains -d user -s "${KEYCHAIN_PATH}" login.keychain-db
           security default-keychain -d user -s "${KEYCHAIN_PATH}"
 
-          openssl pkcs12 -legacy \
+          "${OPENSSL_BIN}" pkcs12 -legacy \
             -in "${APP_P12}" \
             -passin "pass:${APPLE_DEVELOPER_ID_APP_P12_PASSWORD}" \
             -nodes \
             -out "${APP_PEM}"
 
-          openssl pkcs12 -legacy \
+          "${OPENSSL_BIN}" pkcs12 -legacy \
             -in "${INSTALLER_P12}" \
             -passin "pass:${APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD}" \
             -nodes \
@@ -183,8 +200,8 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
           security find-identity -v -p codesigning "${KEYCHAIN_PATH}"
 
-          DETECTED_APP_IDENTITY="$(openssl x509 -in "${APP_PEM}" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=.*CN=//p')"
-          DETECTED_INSTALLER_IDENTITY="$(openssl x509 -in "${INSTALLER_PEM}" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=.*CN=//p')"
+          DETECTED_APP_IDENTITY="$("${OPENSSL_BIN}" x509 -in "${APP_PEM}" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=.*CN=//p')"
+          DETECTED_INSTALLER_IDENTITY="$("${OPENSSL_BIN}" x509 -in "${INSTALLER_PEM}" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=.*CN=//p')"
 
           if [[ -z "${DETECTED_APP_IDENTITY}" || -z "${DETECTED_INSTALLER_IDENTITY}" ]]; then
             echo "Failed to detect Developer ID certificate identities from the provided .p12 files." >&2
