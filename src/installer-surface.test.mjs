@@ -425,6 +425,7 @@ test('release workflow publishes macOS updater archive, signature, and latest ma
   assert.match(updaterLib, /signer sign/)
   assert.match(updaterLib, /TAURI_PRIVATE_KEY_PASSWORD="\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD\}"/)
   assert.match(updaterLib, /case "\$\{TAURI_PRIVATE_KEY_PASSWORD:-\}" in[\s\S]+EMPTY[\s\S]+TAURI_PRIVATE_KEY_PASSWORD=""/)
+  assert.match(updaterLib, /env -u TAURI_PRIVATE_KEY npx -y @tauri-apps\/cli@2\.10\.1 signer sign -f "\$\{private_key_path\}"/)
   assert.match(signingLib, /macos_notarize_app_bundle\(\)/)
   assert.match(signingLib, /ditto -c -k --sequesterRsrc --keepParent/)
   assert.match(signingLib, /xcrun stapler staple "\$\{app_path\}"/)

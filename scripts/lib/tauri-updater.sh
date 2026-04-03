@@ -63,11 +63,13 @@ tauri_updater_platform_key() {
 tauri_sign_archive() {
   local archive_path="${1:?archive path is required}"
   local signature_path="${2:?signature path is required}"
-  local private_key_path="${TAURI_PRIVATE_KEY_PATH:-}"
+  local private_key_path=""
   local temp_key_file=""
-  local password="${TAURI_PRIVATE_KEY_PASSWORD-}"
+  local password=""
 
   tauri_updater_normalize_env
+  private_key_path="${TAURI_PRIVATE_KEY_PATH:-}"
+  password="${TAURI_PRIVATE_KEY_PASSWORD-}"
 
   if [[ -z "${private_key_path}" && -n "${TAURI_PRIVATE_KEY:-}" ]]; then
     temp_key_file="$(mktemp /tmp/trapezohe-updater-key.XXXXXX)"
@@ -82,7 +84,7 @@ tauri_sign_archive() {
   fi
 
   rm -f "${archive_path}.sig" "${signature_path}"
-  npx -y @tauri-apps/cli@2.10.1 signer sign -f "${private_key_path}" -p "${password}" "${archive_path}"
+  env -u TAURI_PRIVATE_KEY npx -y @tauri-apps/cli@2.10.1 signer sign -f "${private_key_path}" -p "${password}" "${archive_path}"
   mv -f "${archive_path}.sig" "${signature_path}"
   rm -f "${temp_key_file}"
 }
