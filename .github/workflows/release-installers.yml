@@ -133,20 +133,16 @@ jobs:
 
       - name: Import Apple Developer ID certificates
         run: |
-          OPENSSL_BIN="$(command -v openssl || true)"
-          if [[ -n "${OPENSSL_BIN}" ]] && "${OPENSSL_BIN}" pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
-            :
-          else
-            BREW_OPENSSL_PREFIX="$(brew --prefix openssl@3 2>/dev/null || true)"
-            if [[ -n "${BREW_OPENSSL_PREFIX}" && -x "${BREW_OPENSSL_PREFIX}/bin/openssl" ]] && "${BREW_OPENSSL_PREFIX}/bin/openssl" pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
-              OPENSSL_BIN="${BREW_OPENSSL_PREFIX}/bin/openssl"
-            fi
+          BREW_OPENSSL_PREFIX="$(brew --prefix openssl@3 2>/dev/null || true)"
+          if [[ -z "${BREW_OPENSSL_PREFIX}" || ! -x "${BREW_OPENSSL_PREFIX}/bin/openssl" ]]; then
+            brew install openssl@3
+            BREW_OPENSSL_PREFIX="$(brew --prefix openssl@3)"
           fi
 
-          if [[ -z "${OPENSSL_BIN}" ]]; then
-            echo "Failed to find an OpenSSL binary that supports pkcs12 -legacy." >&2
-            (command -v openssl && openssl version) || true
-            (command -v brew && brew --prefix openssl@3) || true
+          OPENSSL_BIN="${BREW_OPENSSL_PREFIX}/bin/openssl"
+          "${OPENSSL_BIN}" version
+          if ! "${OPENSSL_BIN}" pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
+            echo "OpenSSL 3 on the runner still does not support pkcs12 -legacy." >&2
             exit 1
           fi
 
@@ -167,6 +163,8 @@ jobs:
           Path(os.environ["INSTALLER_P12"]).write_bytes(base64.b64decode(os.environ["APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64"]))
           PY
 
+          ls -l "${APP_P12}" "${INSTALLER_P12}"
+
           security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
           security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
           security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
@@ -184,6 +182,8 @@ jobs:
             -passin "pass:${APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD}" \
             -nodes \
             -out "${INSTALLER_PEM}"
+
+          ls -l "${APP_PEM}" "${INSTALLER_PEM}"
 
           security import "${APP_PEM}" \
             -k "${KEYCHAIN_PATH}" \
