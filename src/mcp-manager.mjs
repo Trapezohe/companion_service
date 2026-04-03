@@ -6,12 +6,11 @@
  */
 
 import { spawn } from 'node:child_process'
-import os from 'node:os'
-import { dirname, delimiter as PATH_DELIMITER, join } from 'node:path'
-import { existsSync, readdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { formatMcpProcessExitMessage, StdioTransport } from './mcp-transport.mjs'
 import { COMPANION_VERSION } from './version.mjs'
 import { getDefaultMcpRequestTimeoutMs, normalizeMcpRequestTimeoutMs } from './config.mjs'
+import { buildToolchainPath, shouldPreferManagedNodeToolchain } from './toolchain-path.mjs'
 
 const MCP_PROTOCOL_VERSION = '2024-11-05'
 
@@ -24,81 +23,11 @@ const MCP_RESTART_MAX_BACKOFF_MS = Number(process.env.TRAPEZOHE_MCP_RESTART_MAX_
 const MCP_MAX_STARTING = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_STARTING || 4))
 const MCP_MAX_CONNECTED = Math.max(0, Number(process.env.TRAPEZOHE_MCP_MAX_CONNECTED || 32))
 const DEVTOOLS_SELECTED_PAGE_CLOSED_RE = /the selected page has been closed/i
-const NODE_TOOLCHAIN_COMMANDS = new Set([
-  'node',
-  'npm',
-  'npx',
-  'pnpm',
-  'pnpx',
-  'yarn',
-  'yarnpkg',
-  'corepack',
-  'bun',
-  'bunx',
-])
-
-function splitPathEntries(pathValue) {
-  if (!pathValue || typeof pathValue !== 'string') return []
-  return pathValue.split(PATH_DELIMITER).map((entry) => entry.trim()).filter(Boolean)
-}
-
-function getNvmNodeBinDirs(homeDir) {
-  if (!homeDir) return []
-  const nodeVersionsRoot = join(homeDir, '.nvm', 'versions', 'node')
-  try {
-    return readdirSync(nodeVersionsRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-      .map((version) => join(nodeVersionsRoot, version, 'bin'))
-      .filter((binDir) => existsSync(binDir))
-  } catch {
-    return []
-  }
-}
-
 export function buildMcpSpawnPath(basePath, opts = {}) {
-  const homeDir = opts.homeDir !== undefined ? opts.homeDir : (process.env.HOME || os.homedir())
-  const execDir = opts.execDir || dirname(process.execPath)
-  const userBins = homeDir ? [join(homeDir, 'bin'), join(homeDir, '.local', 'bin')] : []
-  const nvmNodeBins = getNvmNodeBinDirs(homeDir)
-  const preferredEntries = opts.preferNodeToolchain
-    ? [
-        ...nvmNodeBins,
-        ...userBins,
-        execDir,
-      ]
-    : [
-        execDir,
-        ...userBins,
-        ...nvmNodeBins,
-      ]
-  const entries = [
-    ...(opts.preferNodeToolchain ? preferredEntries : splitPathEntries(basePath)),
-    ...(opts.preferNodeToolchain ? splitPathEntries(basePath) : preferredEntries),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-    '/bin',
-    '/usr/sbin',
-    '/sbin',
-  ]
-
-  const deduped = []
-  const seen = new Set()
-  for (const entry of entries) {
-    if (!entry || seen.has(entry)) continue
-    seen.add(entry)
-    deduped.push(entry)
-  }
-  return deduped.join(PATH_DELIMITER)
-}
-
-function shouldPreferManagedNodeToolchain(command) {
-  if (typeof command !== 'string') return false
-  const normalized = command.trim().split(/[\\/]/).pop()?.toLowerCase() || ''
-  const withoutExtension = normalized.replace(/\.(?:cmd|bat|exe|ps1)$/i, '')
-  return NODE_TOOLCHAIN_COMMANDS.has(withoutExtension)
+  return buildToolchainPath(basePath, {
+    execDir: dirname(process.execPath),
+    ...opts,
+  })
 }
 
 function normalizeServerName(input) {

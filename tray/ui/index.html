@@ -1050,7 +1050,7 @@
 
       function renderFooter(snapshot) {
         const language = languageOf(snapshot);
-        const version = snapshot?.state?.version || snapshot?.health?.version || snapshot?.update?.current_version || '0.1.16';
+        const version = snapshot?.state?.version || snapshot?.health?.version || snapshot?.update?.current_version || '0.1.17';
         $('versionMeta').textContent = t('versionFooter', { version }, language);
       }
 

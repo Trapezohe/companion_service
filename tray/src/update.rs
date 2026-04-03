@@ -327,8 +327,8 @@ mod tests {
     #[test]
     fn release_urls_are_tag_stable() {
         assert_eq!(
-            release_url_for_version("0.1.16"),
-            "https://github.com/Trapezohe/companion_service/releases/tag/v0.1.16"
+            release_url_for_version("0.1.17"),
+            "https://github.com/Trapezohe/companion_service/releases/tag/v0.1.17"
         );
         assert_eq!(
             release_url_for_version("v0.1.17"),
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn checking_state_exposes_non_installable_status() {
-        let info = checking_update_info("0.1.16");
+        let info = checking_update_info("0.1.17");
         assert_eq!(info.status, "checking");
         assert!(!info.can_install);
         assert!(!info.available);
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn install_failure_marks_state_as_error() {
-        let info = install_failure_info(None, "0.1.16", "network failed");
+        let info = install_failure_info(None, "0.1.17", "network failed");
         assert_eq!(info.status, "error");
         assert_eq!(info.last_error.as_deref(), Some("network failed"));
         assert!(!info.can_install);

@@ -288,9 +288,9 @@ test('package, tray Cargo, and tauri config versions stay aligned for the next r
   const cargoToml = read('tray/Cargo.toml')
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
 
-  assert.equal(pkg.version, '0.1.16')
-  assert.match(cargoToml, /^version = "0\.1\.16"$/m)
-  assert.equal(tauriConfig.version, '0.1.16')
+  assert.equal(pkg.version, '0.1.17')
+  assert.match(cargoToml, /^version = "0\.1\.17"$/m)
+  assert.equal(tauriConfig.version, '0.1.17')
 })
 
 test('README and release copy describe the signed macOS flow without claiming every installer is unsigned', () => {
