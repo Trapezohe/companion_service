@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -139,6 +140,27 @@ test('macOS build scripts wire Developer ID signing and notarization into the in
   assert.match(signingLib, /productsign --sign/)
   assert.match(signingLib, /xcrun notarytool submit/)
   assert.match(signingLib, /xcrun stapler staple/)
+})
+
+test('macOS signing helpers normalize Developer ID subjects before checking identities', () => {
+  const signingLibPath = path.join(root, 'scripts/lib/macos-signing.sh')
+  const output = execFileSync(
+    'bash',
+    [
+      '-lc',
+      `
+        source "${signingLibPath}"
+        printf '%s\\n' "$(macos_normalize_identity_name 'Developer ID Application: peng wang (VW9LG92726),UID=VW9LG92726')"
+        printf '%s\\n' "$(macos_normalize_identity_name 'Developer ID Installer: peng wang (VW9LG92726)')"
+      `,
+    ],
+    { encoding: 'utf8' },
+  )
+
+  assert.deepEqual(output.trim().split('\n'), [
+    'Developer ID Application: peng wang (VW9LG92726)',
+    'Developer ID Installer: peng wang (VW9LG92726)',
+  ])
 })
 
 test('macOS tray control and native host registration prefer the bundled app runtime', () => {

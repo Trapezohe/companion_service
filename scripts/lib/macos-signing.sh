@@ -11,15 +11,23 @@ macos_has_command() {
   command -v "$1" >/dev/null 2>&1
 }
 
-macos_has_codesigning_identity() {
+macos_normalize_identity_name() {
   local identity="${1:-}"
+  identity="${identity%%,UID=*}"
+  printf '%s' "${identity}"
+}
+
+macos_has_codesigning_identity() {
+  local identity
+  identity="$(macos_normalize_identity_name "${1:-}")"
   [[ -n "${identity}" ]] || return 1
   macos_has_command security || return 1
   security find-identity -v -p codesigning 2>/dev/null | grep -F "${identity}" >/dev/null 2>&1
 }
 
 macos_has_installer_identity() {
-  local identity="${1:-}"
+  local identity
+  identity="$(macos_normalize_identity_name "${1:-}")"
   [[ -n "${identity}" ]] || return 1
   macos_has_command security || return 1
   security find-certificate -a -c "${identity}" 2>/dev/null | grep -F "alis" >/dev/null 2>&1
@@ -44,6 +52,8 @@ macos_notary_enabled() {
 
 macos_sign_app_bundle() {
   local app_path="${1:?app path is required}"
+  local identity
+  identity="$(macos_normalize_identity_name "${APPLE_DEVELOPER_ID_APP_IDENTITY:-}")"
 
   if ! macos_app_signing_enabled; then
     echo "Skipping macOS app signing: Developer ID Application identity is not available."
@@ -51,13 +61,15 @@ macos_sign_app_bundle() {
   fi
 
   /usr/bin/xattr -cr "${app_path}" 2>/dev/null || true
-  codesign --force --sign "${APPLE_DEVELOPER_ID_APP_IDENTITY}" --options runtime --timestamp --deep "${app_path}"
+  codesign --force --sign "${identity}" --options runtime --timestamp --deep "${app_path}"
   codesign --verify --deep --strict --verbose=2 "${app_path}"
 }
 
 macos_sign_pkg() {
   local input_pkg="${1:?input pkg is required}"
   local output_pkg="${2:?output pkg is required}"
+  local identity
+  identity="$(macos_normalize_identity_name "${APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-}")"
 
   if ! macos_pkg_signing_enabled; then
     echo "Skipping macOS pkg signing: Developer ID Installer identity is not available."
@@ -65,7 +77,7 @@ macos_sign_pkg() {
   fi
 
   rm -f "${output_pkg}"
-  productsign --sign "${APPLE_DEVELOPER_ID_INSTALLER_IDENTITY}" "${input_pkg}" "${output_pkg}"
+  productsign --sign "${identity}" "${input_pkg}" "${output_pkg}"
   pkgutil --check-signature "${output_pkg}" >/dev/null
 }
 
