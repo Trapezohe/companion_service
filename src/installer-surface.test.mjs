@@ -418,6 +418,8 @@ test('GitHub macOS release flow writes a signing env file and uses it as the def
   assert.match(workflow, /brew install openssl@3/)
   assert.match(workflow, /OPENSSL_BIN="\$\{BREW_OPENSSL_PREFIX\}\/bin\/openssl"/)
   assert.match(workflow, /"\$\{OPENSSL_BIN\}" version/)
+  assert.match(workflow, /base64\.b64decode\(value, validate=True\)/)
+  assert.match(workflow, /decoded to 0 bytes/)
   assert.match(workflow, /"\$\{OPENSSL_BIN\}" pkcs12 -legacy[\s\S]+-in "\$\{APP_P12\}"/)
   assert.match(workflow, /APP_PEM="\$\{RUNNER_TEMP\}\/developer-id-app\.pem"/)
   assert.match(workflow, /INSTALLER_PEM="\$\{RUNNER_TEMP\}\/developer-id-installer\.pem"/)

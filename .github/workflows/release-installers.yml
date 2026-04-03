@@ -156,11 +156,24 @@ jobs:
 
           python3 - <<'PY'
           import base64
+          import binascii
           import os
           from pathlib import Path
 
-          Path(os.environ["APP_P12"]).write_bytes(base64.b64decode(os.environ["APPLE_DEVELOPER_ID_APP_P12_BASE64"]))
-          Path(os.environ["INSTALLER_P12"]).write_bytes(base64.b64decode(os.environ["APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64"]))
+          def decode_secret(name: str, output_path_env: str) -> None:
+              value = os.environ[name].strip()
+              if not value:
+                  raise SystemExit(f"{name} is empty after trimming whitespace.")
+              try:
+                  decoded = base64.b64decode(value, validate=True)
+              except binascii.Error as exc:
+                  raise SystemExit(f"{name} is not valid base64: {exc}") from exc
+              if not decoded:
+                  raise SystemExit(f"{name} decoded to 0 bytes.")
+              Path(os.environ[output_path_env]).write_bytes(decoded)
+
+          decode_secret("APPLE_DEVELOPER_ID_APP_P12_BASE64", "APP_P12")
+          decode_secret("APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64", "INSTALLER_P12")
           PY
 
           ls -l "${APP_P12}" "${INSTALLER_P12}"
