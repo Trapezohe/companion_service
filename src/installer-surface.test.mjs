@@ -406,6 +406,10 @@ test('GitHub macOS release flow writes a signing env file and uses it as the def
   const workflow = read('.github/workflows/release-installers.yml')
   const signingLib = read('scripts/lib/macos-signing.sh')
 
+  assert.match(workflow, /env:\s+APPLE_ID: \$\{\{ secrets\.APPLE_ID \}\}[\s\S]+APPLE_DEVELOPER_ID_APP_P12_BASE64: \$\{\{ secrets\.APPLE_DEVELOPER_ID_APP_P12_BASE64 \}\}/)
+  assert.match(workflow, /APPLE_DEVELOPER_ID_APP_P12_PASSWORD: \$\{\{ secrets\.APPLE_DEVELOPER_ID_APP_P12_PASSWORD \}\}/)
+  assert.match(workflow, /APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64: \$\{\{ secrets\.APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64 \}\}/)
+  assert.match(workflow, /APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD: \$\{\{ secrets\.APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD \}\}/)
   assert.match(workflow, /Validate macOS signing inputs/)
   assert.match(workflow, /Missing required macOS signing secrets:/)
   assert.match(workflow, /APPLE_DEVELOPER_ID_APP_P12_BASE64/)
