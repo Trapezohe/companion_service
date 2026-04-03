@@ -235,15 +235,15 @@ jobs:
             exit 1
           fi
 
-          cat > "${SIGNING_ENV_FILE}" <<EOF
-          export APPLE_ID="${APPLE_ID}"
-          export APPLE_TEAM_ID="${APPLE_TEAM_ID}"
-          export APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD}"
-          export APPLE_DEVELOPER_ID_APP_IDENTITY="${APP_IDENTITY}"
-          export APPLE_DEVELOPER_ID_INSTALLER_IDENTITY="${INSTALLER_IDENTITY}"
-          export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY}"
-          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-EMPTY}"
-          EOF
+          {
+            printf 'export APPLE_ID=%q\n' "${APPLE_ID}"
+            printf 'export APPLE_TEAM_ID=%q\n' "${APPLE_TEAM_ID}"
+            printf 'export APPLE_APP_SPECIFIC_PASSWORD=%q\n' "${APPLE_APP_SPECIFIC_PASSWORD}"
+            printf 'export APPLE_DEVELOPER_ID_APP_IDENTITY=%q\n' "${APP_IDENTITY}"
+            printf 'export APPLE_DEVELOPER_ID_INSTALLER_IDENTITY=%q\n' "${INSTALLER_IDENTITY}"
+            printf 'export TAURI_SIGNING_PRIVATE_KEY=%q\n' "${TAURI_SIGNING_PRIVATE_KEY}"
+            printf 'export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%q\n' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-EMPTY}"
+          } > "${SIGNING_ENV_FILE}"
 
           echo "TRAPEZOHE_MACOS_SIGNING_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
           echo "TRAPEZOHE_UPDATER_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
