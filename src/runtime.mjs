@@ -36,6 +36,7 @@ const WORKSPACE_BLOCKED_COMMANDS = [
   { pattern: /\bpoweroff\b/i, reason: 'poweroff commands are disabled in workspace mode' },
   { pattern: /\brm\s+-rf\s+\/(?![\w.-])/i, reason: 'destructive root deletes are blocked in workspace mode' },
 ]
+const POLICY_ANSI_PATTERN = /(?:\u001B\][^\u0007]*(?:\u0007|\u001B\\)|[\u001B\u009B](?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]))/g
 
 export class PermissionPolicyError extends Error {
   constructor(message) {
@@ -276,25 +277,36 @@ const DANGEROUS_SHELL_PATTERNS = [
   { pattern: /(^|[\s="'])~(?=\/|[\s"']|$)/, reason: 'home-directory expansion is not allowed in workspace mode' },
 ]
 
+function stripAnsiForPolicy(command) {
+  return String(command || '').replace(POLICY_ANSI_PATTERN, '')
+}
+
+export function normalizeCommandForPolicy(command) {
+  return stripAnsiForPolicy(command)
+    .replace(/\u0000/g, '')
+    .normalize('NFKC')
+}
+
 export function enforceCommandPolicy({ command, cwd, permissionPolicy }) {
   const policy = normalizePermissionPolicy(permissionPolicy)
   if (policy.mode !== PERMISSION_MODE_WORKSPACE) return
+  const normalizedCommand = normalizeCommandForPolicy(command)
 
   for (const rule of WORKSPACE_BLOCKED_COMMANDS) {
-    if (rule.pattern.test(command)) {
+    if (rule.pattern.test(normalizedCommand)) {
       throw new PermissionPolicyError(`Command blocked by workspace policy: ${rule.reason}.`)
     }
   }
 
   // Block shell metacharacters that can bypass path analysis
   for (const rule of DANGEROUS_SHELL_PATTERNS) {
-    if (rule.pattern.test(command)) {
+    if (rule.pattern.test(normalizedCommand)) {
       throw new PermissionPolicyError(`Command blocked by workspace policy: ${rule.reason}.`)
     }
   }
 
   // Split by pipe / semicolon / && / || and analyze each sub-command
-  const subCommands = command.split(/\s*(?:\|{1,2}|&&|;)\s*/)
+  const subCommands = normalizedCommand.split(/\s*(?:\|{1,2}|&&|;)\s*/)
   for (const sub of subCommands) {
     const tokens = shellTokenize(sub)
     for (const token of tokens) {

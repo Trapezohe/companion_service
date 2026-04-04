@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import {
   resolveCwd,
   enforceCommandPolicy,
+  normalizeCommandForPolicy,
   PermissionPolicyError,
 } from './runtime.mjs'
 import { PERMISSION_MODE_WORKSPACE, PERMISSION_MODE_FULL } from './permission-policy.mjs'
@@ -122,5 +123,36 @@ test('enforceCommandPolicy allows normal workspace commands', async () => {
       cwd: workspaceRoot,
       permissionPolicy: { mode: PERMISSION_MODE_FULL, workspaceRoots: [] },
     }))
+  })
+})
+
+test('normalizeCommandForPolicy strips ANSI, null bytes, and NFKC-normalizes text', () => {
+  const normalized = normalizeCommandForPolicy('\u001b[31mｒｍ\u001b[0m\u3000－ｒｆ\u3000／\u0000')
+  assert.equal(normalized, 'rm -rf /')
+})
+
+test('enforceCommandPolicy blocks fullwidth destructive commands after normalization', async () => {
+  await withWorkspace(async ({ workspaceRoot }) => {
+    assert.throws(
+      () => enforceCommandPolicy({
+        command: 'ｒｍ　－ｒｆ　／',
+        cwd: workspaceRoot,
+        permissionPolicy: { mode: PERMISSION_MODE_WORKSPACE, workspaceRoots: [workspaceRoot] },
+      }),
+      PermissionPolicyError
+    )
+  })
+})
+
+test('enforceCommandPolicy blocks ANSI-obfuscated privileged commands after normalization', async () => {
+  await withWorkspace(async ({ workspaceRoot }) => {
+    assert.throws(
+      () => enforceCommandPolicy({
+        command: '\u001b[31msudo\u001b[0m ls',
+        cwd: workspaceRoot,
+        permissionPolicy: { mode: PERMISSION_MODE_WORKSPACE, workspaceRoots: [workspaceRoot] },
+      }),
+      PermissionPolicyError
+    )
   })
 })
