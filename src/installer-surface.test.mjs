@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -422,13 +423,74 @@ test('release workflow publishes macOS updater archive, signature, and latest ma
   assert.doesNotMatch(updaterScript, /macos_notarize_artifact "\$\{APP_PATH\}"/)
 
   assert.match(updaterLib, /@tauri-apps\/cli@2\.10\.1/)
-  assert.match(updaterLib, /signer sign/)
+  assert.match(updaterLib, /signer[\s\S]+sign/)
   assert.match(updaterLib, /TAURI_PRIVATE_KEY_PASSWORD="\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD\}"/)
   assert.match(updaterLib, /case "\$\{TAURI_PRIVATE_KEY_PASSWORD:-\}" in[\s\S]+EMPTY[\s\S]+TAURI_PRIVATE_KEY_PASSWORD=""/)
-  assert.match(updaterLib, /env -u TAURI_PRIVATE_KEY npx -y @tauri-apps\/cli@2\.10\.1 signer sign -f "\$\{private_key_path\}"/)
+  assert.match(updaterLib, /-u TAURI_SIGNING_PRIVATE_KEY/)
+  assert.match(updaterLib, /-u TAURI_SIGNING_PRIVATE_KEY_PATH/)
+  assert.match(updaterLib, /-u TAURI_SIGNING_PRIVATE_KEY_PASSWORD/)
+  assert.match(updaterLib, /-u TAURI_PRIVATE_KEY/)
+  assert.match(updaterLib, /-u TAURI_PRIVATE_KEY_PATH/)
+  assert.match(updaterLib, /-u TAURI_PRIVATE_KEY_PASSWORD/)
   assert.match(signingLib, /macos_notarize_app_bundle\(\)/)
   assert.match(signingLib, /ditto -c -k --sequesterRsrc --keepParent/)
   assert.match(signingLib, /xcrun stapler staple "\$\{app_path\}"/)
+})
+
+test('tauri updater signer strips conflicting private key env vars before invoking tauri cli', () => {
+  const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-test-'))
+  const fakeBinDir = path.join(tempDir, 'bin')
+  const capturePath = path.join(tempDir, 'capture.txt')
+  const archivePath = path.join(tempDir, 'artifact.tar.gz')
+  const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
+  const fakeNpxPath = path.join(fakeBinDir, 'npx')
+
+  execFileSync('mkdir', ['-p', fakeBinDir])
+  writeFileSync(archivePath, 'archive')
+  writeFileSync(
+    fakeNpxPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'TAURI_SIGNING_PRIVATE_KEY=%s\\n' "\${TAURI_SIGNING_PRIVATE_KEY-__UNSET__}"
+  printf 'TAURI_SIGNING_PRIVATE_KEY_PATH=%s\\n' "\${TAURI_SIGNING_PRIVATE_KEY_PATH-__UNSET__}"
+  printf 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\\n' "\${TAURI_SIGNING_PRIVATE_KEY_PASSWORD-__UNSET__}"
+  printf 'TAURI_PRIVATE_KEY=%s\\n' "\${TAURI_PRIVATE_KEY-__UNSET__}"
+  printf 'TAURI_PRIVATE_KEY_PATH=%s\\n' "\${TAURI_PRIVATE_KEY_PATH-__UNSET__}"
+  printf 'TAURI_PRIVATE_KEY_PASSWORD=%s\\n' "\${TAURI_PRIVATE_KEY_PASSWORD-__UNSET__}"
+  printf 'ARGS=%s\\n' "$*"
+} > "${capturePath}"
+printf 'signed' > "\${@: -1}.sig"
+`,
+    { mode: 0o755 },
+  )
+
+  execFileSync(
+    'bash',
+    [
+      '-lc',
+      `
+        set -euo pipefail
+        PATH="${fakeBinDir}:$PATH"
+        source "${updaterLibPath}"
+        export TAURI_SIGNING_PRIVATE_KEY='inline-private-key'
+        export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='EMPTY'
+        tauri_sign_archive "${archivePath}" "${signaturePath}"
+      `,
+    ],
+    { encoding: 'utf8' },
+  )
+
+  const capture = readFileSync(capturePath, 'utf8')
+  assert.match(capture, /TAURI_SIGNING_PRIVATE_KEY=__UNSET__/)
+  assert.match(capture, /TAURI_SIGNING_PRIVATE_KEY_PATH=__UNSET__/)
+  assert.match(capture, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD=__UNSET__/)
+  assert.match(capture, /TAURI_PRIVATE_KEY=__UNSET__/)
+  assert.match(capture, /TAURI_PRIVATE_KEY_PATH=__UNSET__/)
+  assert.match(capture, /TAURI_PRIVATE_KEY_PASSWORD=__UNSET__/)
+  assert.match(capture, /ARGS=-y @tauri-apps\/cli@2\.10\.1 signer sign -f /)
+  assert.match(capture, new RegExp(`ARGS=.*${archivePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
 })
 
 test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {

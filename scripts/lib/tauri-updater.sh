@@ -66,6 +66,7 @@ tauri_sign_archive() {
   local private_key_path=""
   local temp_key_file=""
   local password=""
+  local -a signer_cmd=()
 
   tauri_updater_normalize_env
   private_key_path="${TAURI_PRIVATE_KEY_PATH:-}"
@@ -84,7 +85,26 @@ tauri_sign_archive() {
   fi
 
   rm -f "${archive_path}.sig" "${signature_path}"
-  env -u TAURI_PRIVATE_KEY npx -y @tauri-apps/cli@2.10.1 signer sign -f "${private_key_path}" -p "${password}" "${archive_path}"
+  signer_cmd=(
+    env
+    -u TAURI_SIGNING_PRIVATE_KEY
+    -u TAURI_SIGNING_PRIVATE_KEY_PATH
+    -u TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+    -u TAURI_PRIVATE_KEY
+    -u TAURI_PRIVATE_KEY_PATH
+    -u TAURI_PRIVATE_KEY_PASSWORD
+    npx
+    -y
+    @tauri-apps/cli@2.10.1
+    signer
+    sign
+    -f
+    "${private_key_path}"
+    -p
+    "${password}"
+    "${archive_path}"
+  )
+  "${signer_cmd[@]}"
   mv -f "${archive_path}.sig" "${signature_path}"
   rm -f "${temp_key_file}"
 }
