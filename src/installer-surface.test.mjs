@@ -493,6 +493,65 @@ printf 'signed' > "\${@: -1}.sig"
   assert.match(capture, new RegExp(`ARGS=.*${archivePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
 })
 
+test('tauri updater signer normalizes inline private keys that contain accidental whitespace', () => {
+  const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-key-test-'))
+  const fakeBinDir = path.join(tempDir, 'bin')
+  const capturePath = path.join(tempDir, 'capture.txt')
+  const archivePath = path.join(tempDir, 'artifact.tar.gz')
+  const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
+  const fakeNpxPath = path.join(fakeBinDir, 'npx')
+  const spacedKey = 'dW50cn VzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5'
+
+  execFileSync('mkdir', ['-p', fakeBinDir])
+  writeFileSync(archivePath, 'archive')
+writeFileSync(
+    fakeNpxPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+key_path=""
+archive_path=""
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    key_path="$2"
+    shift 2
+    continue
+  fi
+  archive_path="$1"
+  shift
+done
+{
+  printf 'KEY_PATH=%s\\n' "$key_path"
+  printf 'KEY_CONTENT=%s\\n' "$(cat "$key_path")"
+} > "${capturePath}"
+printf 'signed' > "$archive_path.sig"
+`,
+    { mode: 0o755 },
+  )
+
+  execFileSync(
+    'bash',
+    [
+      '-lc',
+      `
+        set -euo pipefail
+        PATH="${fakeBinDir}:$PATH"
+        source "${updaterLibPath}"
+        export TAURI_SIGNING_PRIVATE_KEY='${spacedKey}'
+        export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='EMPTY'
+        tauri_sign_archive "${archivePath}" "${signaturePath}"
+      `,
+    ],
+    { encoding: 'utf8' },
+  )
+
+  const capture = readFileSync(capturePath, 'utf8')
+  const keyLine = capture.trim().split('\n').find((line) => line.startsWith('KEY_CONTENT='))
+  assert.match(capture, /KEY_PATH=\/tmp\/trapezohe-updater-key\./)
+  assert.match(capture, /KEY_CONTENT=dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5/)
+  assert.equal(keyLine, 'KEY_CONTENT=dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5')
+})
+
 test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {
   const workflow = read('.github/workflows/release-installers.yml')
   const signingLib = read('scripts/lib/macos-signing.sh')

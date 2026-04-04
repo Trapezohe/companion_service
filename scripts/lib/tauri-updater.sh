@@ -45,6 +45,22 @@ tauri_updater_has_signing_key() {
   [[ -n "${TAURI_PRIVATE_KEY:-}" || -n "${TAURI_PRIVATE_KEY_PATH:-}" ]]
 }
 
+tauri_updater_write_sanitized_key_file() {
+  local source_path="${1:-}"
+  local inline_key="${2:-}"
+  local temp_key_file=""
+
+  temp_key_file="$(mktemp /tmp/trapezohe-updater-key.XXXXXX)"
+
+  if [[ -n "${source_path}" ]]; then
+    tr -d '[:space:]' < "${source_path}" > "${temp_key_file}"
+  else
+    printf '%s' "${inline_key}" | tr -d '[:space:]' > "${temp_key_file}"
+  fi
+
+  printf '%s\n' "${temp_key_file}"
+}
+
 tauri_updater_platform_key() {
   case "$(uname -m)" in
     arm64|aarch64)
@@ -72,9 +88,11 @@ tauri_sign_archive() {
   private_key_path="${TAURI_PRIVATE_KEY_PATH:-}"
   password="${TAURI_PRIVATE_KEY_PASSWORD-}"
 
-  if [[ -z "${private_key_path}" && -n "${TAURI_PRIVATE_KEY:-}" ]]; then
-    temp_key_file="$(mktemp /tmp/trapezohe-updater-key.XXXXXX)"
-    printf '%s' "${TAURI_PRIVATE_KEY}" > "${temp_key_file}"
+  if [[ -n "${private_key_path}" ]]; then
+    temp_key_file="$(tauri_updater_write_sanitized_key_file "${private_key_path}" "")"
+    private_key_path="${temp_key_file}"
+  elif [[ -n "${TAURI_PRIVATE_KEY:-}" ]]; then
+    temp_key_file="$(tauri_updater_write_sanitized_key_file "" "${TAURI_PRIVATE_KEY}")"
     private_key_path="${temp_key_file}"
   fi
 
