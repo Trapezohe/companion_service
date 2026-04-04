@@ -96,6 +96,54 @@ function getMultiFlagValues(name) {
   return values
 }
 
+async function resolveBundledMacosRuntime(entryScript = __filename) {
+  if (process.platform !== 'darwin') return null
+
+  const scriptPath = path.resolve(entryScript)
+  const binDir = path.dirname(scriptPath)
+  const companionDir = path.resolve(binDir, '..')
+  const resourcesDir = path.resolve(companionDir, '..')
+  const contentsDir = path.resolve(resourcesDir, '..')
+  const appPath = path.resolve(contentsDir, '..')
+
+  if (path.basename(binDir) !== 'bin') return null
+  if (path.basename(companionDir) !== 'companion') return null
+  if (path.basename(resourcesDir) !== 'Resources') return null
+  if (path.basename(contentsDir) !== 'Contents') return null
+  if (!appPath.endsWith('Trapezohe Companion.app')) return null
+
+  const runtime = {
+    appPath,
+    nodePath: path.join(resourcesDir, 'runtime', 'node', 'bin', 'node'),
+    cliPath: path.join(companionDir, 'bin', 'cli.mjs'),
+    nativeHostPath: path.join(companionDir, 'bin', 'native-host.mjs'),
+  }
+
+  try {
+    await fs.access(runtime.nodePath)
+    await fs.access(runtime.cliPath)
+    await fs.access(runtime.nativeHostPath)
+    return runtime
+  } catch {
+    return null
+  }
+}
+
+async function resolveCliLaunchSpec(entryScript = __filename) {
+  const runtime = await resolveBundledMacosRuntime(entryScript)
+  if (runtime) {
+    return {
+      program: runtime.nodePath,
+      args: [runtime.cliPath, 'start'],
+    }
+  }
+
+  return {
+    program: process.execPath,
+    args: [entryScript, 'start'],
+  }
+}
+
 async function main() {
   switch (command) {
     case 'start':
@@ -743,6 +791,19 @@ const AUTOSTART_SERVICE_NAME = 'trapezohe-companion'
 const AUTOSTART_WIN_TASK_NAME = 'TrapezoheCompanion'
 
 async function resolveNativeHostExecutable(nativeHostScript) {
+  const bundledMacosRuntime = await resolveBundledMacosRuntime(nativeHostScript)
+  if (bundledMacosRuntime) {
+    const deployDir = path.join(os.homedir(), '.trapezohe')
+    const launcherPath = path.join(deployDir, 'native-host-launcher.sh')
+    await fs.mkdir(deployDir, { recursive: true })
+    const launcher = `#!/bin/sh
+exec "${bundledMacosRuntime.nodePath}" "${bundledMacosRuntime.nativeHostPath}" "$@"
+`
+    await fs.writeFile(launcherPath, launcher, 'utf8')
+    await fs.chmod(launcherPath, 0o755)
+    return launcherPath
+  }
+
   // Deploy native host files to ~/.trapezohe/ instead of the source directory.
   // Chrome on macOS cannot execute files under ~/Desktop/ due to TCC sandbox restrictions.
   // Chrome on Windows cannot execute .mjs files directly — needs a .cmd wrapper.
@@ -934,6 +995,8 @@ async function installAutostart() {
   if (process.platform === 'darwin') {
     const plistDir = path.join(os.homedir(), 'Library', 'LaunchAgents')
     const plistPath = path.join(plistDir, 'ai.trapezohe.companion.plist')
+    const launchSpec = await resolveCliLaunchSpec()
+    const programArguments = launchSpec.args.map((arg) => `  <string>${arg}</string>`).join('\n')
     await fs.mkdir(plistDir, { recursive: true })
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -944,9 +1007,8 @@ async function installAutostart() {
   <string>ai.trapezohe.companion</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${process.execPath}</string>
-    <string>${__filename}</string>
-    <string>start</string>
+    <string>${launchSpec.program}</string>
+${programArguments}
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -1026,7 +1088,8 @@ async function removeAutostart() {
 }
 
 async function startDaemonDetached() {
-  await execFileAsync(process.execPath, [__filename, 'start', '-d'])
+  const launchSpec = await resolveCliLaunchSpec()
+  await execFileAsync(launchSpec.program, [...launchSpec.args, '-d'])
 }
 
 async function handleRegister() {

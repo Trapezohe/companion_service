@@ -2,7 +2,6 @@
 set -euo pipefail
 
 VERSION="__COMPANION_VERSION__"
-NODE_VERSION="v22.12.0"
 LOG_FILE="/Users/Shared/trapezohe-companion-installer.log"
 CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || true)"
 
@@ -24,11 +23,10 @@ cat > "${TMP_SCRIPT}" <<'EOS'
 set -euo pipefail
 
 TRAPEZOHE_DIR="$HOME/.trapezohe"
-LOCAL_NODE_DIR="${TRAPEZOHE_DIR}/node"
-NODE_VERSION="__NODE_VERSION__"
-MIN_NODE_MAJOR=18
 TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
 TRAY_BIN_PATH="${TRAY_APP_PATH}/Contents/MacOS/trapezohe-companion-tray"
+APP_RUNTIME_DIR="${TRAY_APP_PATH}/Contents/Resources/companion"
+APP_NODE_DIR="${TRAY_APP_PATH}/Contents/Resources/runtime/node"
 TRAY_AGENT_PATH="$HOME/Library/LaunchAgents/ai.trapezohe.companion.tray.plist"
 LEGACY_DAEMON_AGENT_PATH="$HOME/Library/LaunchAgents/ai.trapezohe.companion.plist"
 STARTUP_POLICY_PATH="$TRAPEZOHE_DIR/companion-startup.json"
@@ -38,53 +36,14 @@ log() {
   echo "[$(date)] $*"
 }
 
-has_usable_node() {
-  if ! command -v node >/dev/null 2>&1; then
-    return 1
-  fi
-  local ver
-  ver="$(node -v 2>/dev/null || echo "")"
-  local major="${ver#v}"
-  major="${major%%.*}"
-  if [[ "${major}" -ge "${MIN_NODE_MAJOR}" ]] 2>/dev/null; then
+resolve_app_node() {
+  local node_bin="${APP_NODE_DIR}/bin/node"
+  if [[ -x "${node_bin}" ]]; then
+    echo "${node_bin}"
     return 0
   fi
-  log "System Node.js ${ver} is too old (need >=${MIN_NODE_MAJOR})."
+  log "Bundled app Node.js missing at ${node_bin}"
   return 1
-}
-
-ensure_node() {
-  if has_usable_node; then
-    log "Using system Node.js: $(node -v)"
-    return 0
-  fi
-
-  if [[ -x "${LOCAL_NODE_DIR}/bin/node" ]]; then
-    export PATH="${LOCAL_NODE_DIR}/bin:${PATH}"
-    if has_usable_node; then
-      log "Using local Node.js: $(node -v)"
-      return 0
-    fi
-  fi
-
-  local arch
-  arch="$(uname -m)"
-  case "${arch}" in
-    arm64|aarch64) arch="arm64" ;;
-    *)             arch="x64" ;;
-  esac
-
-  local url="https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-darwin-${arch}.tar.gz"
-  log "Node.js not found; downloading ${NODE_VERSION} (${arch})"
-
-  mkdir -p "${LOCAL_NODE_DIR}"
-  if ! curl -fsSL "${url}" | tar -xz --strip-components=1 -C "${LOCAL_NODE_DIR}"; then
-    log "Failed to download Node.js. Companion bootstrap skipped."
-    return 1
-  fi
-
-  export PATH="${LOCAL_NODE_DIR}/bin:${PATH}"
-  log "Installed local Node.js: $(node -v) -> ${LOCAL_NODE_DIR}"
 }
 
 write_startup_policy() {
@@ -161,30 +120,24 @@ JSON
 }
 
 register_native_host() {
-  if ! ensure_node; then
-    log "Node.js not available; skipping native host registration"
+  local node_bin
+  if ! node_bin="$(resolve_app_node)"; then
+    log "Bundled app Node.js not available; skipping native host registration"
     return 0
   fi
 
-  local node_bin
-  node_bin="$(command -v node)"
-  local src_script="/usr/local/lib/trapezohe-companion-installer/native-host.mjs"
+  local src_script="${APP_RUNTIME_DIR}/bin/native-host.mjs"
 
-  # If the bundled script isn't available, skip
   if [[ ! -f "${src_script}" ]]; then
     log "Native host script not found at ${src_script}; skipping"
     return 0
   fi
 
-  # Deploy native-host.mjs + launcher
-  local deployed_script="${TRAPEZOHE_DIR}/native-host.mjs"
-  cp "${src_script}" "${deployed_script}"
-  chmod 755 "${deployed_script}"
-
   local launcher="${TRAPEZOHE_DIR}/native-host-launcher.sh"
+  mkdir -p "${TRAPEZOHE_DIR}"
   cat > "${launcher}" <<LAUNCHER
 #!/bin/sh
-exec "${node_bin}" "${deployed_script}" "\$@"
+exec "${node_bin}" "${src_script}" "\$@"
 LAUNCHER
   chmod 755 "${launcher}"
 
@@ -219,49 +172,15 @@ MANIFEST
   log "Registered native messaging host for extension ${ext_id}"
 }
 
-deploy_companion_service() {
-  if ! ensure_node; then
-    log "Node.js not available; skipping companion service deployment"
-    return 0
-  fi
-
-  local installer_dir="/usr/local/lib/trapezohe-companion-installer"
-  local src_cli="${installer_dir}/cli.mjs"
-  local src_service_dir="${installer_dir}/src"
-
-  if [[ ! -f "${src_cli}" ]]; then
-    log "Bundled CLI not found at ${src_cli}; skipping service deployment"
-    return 0
-  fi
-
-  local service_dir="${TRAPEZOHE_DIR}/service"
-  mkdir -p "${service_dir}/bin" "${service_dir}/src"
-  cp "${src_cli}" "${service_dir}/bin/cli.mjs"
-  chmod 755 "${service_dir}/bin/cli.mjs"
-  if [[ -f "${installer_dir}/package.json" ]]; then
-    cp "${installer_dir}/package.json" "${service_dir}/package.json"
-  fi
-  if [[ -d "${src_service_dir}" ]]; then
-    cp "${src_service_dir}"/*.mjs "${service_dir}/src/"
-  fi
-
-  local node_bin
-  node_bin="$(command -v node)"
-  local wrapper="${LOCAL_NODE_DIR}/bin/trapezohe-companion"
-  mkdir -p "$(dirname "${wrapper}")"
-  cat > "${wrapper}" <<WRAPPER
-#!/bin/sh
-exec "${node_bin}" "${service_dir}/bin/cli.mjs" "\$@"
-WRAPPER
-  chmod 755 "${wrapper}"
-
-  log "Deployed companion service to ${service_dir}, wrapper at ${wrapper}"
-}
-
 restart_companion_daemon() {
-  local wrapper="${LOCAL_NODE_DIR}/bin/trapezohe-companion"
-  if [[ ! -x "${wrapper}" ]]; then
-    log "Installed companion CLI missing at ${wrapper}; skipping runtime handoff"
+  local node_bin
+  if ! node_bin="$(resolve_app_node)"; then
+    log "Bundled app Node.js missing; skipping runtime handoff"
+    return 0
+  fi
+
+  if [[ ! -f "${APP_RUNTIME_DIR}/bin/cli.mjs" ]]; then
+    log "Bundled companion CLI missing at ${APP_RUNTIME_DIR}/bin/cli.mjs; skipping runtime handoff"
     return 0
   fi
 
@@ -270,13 +189,13 @@ restart_companion_daemon() {
     return 0
   fi
 
-  if "${wrapper}" stop --force >/dev/null 2>&1; then
+  if "${node_bin}" "${APP_RUNTIME_DIR}/bin/cli.mjs" stop --force >/dev/null 2>&1; then
     log "Stopped any existing companion daemon before handoff"
   else
     log "Installed CLI stop command failed; continuing with daemon handoff"
   fi
 
-  if "${wrapper}" start -d >/dev/null 2>&1; then
+  if "${node_bin}" "${APP_RUNTIME_DIR}/bin/cli.mjs" start -d >/dev/null 2>&1; then
     log "Started installed companion daemon after handoff"
   else
     log "Installed CLI start command failed; runtime handoff skipped"
@@ -294,7 +213,6 @@ launch_tray_once() {
 
 ensure_companion_config
 register_native_host || true
-deploy_companion_service || true
 restart_companion_daemon || true
 write_startup_policy
 remove_legacy_daemon_login_item
@@ -303,7 +221,6 @@ launch_tray_once
 EOS
 
 sed -i '' "s/__COMPANION_VERSION__/${VERSION}/g" "${TMP_SCRIPT}"
-sed -i '' "s/__NODE_VERSION__/${NODE_VERSION}/g" "${TMP_SCRIPT}"
 chmod 755 "${TMP_SCRIPT}"
 
 if su -l "${CONSOLE_USER}" -c "/bin/bash '${TMP_SCRIPT}'" >> "${LOG_FILE}" 2>&1; then

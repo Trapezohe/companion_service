@@ -28,6 +28,7 @@ import {
   getConfiguredExtensionIds,
   getNativeHostManifestTargets,
 } from './native-host.mjs'
+import { buildToolchainPath, shouldPreferManagedNodeToolchain } from './toolchain-path.mjs'
 
 const AUTOMATION_FEATURE_FLAGS = {
   scheduledWriteGuardV22: true,
@@ -87,6 +88,12 @@ export async function resolveExecutable(command, options = {}) {
   const envPath = options.envPath ?? process.env.PATH
   const pathExtEntries = getWindowsPathExtEntries(options.pathext ?? process.env.PATHEXT)
   const pathDelimiter = platform === 'win32' ? ';' : path.delimiter
+  const candidatePath = buildToolchainPath(envPath, {
+    homeDir: options.homeDir,
+    execDir: options.execDir,
+    pathDelimiter,
+    preferNodeToolchain: options.preferNodeToolchain ?? shouldPreferManagedNodeToolchain(trimmed),
+  })
 
   if (hasPathSeparators(trimmed)) {
     for (const candidate of buildExecutableCandidates(trimmed, { platform, pathExtEntries })) {
@@ -94,7 +101,7 @@ export async function resolveExecutable(command, options = {}) {
     }
     return false
   }
-  for (const entry of getPathEntries(envPath, pathDelimiter)) {
+  for (const entry of getPathEntries(candidatePath, pathDelimiter)) {
     const candidate = path.join(entry, trimmed)
     for (const resolvedCandidate of buildExecutableCandidates(candidate, { platform, pathExtEntries })) {
       if (await exists(resolvedCandidate)) return true
@@ -210,6 +217,113 @@ function buildRecentRunExplanations(runs, approvals) {
         contractVersion: Number.isFinite(run.contractVersion) ? Number(run.contractVersion) : RUN_CONTRACT_VERSION,
       }
     })
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+  return ''
+}
+
+function clipPanelText(value, limit = 120) {
+  const normalized = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return ''
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`
+}
+
+function resolveRunApprovalRequestId(run) {
+  const meta = getRunMeta(run)
+  return firstNonEmptyString(meta.approvalRequestId, meta.requestId)
+}
+
+function resolveActionStatus(run, approval) {
+  const meta = getRunMeta(run)
+  const approvalStatus = firstNonEmptyString(meta.approvalStatus, approval?.status)
+  if (approvalStatus === 'pending' || run?.state === 'waiting_approval') return 'pending_approval'
+  if (approvalStatus === 'rejected' || approvalStatus === 'expired' || run?.state === 'cancelled') return 'cancelled'
+  if (run?.state === 'failed') return 'failed'
+  if (run?.state === 'running' || run?.state === 'retrying' || run?.state === 'queued' || run?.state === 'idle') {
+    return 'running'
+  }
+  if (run?.state === 'done') return 'success'
+  return 'unknown'
+}
+
+function resolveActionName(run, approval) {
+  const meta = getRunMeta(run)
+  return firstNonEmptyString(
+    meta.toolName,
+    meta.tool,
+    meta.sourceToolName,
+    approval?.toolName,
+    run?.type === 'approval' ? 'approval_request' : '',
+  )
+}
+
+function resolveActionTarget(run, approval) {
+  const meta = getRunMeta(run)
+  return clipPanelText(
+    firstNonEmptyString(
+      meta.targetSummary,
+      meta.toolPreview,
+      approval?.toolPreview,
+      typeof meta.target === 'string' ? meta.target : '',
+    ),
+    140,
+  )
+}
+
+function resolveActionDetail(run, approval, status) {
+  const meta = getRunMeta(run)
+  if (status === 'pending_approval') return 'Waiting for user approval'
+  if (status === 'cancelled') return 'Request was rejected or cancelled'
+  if (status === 'failed') {
+    return clipPanelText(firstNonEmptyString(run?.error, meta.resultSummary, run?.summary, approval?.toolPreview), 140)
+  }
+  if (status === 'running') {
+    return clipPanelText(firstNonEmptyString(meta.resultSummary, run?.summary, 'Action is still running'), 140)
+  }
+  return clipPanelText(firstNonEmptyString(meta.resultSummary, run?.summary, approval?.toolPreview, 'Action completed'), 140)
+}
+
+function looksLikeUserVisibleAction(run, approval) {
+  const meta = getRunMeta(run)
+  if (approval) return true
+  if (firstNonEmptyString(meta.toolName, meta.tool, meta.sourceToolName, meta.targetSummary, meta.resultSummary)) {
+    return true
+  }
+  return false
+}
+
+function buildRecentActionLogs(runs, approvals) {
+  const approvalsById = new Map(
+    approvals
+      .filter((approval) => typeof approval?.requestId === 'string' && approval.requestId.trim())
+      .map((approval) => [approval.requestId.trim(), approval]),
+  )
+
+  return runs.runs
+    .filter((run) => looksLikeUserVisibleAction(run, approvalsById.get(resolveRunApprovalRequestId(run))))
+    .map((run) => {
+      const approval = approvalsById.get(resolveRunApprovalRequestId(run))
+      const status = resolveActionStatus(run, approval)
+      return {
+        runId: run.runId,
+        timestamp: Number.isFinite(run.updatedAt) ? Number(run.updatedAt) : Date.now(),
+        actionName: resolveActionName(run, approval),
+        target: resolveActionTarget(run, approval),
+        status,
+        detail: resolveActionDetail(run, approval, status),
+      }
+    })
+    .filter((item) => item.actionName || item.target || item.detail)
+    .sort((left, right) => right.timestamp - left.timestamp)
+    .slice(0, 20)
 }
 
 function buildCapabilitySummary(supportedFeatures = {}) {
@@ -611,6 +725,7 @@ export async function buildDiagnosticsPayload(params) {
     activeWorkflowRuns,
     browserLedgerSummary,
   })
+  const recentActionLogs = buildRecentActionLogs(runs, approvals)
 
   const payload = {
     contractVersion: RUN_CONTRACT_VERSION,
@@ -646,6 +761,7 @@ export async function buildDiagnosticsPayload(params) {
     runs: {
       recentFailed: runs.runs.filter((run) => run.state === 'failed').slice(0, 5),
       recentExplanations: recentRunExplanations,
+      recentActions: recentActionLogs,
     },
     approvals: {
       pending: approvals,

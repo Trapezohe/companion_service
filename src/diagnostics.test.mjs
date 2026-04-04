@@ -2,7 +2,7 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 
 import { buildDiagnosticsPayload, resolveExecutable } from './diagnostics.mjs'
 import { clearRunStoreForTests, createRun, flushRunStore } from './run-store.mjs'
@@ -94,6 +94,25 @@ test('resolveExecutable honors Windows PATHEXT launchers such as .cmd', async ()
     assert.equal(found, true)
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+  }
+})
+
+test('resolveExecutable augments stripped login-item PATHs for node toolchain commands', async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), 'trapezohe-diagnostics-nvm-test-'))
+  try {
+    const nvmBin = path.join(tempHome, '.nvm', 'versions', 'node', 'v22.12.0', 'bin')
+    await mkdir(nvmBin, { recursive: true })
+    await writeFile(path.join(nvmBin, 'npx'), '#!/bin/sh\nexit 0\n', 'utf8')
+
+    const found = await resolveExecutable('npx', {
+      envPath: '/usr/bin:/bin:/usr/sbin:/sbin',
+      homeDir: tempHome,
+      execDir: '/custom/node/bin',
+    })
+
+    assert.equal(found, true)
+  } finally {
+    await rm(tempHome, { recursive: true, force: true }).catch(() => undefined)
   }
 })
 
@@ -734,6 +753,90 @@ test('buildDiagnosticsPayload exposes stable run explanations for blocked, waiti
   assert.equal(failed.runOwner, 'replay')
   assert.equal(failed.replayCount, 1)
   assert.equal(failed.failureCategory, 'network')
+})
+
+test('buildDiagnosticsPayload builds panel-friendly recent action logs from runs and approvals', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+  })
+
+  await createApproval({
+    requestId: 'approval-log-1',
+    conversationId: 'conv-log-1',
+    toolName: 'read_file',
+    toolPreview: 'file=~/Documents/notes.md',
+    riskLevel: 'medium',
+    channels: ['sidepanel'],
+  })
+  await createRun({
+    runId: 'run-action-success',
+    type: 'exec',
+    state: 'done',
+    summary: 'Open URL finished',
+    meta: {
+      toolName: 'open_url',
+      targetSummary: 'https://example.com',
+      resultSummary: 'page opened',
+    },
+  })
+  await createRun({
+    runId: 'run-action-approval',
+    type: 'approval',
+    state: 'waiting_approval',
+    summary: 'Awaiting file approval',
+    meta: {
+      requestId: 'approval-log-1',
+      approvalStatus: 'pending',
+    },
+  })
+  await createRun({
+    runId: 'run-action-failed',
+    type: 'exec',
+    state: 'failed',
+    summary: 'Screenshot failed',
+    error: 'browser not responding',
+    meta: {
+      toolName: 'capture_screenshot',
+      targetSummary: 'Chrome active tab',
+    },
+  })
+  await flushRunStore()
+  await flushApprovalStore()
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  const success = payload.runs.recentActions.find((item) => item.runId === 'run-action-success')
+  const approval = payload.runs.recentActions.find((item) => item.runId === 'run-action-approval')
+  const failed = payload.runs.recentActions.find((item) => item.runId === 'run-action-failed')
+
+  assert.equal(success.actionName, 'open_url')
+  assert.equal(success.target, 'https://example.com')
+  assert.equal(success.status, 'success')
+  assert.match(success.detail, /page opened/i)
+
+  assert.equal(approval.actionName, 'read_file')
+  assert.match(approval.target, /notes\.md/)
+  assert.equal(approval.status, 'pending_approval')
+  assert.match(approval.detail, /waiting for user approval/i)
+
+  assert.equal(failed.actionName, 'capture_screenshot')
+  assert.equal(failed.target, 'Chrome active tab')
+  assert.equal(failed.status, 'failed')
+  assert.match(failed.detail, /browser not responding/i)
 })
 
 test('buildDiagnosticsPayload summarizes companion budget health across tracked persistent sessions', async (t) => {

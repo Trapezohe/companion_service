@@ -1,7 +1,7 @@
 {
   "name": "trapezohe-companion",
-  "version": "0.1.16",
-  "description": "Local companion daemon for Trapezohe AI \u2014 MCP server host & command runtime",
+  "version": "0.1.17",
+  "description": "Local companion daemon for Trapezohe AI — MCP server host & command runtime",
   "type": "module",
   "bin": {
     "trapezohe-companion": "./bin/cli.mjs"

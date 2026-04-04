@@ -197,6 +197,12 @@ fn run_cli_json<T: DeserializeOwned>(args: &[&str]) -> Result<T> {
 fn resolve_cli_invocation() -> Result<CliInvocation> {
     let repo_cli = resolve_cli_entry().ok();
     let home = dirs::home_dir();
+    #[cfg(target_os = "macos")]
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(invocation) = resolve_bundled_cli_invocation_from(&current_exe) {
+            return Ok(invocation);
+        }
+    }
     resolve_cli_invocation_from(home.as_deref(), repo_cli.as_deref())
 }
 
@@ -239,6 +245,40 @@ fn resolve_cli_invocation_from(home: Option<&Path>, repo_cli: Option<&Path>) -> 
     Ok(CliInvocation {
         program: PathBuf::from("trapezohe-companion"),
         prefix_args: Vec::new(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_bundled_cli_invocation_from(exe_path: &Path) -> Option<CliInvocation> {
+    let macos_dir = exe_path.parent()?;
+    if macos_dir.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+
+    let node_path = contents_dir
+        .join("Resources")
+        .join("runtime")
+        .join("node")
+        .join("bin")
+        .join("node");
+    let cli_path = contents_dir
+        .join("Resources")
+        .join("companion")
+        .join("bin")
+        .join("cli.mjs");
+
+    if !node_path.exists() || !cli_path.exists() {
+        return None;
+    }
+
+    Some(CliInvocation {
+        program: node_path,
+        prefix_args: vec![cli_path.display().to_string()],
     })
 }
 
@@ -357,6 +397,30 @@ fn extract_repair_actions(value: Option<&Value>) -> Vec<RepairAction> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prefers_bundled_app_cli_when_running_from_installed_macos_app() {
+        let temp = tempdir().expect("temp dir");
+        let app_root = temp
+            .path()
+            .join("Trapezohe Companion.app")
+            .join("Contents");
+        let exe_path = app_root.join("MacOS").join("trapezohe-companion-tray");
+        let node_path = app_root.join("Resources").join("runtime").join("node").join("bin").join("node");
+        let cli_path = app_root.join("Resources").join("companion").join("bin").join("cli.mjs");
+
+        std::fs::create_dir_all(exe_path.parent().expect("exe dir")).expect("create exe dir");
+        std::fs::create_dir_all(node_path.parent().expect("node dir")).expect("create node dir");
+        std::fs::create_dir_all(cli_path.parent().expect("cli dir")).expect("create cli dir");
+        std::fs::write(&exe_path, "").expect("write exe");
+        std::fs::write(&node_path, "").expect("write node");
+        std::fs::write(&cli_path, "").expect("write cli");
+
+        let invocation = resolve_bundled_cli_invocation_from(&exe_path).expect("bundled cli");
+        assert_eq!(invocation.program, node_path);
+        assert_eq!(invocation.prefix_args, vec![cli_path.display().to_string()]);
+    }
 
     #[test]
     fn prefers_installed_cli_even_when_source_tree_exists() {

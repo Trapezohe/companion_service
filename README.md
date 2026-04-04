@@ -71,7 +71,7 @@ Download the latest release from:
 
 The desktop tray panel is installed together with the daemon in the packaged desktop installers.
 
-Installers are currently unsigned, so Gatekeeper or SmartScreen may warn on first launch. Verify the release source and `SHA256SUMS.txt` before proceeding.
+The macOS installer is signed and notarized in official GitHub releases. The Windows installer may still trigger SmartScreen until Windows code signing is added. Verify the release source and `SHA256SUMS.txt` before proceeding.
 
 ### Script / CLI install
 
@@ -227,6 +227,27 @@ Useful local outputs:
 
 - macOS package: `dist/installers/trapezohe-companion-macos.pkg`
 - Windows MSI: `dist/installers/trapezohe-companion-windows.msi`
+
+### GitHub release signing inputs
+
+The `Auto Release Companion Installers` workflow now treats signed + notarized macOS releases as the default path. If any required secret is missing, the macOS release job now fails instead of quietly producing an unsigned package. Set these repository secrets before relying on GitHub auto-publish:
+
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_DEVELOPER_ID_APP_P12_BASE64`
+- `APPLE_DEVELOPER_ID_APP_P12_PASSWORD`
+- `APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64`
+- `APPLE_DEVELOPER_ID_INSTALLER_P12_PASSWORD`
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Optional only if you want to override the identity names detected from the imported `.p12` certificates:
+
+- `APPLE_DEVELOPER_ID_APP_IDENTITY`
+- `APPLE_DEVELOPER_ID_INSTALLER_IDENTITY`
+
+On GitHub Actions, the workflow validates these secrets first, imports both Developer ID certificates into a temporary keychain, detects the certificate identity names, writes a temporary signing env file, builds the signed `.pkg`, notarizes it, verifies the signed artifacts, then signs the macOS updater archive with the Tauri updater key.
 
 ## Notes for advanced operators
 
