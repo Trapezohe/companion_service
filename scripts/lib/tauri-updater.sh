@@ -91,6 +91,7 @@ if raw_header_candidate.startswith("untrusted comment:"):
 else:
     normalized = "".join(content.split())
     normalized = normalized.replace('"', "").replace("'", "")
+    normalized = normalized.replace("-", "+").replace("_", "/")
 
 if not normalized:
     raise SystemExit("Updater key content is empty after normalization.")
