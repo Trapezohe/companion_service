@@ -311,9 +311,9 @@ test('package, tray Cargo, and tauri config versions stay aligned for the next r
   const cargoToml = read('tray/Cargo.toml')
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
 
-  assert.equal(pkg.version, '0.1.17')
-  assert.match(cargoToml, /^version = "0\.1\.17"$/m)
-  assert.equal(tauriConfig.version, '0.1.17')
+  assert.equal(pkg.version, '0.1.18')
+  assert.match(cargoToml, /^version = "0\.1\.18"$/m)
+  assert.equal(tauriConfig.version, '0.1.18')
 })
 
 test('README and release copy describe the signed macOS flow without claiming every installer is unsigned', () => {
@@ -386,9 +386,9 @@ test('tray panel uses a dark anchored dropdown surface instead of the previous l
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
 
   assert.match(trayUi, /color-scheme:\s*dark/)
-  assert.match(trayUi, /--window-bg:\s*#08111b/i)
+  assert.match(trayUi, /--window-bg:\s*transparent/i)
   assert.match(trayUi, /\.panel-shell::before/)
-  assert.match(trayUi, /--panel:\s*linear-gradient\(180deg,\s*rgba\(15,\s*24,\s*37/i)
+  assert.match(trayUi, /--panel:\s*rgba\(30,\s*30,\s*30,\s*0\.70\)/i)
   assert.equal(tauriConfig.app?.windows?.[0]?.width, 344)
   assert.equal(tauriConfig.app?.windows?.[0]?.minWidth, 344)
 })
