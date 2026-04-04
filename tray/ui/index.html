@@ -53,7 +53,7 @@
       .panel-shell {
         position: relative;
         width: 100%;
-        min-height: calc(100vh - 22px);
+        height: calc(100vh - 22px);
         border-radius: 12px;
         background: var(--panel);
         border: 0.5px solid var(--panel-border);
@@ -145,14 +145,18 @@
 
       .panel-body {
         flex: 1; min-height: 0; overflow: auto; display: flex;
-        flex-direction: column; gap: 10px; padding-right: 2px;
+        flex-direction: column; gap: 0; padding-right: 0px;
+        margin: 0 -14px;
       }
       .panel-body::-webkit-scrollbar { width: 0px; }
 
       .panel-card {
-        background: var(--card); border: 0.5px solid var(--card-border);
-        border-radius: 8px; padding: 10px 12px; display: flex;
-        flex-direction: column; gap: 8px;
+        background: transparent; border: none; border-bottom: 0.5px solid var(--line);
+        border-radius: 0; padding: 14px; display: flex;
+        flex-direction: column; gap: 12px;
+      }
+      .panel-card:last-child {
+        border-bottom: none;
       }
 
       .card-heading {

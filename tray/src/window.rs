@@ -8,7 +8,7 @@ use crate::models::DisplayLanguage;
 pub const STATUS_WINDOW_LABEL: &str = "status";
 const STATUS_PANEL_VERTICAL_GAP: i32 = 10;
 const DEFAULT_STATUS_WINDOW_WIDTH: f64 = 344.0;
-const DEFAULT_STATUS_WINDOW_HEIGHT: f64 = 520.0;
+const DEFAULT_STATUS_WINDOW_HEIGHT: f64 = 660.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusWindowTrigger {
@@ -263,7 +263,7 @@ mod tests {
                 position: PhysicalPosition::new(200, 6),
                 size: PhysicalSize::new(24, 24),
             },
-            PhysicalSize::new(344, 520),
+            PhysicalSize::new(344, 660),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1440, 900),
@@ -280,7 +280,7 @@ mod tests {
                 position: PhysicalPosition::new(1412, 6),
                 size: PhysicalSize::new(24, 24),
             },
-            PhysicalSize::new(344, 520),
+            PhysicalSize::new(344, 660),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1440, 900),
@@ -291,7 +291,7 @@ mod tests {
                 position: PhysicalPosition::new(2, 6),
                 size: PhysicalSize::new(24, 24),
             },
-            PhysicalSize::new(344, 520),
+            PhysicalSize::new(344, 660),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1440, 900),
@@ -309,7 +309,7 @@ mod tests {
                 position: PhysicalPosition::new(240, 0),
                 size: PhysicalSize::new(24, 18),
             },
-            PhysicalSize::new(344, 520),
+            PhysicalSize::new(344, 660),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 32),
                 size: PhysicalSize::new(1440, 868),
