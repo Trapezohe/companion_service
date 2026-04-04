@@ -235,14 +235,17 @@ jobs:
             exit 1
           fi
 
+          TAURI_KEY_FILE="${RUNNER_TEMP}/tauri-updater-signing-key"
+          printf '%s' "${TAURI_SIGNING_PRIVATE_KEY}" > "${TAURI_KEY_FILE}"
+
           {
             printf 'export APPLE_ID=%q\n' "${APPLE_ID}"
             printf 'export APPLE_TEAM_ID=%q\n' "${APPLE_TEAM_ID}"
             printf 'export APPLE_APP_SPECIFIC_PASSWORD=%q\n' "${APPLE_APP_SPECIFIC_PASSWORD}"
             printf 'export APPLE_DEVELOPER_ID_APP_IDENTITY=%q\n' "${APP_IDENTITY}"
             printf 'export APPLE_DEVELOPER_ID_INSTALLER_IDENTITY=%q\n' "${INSTALLER_IDENTITY}"
-            printf 'export TAURI_SIGNING_PRIVATE_KEY=%q\n' "${TAURI_SIGNING_PRIVATE_KEY}"
-            printf 'export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%q\n' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-EMPTY}"
+            printf 'export TAURI_PRIVATE_KEY_PATH=%q\n' "${TAURI_KEY_FILE}"
+            printf 'export TAURI_PRIVATE_KEY_PASSWORD=%q\n' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
           } > "${SIGNING_ENV_FILE}"
 
           echo "TRAPEZOHE_MACOS_SIGNING_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
@@ -277,6 +280,7 @@ jobs:
           if [[ -n "${TRAPEZOHE_MACOS_SIGNING_ENV_FILE:-}" ]]; then
             rm -f "${TRAPEZOHE_MACOS_SIGNING_ENV_FILE}"
           fi
+          rm -f "${RUNNER_TEMP}/tauri-updater-signing-key" || true
           rm -f "${RUNNER_TEMP}/developer-id-app.p12" "${RUNNER_TEMP}/developer-id-installer.p12" "${RUNNER_TEMP}/developer-id-app.pem" "${RUNNER_TEMP}/developer-id-installer.pem" || true
           security default-keychain -d user -s login.keychain-db || true
           security list-keychains -d user -s login.keychain-db || true

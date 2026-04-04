@@ -53,9 +53,9 @@ tauri_updater_write_sanitized_key_file() {
   temp_key_file="$(mktemp /tmp/trapezohe-updater-key.XXXXXX)"
 
   if [[ -n "${source_path}" ]]; then
-    tr -d '[:space:]' < "${source_path}" > "${temp_key_file}"
+    cat "${source_path}" > "${temp_key_file}"
   else
-    printf '%s' "${inline_key}" | tr -d '[:space:]' > "${temp_key_file}"
+    printf '%s' "${inline_key}" > "${temp_key_file}"
   fi
 
   printf '%s\n' "${temp_key_file}"
