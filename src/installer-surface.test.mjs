@@ -547,6 +547,62 @@ printf 'signed' > "$archive_path.sig"
   assert.equal(readFileSync(copiedKeyPath, 'utf8'), multiLineKey)
 })
 
+test('tauri updater signer strips a single wrapping quote pair from key files before signing', () => {
+  const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-quoted-key-test-'))
+  const fakeBinDir = path.join(tempDir, 'bin')
+  const archivePath = path.join(tempDir, 'artifact.tar.gz')
+  const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
+  const fakeNpxPath = path.join(fakeBinDir, 'npx')
+  const sourceKeyPath = path.join(tempDir, 'quoted.key')
+  const copiedKeyPath = path.join(tempDir, 'copied.key')
+  const quotedKey = '"dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5Cg=="'
+
+  execFileSync('mkdir', ['-p', fakeBinDir])
+  writeFileSync(archivePath, 'archive')
+  writeFileSync(sourceKeyPath, `${quotedKey}\n`)
+  writeFileSync(
+    fakeNpxPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+key_path=""
+archive_path=""
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    key_path="$2"
+    shift 2
+    continue
+  fi
+  archive_path="$1"
+  shift
+done
+cp "$key_path" "${copiedKeyPath}"
+printf 'signed' > "$archive_path.sig"
+`,
+    { mode: 0o755 },
+  )
+
+  execFileSync(
+    'bash',
+    [
+      '-lc',
+      `
+        set -euo pipefail
+        PATH="${fakeBinDir}:$PATH"
+        source "${updaterLibPath}"
+        export TAURI_PRIVATE_KEY_PATH='${sourceKeyPath}'
+        tauri_sign_archive "${archivePath}" "${signaturePath}"
+      `,
+    ],
+    { encoding: 'utf8' },
+  )
+
+  assert.equal(
+    readFileSync(copiedKeyPath, 'utf8'),
+    'dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5Cg==',
+  )
+})
+
 test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {
   const workflow = read('.github/workflows/release-installers.yml')
   const signingLib = read('scripts/lib/macos-signing.sh')

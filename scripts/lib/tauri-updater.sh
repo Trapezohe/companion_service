@@ -49,14 +49,24 @@ tauri_updater_write_sanitized_key_file() {
   local source_path="${1:-}"
   local inline_key="${2:-}"
   local temp_key_file=""
+  local key_content=""
 
   temp_key_file="$(mktemp /tmp/trapezohe-updater-key.XXXXXX)"
 
   if [[ -n "${source_path}" ]]; then
-    cat "${source_path}" > "${temp_key_file}"
+    key_content="$(cat "${source_path}")"
   else
-    printf '%s' "${inline_key}" > "${temp_key_file}"
+    key_content="${inline_key}"
   fi
+
+  key_content="${key_content//$'\r'/}"
+  if [[ "${key_content}" == \"*\" && "${key_content}" == *\" ]]; then
+    key_content="${key_content:1:${#key_content}-2}"
+  elif [[ "${key_content}" == \'*\' && "${key_content}" == *\' ]]; then
+    key_content="${key_content:1:${#key_content}-2}"
+  fi
+
+  printf '%s' "${key_content}" > "${temp_key_file}"
 
   printf '%s\n' "${temp_key_file}"
 }
