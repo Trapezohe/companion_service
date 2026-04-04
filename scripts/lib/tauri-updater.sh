@@ -66,15 +66,28 @@ import sys
 from pathlib import Path
 
 content = os.environ.get("TRAPEZOHE_UPDATER_KEY_CONTENT", "")
+content = content.replace("\\r\\n", "\n").replace("\\n", "\n")
 content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+raw_header_candidate = content.replace("_", " ")
 
 if len(content) >= 2 and content[0] == content[-1] and content[0] in {'"', "'"}:
     content = content[1:-1].strip()
+    raw_header_candidate = content.replace("_", " ")
 
-if content.startswith("untrusted comment:"):
-    if not content.endswith("\n"):
-        content = f"{content}\n"
-    normalized = base64.b64encode(content.encode("utf-8")).decode("ascii")
+if raw_header_candidate.startswith("untrusted comment:"):
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    header = lines[0].replace("_", " ") if lines else raw_header_candidate
+    payload_parts = [line.replace('"', "").replace("'", "") for line in lines[1:]]
+    payload = "".join("".join(payload_parts).split())
+
+    if not payload and len(lines) == 1:
+        normalized_inline = "".join(content.replace('"', "").replace("'", "").split())
+        if normalized_inline.startswith("untrustedcomment:"):
+            raise SystemExit("Updater key looks like a raw minisign secret key header without a base64 payload line.")
+        payload = normalized_inline
+
+    raw_content = f"{header}\n{payload}\n"
+    normalized = base64.b64encode(raw_content.encode("utf-8")).decode("ascii")
 else:
     normalized = "".join(content.split())
     normalized = normalized.replace('"', "").replace("'", "")

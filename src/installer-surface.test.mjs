@@ -544,7 +544,10 @@ printf 'signed' > "$archive_path.sig"
     { encoding: 'utf8' },
   )
 
-  assert.equal(readFileSync(copiedKeyPath, 'utf8'), Buffer.from(`${multiLineKey}\n`).toString('base64'))
+  assert.equal(
+    readFileSync(copiedKeyPath, 'utf8'),
+    Buffer.from('untrusted comment: minisign secret key\nABCDEF123456\n').toString('base64'),
+  )
 })
 
 test('tauri updater signer compacts wrapped base64 key files before signing', () => {
@@ -651,6 +654,59 @@ printf 'signed' > "$archive_path.sig"
   )
 
   assert.equal(readFileSync(copiedKeyPath, 'utf8'), base64Key)
+})
+
+test('tauri updater signer encodes raw key headers even when spaces were replaced with underscores', () => {
+  const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-key-underscore-test-'))
+  const fakeBinDir = path.join(tempDir, 'bin')
+  const archivePath = path.join(tempDir, 'artifact.tar.gz')
+  const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
+  const fakeNpxPath = path.join(fakeBinDir, 'npx')
+  const sourceKeyPath = path.join(tempDir, 'underscore.key')
+  const copiedKeyPath = path.join(tempDir, 'copied.key')
+  const rawKey = 'untrusted_comment:_minisign_secret_key\nABCDEF123456\n'
+
+  execFileSync('mkdir', ['-p', fakeBinDir])
+  writeFileSync(archivePath, 'archive')
+  writeFileSync(sourceKeyPath, rawKey)
+  writeFileSync(
+    fakeNpxPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+key_path=""
+archive_path=""
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    key_path="$2"
+    shift 2
+    continue
+  fi
+  archive_path="$1"
+  shift
+done
+cp "$key_path" "${copiedKeyPath}"
+printf 'signed' > "$archive_path.sig"
+`,
+    { mode: 0o755 },
+  )
+
+  execFileSync(
+    'bash',
+    [
+      '-lc',
+      `
+        set -euo pipefail
+        PATH="${fakeBinDir}:$PATH"
+        source "${updaterLibPath}"
+        export TAURI_PRIVATE_KEY_PATH='${sourceKeyPath}'
+        tauri_sign_archive "${archivePath}" "${signaturePath}"
+      `,
+    ],
+    { encoding: 'utf8' },
+  )
+
+  assert.equal(readFileSync(copiedKeyPath, 'utf8'), Buffer.from('untrusted comment: minisign secret key\nABCDEF123456\n').toString('base64'))
 })
 
 test('tauri updater signer strips a single wrapping quote pair from key files before signing', () => {
