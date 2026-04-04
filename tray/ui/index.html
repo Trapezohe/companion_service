@@ -696,6 +696,7 @@
           updateReady: 'A newer version is ready. Use the button above to install it.',
           updateBusy: 'Update is being downloaded and installed.',
           updateFailed: 'Update failed. You can retry here or open the release page from Settings.',
+          updateManualInstall: 'Automatic updates are unavailable for this copy. Open the release page and install the latest package.',
           statusHeading: 'Service Status',
           statusHealthy: 'Healthy',
           statusChecking: 'Checking',
@@ -775,6 +776,7 @@
           updateReady: '发现新版本，点击上方按钮可直接安装。',
           updateBusy: '更新正在下载并安装。',
           updateFailed: '更新失败，你可以在这里重试，或去设置里打开发布页。',
+          updateManualInstall: '当前这份应用不支持自动更新。请打开发布页并安装最新安装包。',
           statusHeading: '运行状态',
           statusHealthy: '正常',
           statusChecking: '检查中',
@@ -992,6 +994,9 @@
         if (update.status === 'error') {
           return { cmd: 'check_update', label: t('retryUpdate'), className: 'secondary', disabled: state.busy };
         }
+        if (update.available && !update.can_install && isVersionNewer(update.latest_version, update.current_version)) {
+          return { cmd: 'open_release_page', label: t('releaseFallback'), className: 'secondary', disabled: state.busy };
+        }
         if (update.available && update.can_install && isVersionNewer(update.latest_version, update.current_version)) {
           return { cmd: 'install_update', label: t('installNow'), className: 'install', disabled: state.busy };
         }
@@ -1004,6 +1009,9 @@
         if (update.status === 'error') return update.last_error || t('updateFailed');
         if (update.status === 'downloading' || update.status === 'installing' || update.status === 'installed') {
           return t('updateBusy');
+        }
+        if (update.available && !update.can_install && isVersionNewer(update.latest_version, update.current_version)) {
+          return update.last_error || t('updateManualInstall');
         }
         if (update.available && update.can_install && isVersionNewer(update.latest_version, update.current_version)) {
           return `${t('latestVersion', { version: update.latest_version })} · ${t('updateReady')}`;

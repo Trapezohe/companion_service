@@ -329,7 +329,7 @@ test('README and release copy describe the signed macOS flow without claiming ev
   assert.match(releaseWorkflow, /Windows — SmartScreen/i)
 })
 
-test('macOS tray updater is wired for signed in-app updates instead of release-page downloads', () => {
+test('macOS tray updater is wired for signed in-app updates with a manual-install fallback for unsupported app locations', () => {
   const cargoToml = read('tray/Cargo.toml')
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
   const capabilities = read('tray/capabilities/default.json')
@@ -350,8 +350,12 @@ test('macOS tray updater is wired for signed in-app updates instead of release-p
   assert.match(trayLib, /tauri_plugin_updater::Builder/)
   assert.match(trayLib, /install_update/)
   assert.match(updaterRs, /download_and_install/)
+  assert.match(updaterRs, /Automatic updates only work for the packaged app installed in \/Applications or ~\/Applications/)
 
   assert.match(trayUi, /install_update/)
+  assert.match(trayUi, /open_release_page/)
+  assert.match(trayUi, /updateManualInstall/)
+  assert.match(trayUi, /update\.available && !update\.can_install/)
   assert.match(trayUi, /Download & Install|Installing|Downloading update/)
   assert.doesNotMatch(trayUi, /\$\('updateBanner'\)\.addEventListener\('click', async \(\) => \{\s*if \(invoke\) await invoke\('open_release_page'\)/)
 })

@@ -1,10 +1,9 @@
-#[cfg(not(target_os = "macos"))]
-use anyhow::anyhow;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 #[cfg(not(target_os = "macos"))]
 use reqwest::Client;
 #[cfg(not(target_os = "macos"))]
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 #[cfg(not(target_os = "macos"))]
 use std::time::Duration;
@@ -158,10 +157,73 @@ fn with_error(mut info: UpdateInfo, message: impl Into<String>) -> UpdateInfo {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_bundle_path_from_executable(exe_path: &Path) -> Option<PathBuf> {
+    let macos_dir = exe_path.parent()?;
+    if macos_dir.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+
+    Some(contents_dir.parent()?.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_installability_reason_for_bundle(bundle_path: &Path, home_dir: Option<&Path>) -> Option<String> {
+    let parent_dir = bundle_path.parent()?;
+    let system_applications_dir = Path::new("/Applications");
+    let user_applications_dir = home_dir.map(|home| home.join("Applications"));
+    let in_supported_location = parent_dir == system_applications_dir
+        || user_applications_dir
+            .as_deref()
+            .is_some_and(|expected| parent_dir == expected);
+
+    if in_supported_location {
+        return None;
+    }
+
+    Some(
+        "Automatic updates only work for the packaged app installed in /Applications or ~/Applications. Open the release page and install the latest package."
+            .to_string(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_update_installability() -> (bool, Option<String>) {
+    let Some(current_exe) = std::env::current_exe().ok() else {
+        return (
+            false,
+            Some(
+                "Automatic updates are unavailable because the current app location could not be determined. Open the release page and install the latest package."
+                    .to_string(),
+            ),
+        );
+    };
+
+    let Some(bundle_path) = macos_bundle_path_from_executable(&current_exe) else {
+        return (
+            false,
+            Some(
+                "Automatic updates only work from an installed app bundle. Open the release page and install the latest package."
+                    .to_string(),
+            ),
+        );
+    };
+
+    let reason = macos_installability_reason_for_bundle(&bundle_path, dirs::home_dir().as_deref());
+    (reason.is_none(), reason)
+}
+
+#[cfg(target_os = "macos")]
 fn macos_update_info(current_version: &str, update: &tauri_plugin_updater::Update) -> UpdateInfo {
+    let (can_install, installability_reason) = macos_update_installability();
+
     UpdateInfo {
         available: true,
-        can_install: true,
+        can_install,
         current_version: current_version.to_string(),
         latest_version: update.version.clone(),
         release_url: release_url_for_version(&update.version),
@@ -171,7 +233,7 @@ fn macos_update_info(current_version: &str, update: &tauri_plugin_updater::Updat
         status: UpdateStatus::Available.as_str().to_string(),
         downloaded_bytes: 0,
         total_bytes: None,
-        last_error: None,
+        last_error: installability_reason,
     }
 }
 
@@ -250,6 +312,12 @@ pub async fn install_update(
         };
 
         let base_info = macos_update_info(current_version, &update);
+        if !base_info.can_install {
+            return Err(anyhow!(base_info.last_error.clone().unwrap_or_else(|| {
+                "Automatic updates are unavailable for this app location.".to_string()
+            })));
+        }
+
         let progress_state = Arc::new(Mutex::new((0_u64, None::<u64>)));
 
         emit_progress(UpdateInfo {
@@ -323,6 +391,8 @@ pub fn install_failure_info(previous: Option<UpdateInfo>, current_version: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn release_urls_are_tag_stable() {
@@ -374,6 +444,53 @@ mod tests {
         assert!(is_newer("0.2.0", "0.1.2"));
         assert!(is_newer("1.0.0", "0.9.9"));
         assert!(is_newer("0.1.3", "0.1.2"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_installability_accepts_standard_applications_locations() {
+        let home = Path::new("/Users/tester");
+
+        assert_eq!(
+            macos_installability_reason_for_bundle(
+                Path::new("/Applications/Trapezohe Companion.app"),
+                Some(home),
+            ),
+            None,
+        );
+        assert_eq!(
+            macos_installability_reason_for_bundle(
+                Path::new("/Users/tester/Applications/Trapezohe Companion.app"),
+                Some(home),
+            ),
+            None,
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_installability_rejects_dev_stage_locations() {
+        let home = Path::new("/Users/tester");
+        let reason = macos_installability_reason_for_bundle(
+            Path::new("/Users/tester/Desktop/trapezohe-companion/dist/stage/macos-tray/Trapezohe Companion.app"),
+            Some(home),
+        );
+
+        assert!(reason.is_some());
+        assert!(reason.unwrap().contains("/Applications or ~/Applications"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_bundle_path_is_derived_from_current_executable_path() {
+        let exe_path = Path::new(
+            "/Applications/Trapezohe Companion.app/Contents/MacOS/trapezohe-companion-tray",
+        );
+
+        assert_eq!(
+            macos_bundle_path_from_executable(exe_path),
+            Some(PathBuf::from("/Applications/Trapezohe Companion.app")),
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
