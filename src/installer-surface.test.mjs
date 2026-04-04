@@ -493,19 +493,21 @@ printf 'signed' > "\${@: -1}.sig"
   assert.match(capture, new RegExp(`ARGS=.*${archivePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
 })
 
-test('tauri updater signer normalizes inline private keys that contain accidental whitespace', () => {
+test('tauri updater signer preserves multi-line minisign keys when a key file path is provided', () => {
   const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-key-test-'))
   const fakeBinDir = path.join(tempDir, 'bin')
-  const capturePath = path.join(tempDir, 'capture.txt')
   const archivePath = path.join(tempDir, 'artifact.tar.gz')
   const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
   const fakeNpxPath = path.join(fakeBinDir, 'npx')
-  const spacedKey = 'dW50cn VzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5'
+  const sourceKeyPath = path.join(tempDir, 'source.key')
+  const copiedKeyPath = path.join(tempDir, 'copied.key')
+  const multiLineKey = 'untrusted comment: minisign secret key\\nABCDEF123456\\n'
 
   execFileSync('mkdir', ['-p', fakeBinDir])
   writeFileSync(archivePath, 'archive')
-writeFileSync(
+  writeFileSync(sourceKeyPath, multiLineKey)
+  writeFileSync(
     fakeNpxPath,
     `#!/usr/bin/env bash
 set -euo pipefail
@@ -520,10 +522,7 @@ while [[ "$#" -gt 0 ]]; do
   archive_path="$1"
   shift
 done
-{
-  printf 'KEY_PATH=%s\\n' "$key_path"
-  printf 'KEY_CONTENT=%s\\n' "$(cat "$key_path")"
-} > "${capturePath}"
+cp "$key_path" "${copiedKeyPath}"
 printf 'signed' > "$archive_path.sig"
 `,
     { mode: 0o755 },
@@ -537,7 +536,7 @@ printf 'signed' > "$archive_path.sig"
         set -euo pipefail
         PATH="${fakeBinDir}:$PATH"
         source "${updaterLibPath}"
-        export TAURI_SIGNING_PRIVATE_KEY='${spacedKey}'
+        export TAURI_PRIVATE_KEY_PATH='${sourceKeyPath}'
         export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='EMPTY'
         tauri_sign_archive "${archivePath}" "${signaturePath}"
       `,
@@ -545,11 +544,7 @@ printf 'signed' > "$archive_path.sig"
     { encoding: 'utf8' },
   )
 
-  const capture = readFileSync(capturePath, 'utf8')
-  const keyLine = capture.trim().split('\n').find((line) => line.startsWith('KEY_CONTENT='))
-  assert.match(capture, /KEY_PATH=\/tmp\/trapezohe-updater-key\./)
-  assert.match(capture, /KEY_CONTENT=dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5/)
-  assert.equal(keyLine, 'KEY_CONTENT=dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5')
+  assert.equal(readFileSync(copiedKeyPath, 'utf8'), multiLineKey)
 })
 
 test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {
@@ -582,10 +577,13 @@ test('GitHub macOS release flow writes a signing env file and uses it as the def
   assert.match(workflow, /INSTALLER_IDENTITY="\$\{APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-\$\{DETECTED_APPLE_DEVELOPER_ID_INSTALLER_IDENTITY:-\}\}"/)
   assert.match(workflow, /printf 'export APPLE_DEVELOPER_ID_APP_IDENTITY=%q\\n' "\$\{APP_IDENTITY\}"/)
   assert.match(workflow, /printf 'export APPLE_DEVELOPER_ID_INSTALLER_IDENTITY=%q\\n' "\$\{INSTALLER_IDENTITY\}"/)
-  assert.match(workflow, /printf 'export TAURI_SIGNING_PRIVATE_KEY=%q\\n' "\$\{TAURI_SIGNING_PRIVATE_KEY\}"/)
-  assert.match(workflow, /printf 'export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%q\\n' "\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-EMPTY\}"/)
+  assert.match(workflow, /TAURI_KEY_FILE="\$\{RUNNER_TEMP\}\/tauri-updater-signing-key"/)
+  assert.match(workflow, /printf '%s' "\$\{TAURI_SIGNING_PRIVATE_KEY\}" > "\$\{TAURI_KEY_FILE\}"/)
+  assert.match(workflow, /printf 'export TAURI_PRIVATE_KEY_PATH=%q\\n' "\$\{TAURI_KEY_FILE\}"/)
+  assert.match(workflow, /printf 'export TAURI_PRIVATE_KEY_PASSWORD=%q\\n' "\$\{TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-\}"/)
   assert.match(workflow, /echo "TRAPEZOHE_MACOS_SIGNING_ENV_FILE=\$\{SIGNING_ENV_FILE\}" >> "\$GITHUB_ENV"/)
   assert.match(workflow, /echo "TRAPEZOHE_UPDATER_ENV_FILE=\$\{SIGNING_ENV_FILE\}" >> "\$GITHUB_ENV"/)
+  assert.match(workflow, /rm -f "\$\{RUNNER_TEMP\}\/tauri-updater-signing-key" \|\| true/)
   assert.match(workflow, /rm -f "\$\{RUNNER_TEMP\}\/developer-id-app\.p12" "\$\{RUNNER_TEMP\}\/developer-id-installer\.p12" "\$\{RUNNER_TEMP\}\/developer-id-app\.pem" "\$\{RUNNER_TEMP\}\/developer-id-installer\.pem" \|\| true/)
   assert.match(workflow, /Verify signed macOS release artifacts/)
   assert.match(workflow, /xcrun stapler validate dist\/installers\/trapezohe-companion-macos\.pkg/)
