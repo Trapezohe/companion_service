@@ -61,6 +61,7 @@ tauri_updater_write_sanitized_key_file() {
 
 TRAPEZOHE_UPDATER_KEY_CONTENT="${key_content}" python3 - "${temp_key_file}" <<'PY'
 import base64
+import binascii
 import os
 import sys
 from pathlib import Path
@@ -95,6 +96,21 @@ else:
 
 if not normalized:
     raise SystemExit("Updater key content is empty after normalization.")
+
+try:
+  base64.b64decode(normalized, validate=True)
+except binascii.Error as exc:
+  first_padding = normalized.find("=")
+  has_internal_padding = first_padding not in {-1, len(normalized) - 1, len(normalized) - 2}
+  if has_internal_padding:
+    raise SystemExit(
+      "Updater key secret is malformed: found '=' padding before the end of the base64 payload. "
+      "Regenerate the TAURI_SIGNING_PRIVATE_KEY secret from the original private key file and paste it as a single value."
+    ) from exc
+  raise SystemExit(
+    f"Updater key content is not valid base64 after normalization: {exc}. "
+    "Regenerate the TAURI_SIGNING_PRIVATE_KEY secret from the original private key file and paste it exactly once."
+  ) from exc
 
 Path(sys.argv[1]).write_text(normalized, encoding="utf-8")
 PY

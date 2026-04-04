@@ -819,6 +819,47 @@ printf 'signed' > "$archive_path.sig"
   )
 })
 
+test('tauri updater signer fails early with a secret-format error when base64 padding appears before the end', () => {
+  const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-key-invalid-padding-test-'))
+  const fakeBinDir = path.join(tempDir, 'bin')
+  const archivePath = path.join(tempDir, 'artifact.tar.gz')
+  const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
+  const fakeNpxPath = path.join(fakeBinDir, 'npx')
+  const sourceKeyPath = path.join(tempDir, 'invalid-padding.key')
+
+  execFileSync('mkdir', ['-p', fakeBinDir])
+  writeFileSync(archivePath, 'archive')
+  writeFileSync(sourceKeyPath, 'YWJjZA==ZWY=')
+  writeFileSync(
+    fakeNpxPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'signed' > "$1.sig"
+`,
+    { mode: 0o755 },
+  )
+
+  assert.throws(
+    () =>
+      execFileSync(
+        'bash',
+        [
+          '-lc',
+          `
+            set -euo pipefail
+            PATH="${fakeBinDir}:$PATH"
+            source "${updaterLibPath}"
+            export TAURI_PRIVATE_KEY_PATH='${sourceKeyPath}'
+            tauri_sign_archive "${archivePath}" "${signaturePath}"
+          `,
+        ],
+        { encoding: 'utf8', stdio: 'pipe' },
+      ),
+    /Updater key secret is malformed: found '=' padding before the end of the base64 payload/,
+  )
+})
+
 test('GitHub macOS release flow writes a signing env file and uses it as the default script input', () => {
   const workflow = read('.github/workflows/release-installers.yml')
   const signingLib = read('scripts/lib/macos-signing.sh')
