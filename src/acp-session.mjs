@@ -338,6 +338,8 @@ export function createAcpSession(opts = {}) {
     noOutputHeartbeatCount: 0,
     authDiagnosticMissingKeys: [],
     lastNoOutputDiagnosticKind: '',
+    lastNoOutputDiagnosticStatusCode: '',
+    lastNoOutputDiagnosticSummary: '',
     lastNoOutputDiagnosticHeartbeat: 0,
     lastSessionProbeHeartbeat: 0,
     lastThinkingStatusAt: 0,
@@ -416,6 +418,10 @@ export function listAcpSessions(options = {}) {
     queueDepth: s.queueDepth,
     origin: s.origin || undefined,
     inputProvenance: s.inputProvenance || undefined,
+    stallKind: typeof s.lastNoOutputDiagnosticKind === 'string' ? s.lastNoOutputDiagnosticKind : undefined,
+    stallStatusCode: typeof s.lastNoOutputDiagnosticStatusCode === 'string' ? s.lastNoOutputDiagnosticStatusCode : undefined,
+    stallSummary: typeof s.lastNoOutputDiagnosticSummary === 'string' ? s.lastNoOutputDiagnosticSummary : undefined,
+    stallHeartbeatCount: Number.isFinite(s.noOutputHeartbeatCount) ? Number(s.noOutputHeartbeatCount) : 0,
   }))
 
   return {
@@ -472,6 +478,8 @@ export function enqueuePrompt(sessionId, opts = {}) {
     session.lastNoOutputHeartbeatAt = undefined
     session.noOutputHeartbeatCount = 0
     session.lastNoOutputDiagnosticKind = ''
+    session.lastNoOutputDiagnosticStatusCode = ''
+    session.lastNoOutputDiagnosticSummary = ''
     session.lastNoOutputDiagnosticHeartbeat = 0
     session.lastSessionProbeHeartbeat = 0
     session.lastThinkingStatusAt = 0
@@ -520,6 +528,8 @@ export function enqueuePrompt(sessionId, opts = {}) {
     session.lastNoOutputHeartbeatAt = undefined
     session.noOutputHeartbeatCount = 0
     session.lastNoOutputDiagnosticKind = ''
+    session.lastNoOutputDiagnosticStatusCode = ''
+    session.lastNoOutputDiagnosticSummary = ''
     session.lastNoOutputDiagnosticHeartbeat = 0
     session.lastSessionProbeHeartbeat = 0
     session.lastThinkingStatusAt = 0

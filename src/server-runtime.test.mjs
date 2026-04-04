@@ -643,6 +643,9 @@ test('diagnostics and self-check endpoints return structured companion health de
   assert.equal(typeof diagnostics.payload.automation.budgetHealth, 'object')
   assert.equal(typeof diagnostics.payload.automation.budgetHealth.warning, 'number')
   assert.equal(typeof diagnostics.payload.automation.budgetHealth.critical, 'number')
+  assert.equal(typeof diagnostics.payload.doctor.status, 'string')
+  assert.equal(typeof diagnostics.payload.doctor.summary.pendingApprovals, 'number')
+  assert.ok(Array.isArray(diagnostics.payload.doctor.issues))
 
   const selfCheck = await requestJson(ctx, '/api/system/self-check')
   assert.equal(selfCheck.status, 200)
@@ -1656,7 +1659,9 @@ test('ACP session creation and prompt execution preserve ingress provenance in t
   }
   assert.ok(acpRun)
   assert.equal(acpRun.type, 'acp')
+  assert.equal(acpRun.sessionType, `acp/${created.payload.sessionId}`)
   assert.equal(acpRun.meta?.sessionId, created.payload.sessionId)
+  assert.equal(acpRun.meta?.sessionType, `acp/${created.payload.sessionId}`)
   assert.equal(acpRun.meta?.origin, 'code_agent')
   assert.deepEqual(acpRun.meta?.inputProvenance, {
     kind: 'inter_agent',
@@ -1689,6 +1694,8 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
       meta: {
         correlationId: 'corr-approval-1',
         toolCallId: 'call-tool-1',
+        sessionId: 'chat:main:conv-approval',
+        sessionType: 'chat/main',
       },
     },
   })
@@ -1697,6 +1704,8 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
   assert.equal(created.payload.status, 'pending')
   assert.equal(created.payload.meta?.correlationId, 'corr-approval-1')
   assert.equal(created.payload.meta?.toolCallId, 'call-tool-1')
+  assert.equal(created.payload.meta?.sessionId, 'chat:main:conv-approval')
+  assert.equal(created.payload.meta?.sessionType, 'chat/main')
   assert.equal(typeof created.payload.meta?.runId, 'string')
   assert.ok(created.payload.meta.runId)
 
@@ -1713,9 +1722,12 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
   assert.ok(approvalRun)
   assert.equal(approvalRun.type, 'approval')
   assert.equal(approvalRun.state, 'waiting_approval')
+  assert.equal(approvalRun.sessionId, 'chat:main:conv-approval')
+  assert.equal(approvalRun.sessionType, 'chat/main')
   assert.equal(approvalRun.meta?.requestId, 'approval-1')
   assert.equal(approvalRun.meta?.conversationId, 'conv-approval')
   assert.equal(approvalRun.meta?.toolCallId, 'call-tool-1')
+  assert.equal(approvalRun.meta?.sessionType, 'chat/main')
 
   const resolved = await requestJson(ctx, '/api/runtime/approvals/approval-1/resolve', {
     method: 'POST',
@@ -1737,6 +1749,7 @@ test('approval lifecycle is mirrored into the runtime runs ledger with correlati
 
   assert.ok(approvalRun)
   assert.equal(approvalRun.state, 'done')
+  assert.equal(approvalRun.sessionType, 'chat/main')
   assert.equal(approvalRun.meta?.approvalStatus, 'approved')
   assert.equal(approvalRun.meta?.resolvedBy, 'sidepanel')
 })
@@ -1818,6 +1831,60 @@ test('repeated approval POSTs reuse the canonical run and resolve that same run'
   assert.equal(approvalRuns[0].state, 'done')
   assert.equal(approvalRuns[0].meta?.approvalStatus, 'approved')
   assert.equal(approvalRuns[0].meta?.resolvedBy, 'retry-test')
+})
+
+test('approval POST accepts legacy nested tracking metadata and normalizes it onto the approval record and run', async (t) => {
+  const ctx = await startTestServer()
+  t.after(async () => {
+    await stopTestServer(ctx.server)
+    cleanupAllSessions()
+  })
+
+  const created = await requestJson(ctx, '/api/runtime/approvals', {
+    method: 'POST',
+    body: {
+      requestId: 'approval-legacy-tracking-1',
+      conversationId: 'conv-legacy-tracking-1',
+      toolName: 'execute_transaction',
+      toolPreview: 'Transfer 3 USDT to 0x123',
+      riskLevel: 'high',
+      channels: ['sidepanel'],
+      expiresAt: Date.now() + 60_000,
+      meta: {
+        correlationId: 'corr-legacy-tracking-1',
+        toolCallId: 'tool-call-legacy-tracking-1',
+        tracking: {
+          runId: 'run-legacy-tracking-1',
+          sessionId: 'chat:main:conv-legacy-tracking-1',
+          sessionType: 'chat/main',
+        },
+      },
+    },
+  })
+
+  assert.equal(created.status, 201)
+  assert.equal(created.payload.meta?.sessionId, 'chat:main:conv-legacy-tracking-1')
+  assert.equal(created.payload.meta?.sessionType, 'chat/main')
+  assert.equal(created.payload.meta?.tracking?.sessionId, 'chat:main:conv-legacy-tracking-1')
+  assert.equal(created.payload.meta?.tracking?.sessionType, 'chat/main')
+  assert.equal(typeof created.payload.meta?.runId, 'string')
+  assert.ok(created.payload.meta?.runId)
+
+  let approvalRun = null
+  const approvalRunId = created.payload.meta.runId
+  const pendingDeadline = Date.now() + 5_000
+  while (Date.now() < pendingDeadline) {
+    const runs = await listRuns({ limit: 100, offset: 0 })
+    approvalRun = runs.runs.find((run) => run.runId === approvalRunId) || null
+    if (approvalRun) break
+    await delay(25)
+  }
+
+  assert.ok(approvalRun)
+  assert.equal(approvalRun.sessionId, 'chat:main:conv-legacy-tracking-1')
+  assert.equal(approvalRun.sessionType, 'chat/main')
+  assert.equal(approvalRun.meta?.sessionId, 'chat:main:conv-legacy-tracking-1')
+  assert.equal(approvalRun.meta?.sessionType, 'chat/main')
 })
 
 test('repeating POST after approval resolution does not reopen the canonical run', async (t) => {
@@ -2040,6 +2107,7 @@ test('ACP permission waits create approval records tied to the existing ACP run'
   assert.equal(pendingApproval.status, 'pending')
   assert.equal(pendingApproval.meta?.runId, created.payload.runId)
   assert.equal(pendingApproval.meta?.sessionId, created.payload.sessionId)
+  assert.equal(pendingApproval.meta?.sessionType, `acp/${created.payload.sessionId}`)
   assert.deepEqual(pendingApproval.meta?.inputProvenance, {
     kind: 'remote_user',
     sourceChannel: 'telegram',
@@ -2059,6 +2127,7 @@ test('ACP permission waits create approval records tied to the existing ACP run'
 
   assert.ok(acpRun)
   assert.equal(acpRun.state, 'waiting_approval')
+  assert.equal(acpRun.sessionType, `acp/${created.payload.sessionId}`)
   assert.equal(acpRun.meta?.requestId, pendingApproval.requestId)
   assert.equal(acpRun.meta?.approvalStatus, 'pending')
 

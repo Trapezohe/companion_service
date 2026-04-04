@@ -19,7 +19,12 @@ import {
   syncBrowserArtifact,
   syncBrowserSession,
 } from './browser-ledger.mjs'
-import { cleanupAllAcpSessions, createAcpSession } from './acp-session.mjs'
+import {
+  cleanupAllAcpSessions,
+  createAcpSession,
+  enqueuePrompt,
+  listAcpEvents,
+} from './acp-session.mjs'
 import {
   clearAutomationSessionStoreForTests,
   setAutomationSessionBinding,
@@ -50,6 +55,21 @@ after(async () => {
   else process.env.TRAPEZOHE_CONFIG_DIR = previousConfigDir
   await rm(testConfigDir, { recursive: true, force: true }).catch(() => undefined)
 })
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForAcpEvent(sessionId, matcher, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const { events } = listAcpEvents(sessionId, { after: 0, limit: 500 })
+    const match = events.find((event) => matcher(event))
+    if (match) return match
+    await delay(25)
+  }
+  throw new Error(`Timed out waiting for ACP event in session ${sessionId}`)
+}
 
 const BASE_FEATURES = {
   acp: true,
@@ -301,6 +321,13 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.mediaNormalizationSummary.enabled, true)
   assert.equal(payload.mediaNormalizationSummary.available, true)
   assert.equal(payload.mediaNormalizationSummary.engine, 'test-engine')
+  assert.equal(payload.doctor.status, 'needs_attention')
+  assert.equal(payload.doctor.summary.pendingApprovals, 1)
+  assert.equal(payload.doctor.summary.recentFailedRuns, 1)
+  assert.equal(payload.doctor.summary.runningAcpSessions, 0)
+  assert.equal(payload.doctor.summary.activeWorkflowRuns, 0)
+  assert.equal(payload.doctor.summary.browserLoaded, true)
+  assert.ok(payload.doctor.issues.some((issue) => issue.code === 'pending_approvals'))
   assert.equal(payload.browser.enabled, true)
   assert.equal(payload.browser.loaded, true)
   assert.equal(payload.browser.capabilities.browserLedger, true)
@@ -319,6 +346,72 @@ test('buildDiagnosticsPayload summarizes capability coverage, ACP ingress, and m
   assert.equal(payload.browser.operator.drilldownAvailable, true)
   assert.equal(payload.browser.operator.routes.drilldown, '/api/browser/drilldown')
   assert.deepEqual(payload.browser.operator.eventWindowModes, ['tail'])
+})
+
+
+
+test('buildDiagnosticsPayload rolls up ACP stall diagnostics by kind', async (t) => {
+  await clearRunStoreForTests()
+  await clearApprovalStoreForTests()
+  cleanupAllAcpSessions()
+  t.after(async () => {
+    await clearRunStoreForTests()
+    await clearApprovalStoreForTests()
+    cleanupAllAcpSessions()
+  })
+
+  const stalled = createAcpSession({
+    agentType: 'raw',
+    origin: 'automation',
+    command: [
+      'node',
+      '-e',
+      `console.log(${JSON.stringify(JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: 'demo.txt' } },
+          ],
+        },
+      }))}); setTimeout(() => process.exit(0), 700)`,
+    ],
+    timeoutMs: 0,
+    noOutputHeartbeatMs: 100,
+    noOutputCheckIntervalMs: 25,
+  })
+  const healthy = createAcpSession({
+    agentType: 'raw',
+    origin: 'interactive',
+    command: 'node -e "setTimeout(() => process.exit(0), 300)"',
+    timeoutMs: 0,
+    noOutputHeartbeatMs: 250,
+    noOutputCheckIntervalMs: 50,
+  })
+  await enqueuePrompt(stalled.sessionId, { prompt: '' })
+  await enqueuePrompt(healthy.sessionId, { prompt: '' })
+  await waitForAcpEvent(
+    stalled.sessionId,
+    (event) => event.type === 'status' && event.statusCode === 'no_output_tool_wait',
+    5_000,
+  )
+
+  const payload = await buildDiagnosticsPayload({
+    protocolVersion: 'trapezohe-companion/2026-03-07',
+    version: '0.1.0-test',
+    supportedFeatures: BASE_FEATURES,
+    getPermissionPolicy: () => ({ mode: 'full', workspaceRoots: [] }),
+    getMediaSupport: async () => ({ available: false, engine: null, reason: 'feature_disabled' }),
+    mcpManager: {
+      getConnectedCount: () => 0,
+      getAllTools: () => [],
+      getServers: () => [],
+    },
+  })
+
+  assert.equal(payload.acp.stallSummary.totalStalledSessions, 1)
+  assert.equal(payload.acp.stallSummary.byKind.tool_wait, 1)
+  assert.equal(payload.acp.stallSummary.recent[0].sessionId, stalled.sessionId)
+  assert.equal(payload.acp.stallSummary.recent[0].stallStatusCode, 'no_output_tool_wait')
 })
 
 test('buildDiagnosticsPayload summarizes automation execution bindings and active automation sessions', async (t) => {

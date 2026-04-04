@@ -243,6 +243,98 @@ function buildAcpIngressSummary({ runs, approvals, acpSessions }) {
   }
 }
 
+function buildAcpStallSummary(acpSessions) {
+  const sessions = Array.isArray(acpSessions?.sessions) ? acpSessions.sessions : []
+  const stalledSessions = sessions
+    .filter((session) => typeof session?.stallKind === 'string' && session.stallKind.trim())
+    .map((session) => ({
+      sessionId: session.sessionId,
+      agentType: session.agentType,
+      state: session.state,
+      origin: session.origin || null,
+      stallKind: session.stallKind,
+      stallStatusCode: session.stallStatusCode || null,
+      stallSummary: session.stallSummary || null,
+      stallHeartbeatCount: Number.isFinite(session.stallHeartbeatCount)
+        ? Number(session.stallHeartbeatCount)
+        : 0,
+      startedAt: Number.isFinite(session.startedAt) ? session.startedAt : null,
+    }))
+
+  const byKind = stalledSessions.reduce((acc, session) => {
+    acc[session.stallKind] = (acc[session.stallKind] || 0) + 1
+    return acc
+  }, {})
+
+  return {
+    totalStalledSessions: stalledSessions.length,
+    byKind,
+    recent: stalledSessions.slice(0, 10),
+  }
+}
+
+function buildDoctorSummary({
+  approvals,
+  runs,
+  acpSessions,
+  acpStallSummary,
+  activeWorkflowRuns,
+  browserLedgerSummary,
+}) {
+  const summary = {
+    pendingApprovals: Array.isArray(approvals) ? approvals.length : 0,
+    recentFailedRuns: Array.isArray(runs?.runs)
+      ? runs.runs.filter((run) => run.state === 'failed').length
+      : 0,
+    runningAcpSessions: Array.isArray(acpSessions?.sessions)
+      ? acpSessions.sessions.filter((session) => session.state === 'running').length
+      : 0,
+    stalledAcpSessions: Number.isFinite(acpStallSummary?.totalStalledSessions)
+      ? Number(acpStallSummary.totalStalledSessions)
+      : 0,
+    activeWorkflowRuns: Number.isFinite(activeWorkflowRuns) ? Number(activeWorkflowRuns) : 0,
+    browserLoaded: typeof browserLedgerSummary?.loaded === 'boolean'
+      ? browserLedgerSummary.loaded
+      : null,
+  }
+
+  const issues = []
+  if (summary.pendingApprovals > 0) {
+    issues.push({
+      code: 'pending_approvals',
+      severity: 'warn',
+      message: 'There are pending approvals waiting for user action.',
+    })
+  }
+  if (summary.recentFailedRuns > 0) {
+    issues.push({
+      code: 'recent_failed_runs',
+      severity: 'warn',
+      message: 'Recent companion runs have failed.',
+    })
+  }
+  if (summary.stalledAcpSessions > 0) {
+    issues.push({
+      code: 'stalled_acp_sessions',
+      severity: 'warn',
+      message: 'One or more ACP sessions appear stalled.',
+    })
+  }
+  if (summary.browserLoaded === false) {
+    issues.push({
+      code: 'browser_not_loaded',
+      severity: 'warn',
+      message: 'Browser runtime support is enabled but not loaded.',
+    })
+  }
+
+  return {
+    status: issues.length > 0 ? 'needs_attention' : 'ok',
+    summary,
+    issues,
+  }
+}
+
 async function buildAutomationExecutionSummary(acpSessions) {
   const bindings = await listAutomationSessionBindings().catch(() => [])
   const sweep = getAutomationSessionSweepSummary()
@@ -504,12 +596,21 @@ export async function buildDiagnosticsPayload(params) {
 
   const capabilitySummary = buildCapabilitySummary(params.supportedFeatures)
   const acpIngressSummary = buildAcpIngressSummary({ runs, approvals, acpSessions })
+  const acpStallSummary = buildAcpStallSummary(acpSessions)
   const mediaNormalizationSummary = await buildMediaNormalizationSummary(params)
   const memoryShadowRefresh = await buildMemoryShadowRefreshSummary(params)
   const browserLedgerSummary = await getBrowserLedgerDiagnostics({
     supportedFeatures: params.supportedFeatures,
   })
   const recentRunExplanations = buildRecentRunExplanations(runs, approvals)
+  const doctor = buildDoctorSummary({
+    approvals,
+    runs,
+    acpSessions,
+    acpStallSummary,
+    activeWorkflowRuns,
+    browserLedgerSummary,
+  })
 
   const payload = {
     contractVersion: RUN_CONTRACT_VERSION,
@@ -553,6 +654,7 @@ export async function buildDiagnosticsPayload(params) {
       totalSessions: acpSessions.total,
       runningSessions: acpSessions.sessions.filter((session) => session.state === 'running').length,
       idleSessions: acpSessions.sessions.filter((session) => session.state === 'idle').length,
+      stallSummary: acpStallSummary,
     },
     capabilitySummary,
     acpIngressSummary,
@@ -569,6 +671,7 @@ export async function buildDiagnosticsPayload(params) {
       operator: browserLedgerSummary.operator,
       capabilities: browserLedgerSummary.capabilities,
     },
+    doctor,
   }
 
   logEvent('info', 'diagnostics', 'Companion diagnostics generated', {

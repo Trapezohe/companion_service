@@ -89,10 +89,19 @@ function buildCronLifecycleMeta(job) {
   }
 }
 
+function buildAutomationSessionType(taskId) {
+  const normalizedTaskId = typeof taskId === 'string' && taskId.trim()
+    ? taskId.trim()
+    : ''
+  return normalizedTaskId ? `automation/${normalizedTaskId}` : undefined
+}
+
 async function queuePendingRun(job) {
+  const sessionType = buildAutomationSessionType(job?.id)
   const run = await createRun({
     type: 'cron',
     state: 'queued',
+    ...(sessionType ? { sessionType } : {}),
     summary: `Cron timer fired, queuing for extension: ${job.name}`,
     meta: buildCronLifecycleMeta(job),
   }).catch(() => null)
@@ -136,11 +145,13 @@ async function executeCompanionAutomation(job, options = {}) {
     return await automationExecutor(job)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    const sessionType = buildAutomationSessionType(job?.id)
     console.error(`[cron-companion] Failed to execute automation job ${job.id}:`, message)
     await createRun({
       type: 'cron',
       state: 'failed',
       finishedAt: Date.now(),
+      ...(sessionType ? { sessionType } : {}),
       summary: `Companion automation failed before run startup: ${job.name}`,
       error: message,
       meta: {

@@ -180,6 +180,8 @@ export function emitNoOutputDiagnosticIfNeeded(session, silenceSeconds, options 
     statusCode: diagnostic.statusCode,
   })
   session.lastNoOutputDiagnosticKind = diagnostic.kind
+  session.lastNoOutputDiagnosticStatusCode = diagnostic.statusCode
+  session.lastNoOutputDiagnosticSummary = diagnostic.summary
   session.lastNoOutputDiagnosticHeartbeat = heartbeatCount
 }
 

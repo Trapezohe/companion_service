@@ -64,7 +64,10 @@ import {
   updateRun,
   flushRunStore,
 } from './run-store.mjs'
-import { RUN_CONTRACT_VERSION } from './run-envelope.mjs'
+import {
+  RUN_CONTRACT_VERSION,
+  normalizeAssistantSessionType,
+} from './run-envelope.mjs'
 import {
   createApproval,
   expireOverdueApprovals,
@@ -187,6 +190,87 @@ function getRunSessionId(run) {
       ? run.meta.sessionId.trim()
       : ''
   return sessionId || ''
+}
+
+function getRunSessionType(run) {
+  const sessionType = typeof run?.sessionType === 'string' && run.sessionType.trim()
+    ? run.sessionType.trim()
+    : typeof run?.meta?.sessionType === 'string'
+      ? run.meta.sessionType.trim()
+      : ''
+  return sessionType || ''
+}
+
+function buildAcpSessionType(sessionId) {
+  const normalizedSessionId = String(sessionId || '').trim()
+  return normalizedSessionId ? `acp/${normalizedSessionId}` : ''
+}
+
+function inferAssistantSessionType(sessionId) {
+  const normalizedSessionId = String(sessionId || '').trim()
+  if (!normalizedSessionId) return undefined
+  if (normalizedSessionId.startsWith('chat:main')) return 'chat/main'
+  if (normalizedSessionId.startsWith('workflow:')) {
+    const instanceId = normalizedSessionId.slice('workflow:'.length).trim()
+    return instanceId ? `workflow/${instanceId}` : undefined
+  }
+  if (normalizedSessionId.startsWith('automation:')) {
+    const taskId = normalizedSessionId.slice('automation:'.length).trim()
+    return taskId ? `automation/${taskId}` : undefined
+  }
+  if (normalizedSessionId.startsWith('acp:')) {
+    const acpSessionId = normalizedSessionId.slice('acp:'.length).trim()
+    return acpSessionId ? `acp/${acpSessionId}` : undefined
+  }
+  return undefined
+}
+
+function resolveApprovalTrackingMeta(meta) {
+  const baseMeta = meta && typeof meta === 'object' ? meta : {}
+  const nestedTracking = baseMeta.tracking && typeof baseMeta.tracking === 'object'
+    ? baseMeta.tracking
+    : {}
+  const runId = String(
+    baseMeta.runId
+    || nestedTracking.runId
+    || '',
+  ).trim()
+  const sessionId = String(
+    baseMeta.sessionId
+    || nestedTracking.sessionId
+    || '',
+  ).trim()
+  const sessionType = normalizeAssistantSessionType(
+    baseMeta.sessionType
+    || nestedTracking.sessionType
+    || inferAssistantSessionType(sessionId),
+  )
+  return {
+    ...(runId ? { runId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(sessionType ? { sessionType } : {}),
+  }
+}
+
+function resolveApprovalSessionTracking({ bodyMeta, existingApproval, run } = {}) {
+  const incomingTracking = resolveApprovalTrackingMeta(bodyMeta)
+  const existingTracking = resolveApprovalTrackingMeta(existingApproval?.meta)
+  const sessionId = String(
+    getRunSessionId(run)
+    || incomingTracking.sessionId
+    || existingTracking.sessionId
+    || '',
+  ).trim()
+  const sessionType = normalizeAssistantSessionType(
+    getRunSessionType(run)
+    || incomingTracking.sessionType
+    || existingTracking.sessionType
+    || inferAssistantSessionType(sessionId),
+  )
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(sessionType ? { sessionType } : {}),
+  }
 }
 
 function trimApprovalText(value, maxChars = 500) {
@@ -854,16 +938,19 @@ export function createCompanionServer({
 
   const createAcpRun = async (session) => {
     try {
+      const sessionType = buildAcpSessionType(session.sessionId)
       const run = await createRun({
         type: 'acp',
         state: 'idle',
         sessionId: session.sessionId,
+        ...(sessionType ? { sessionType } : {}),
         laneId: 'remote:acp',
         source: 'remote',
         contractVersion: RUN_CONTRACT_VERSION,
         summary: 'ACP session created',
         meta: {
           sessionId: session.sessionId,
+          ...(sessionType ? { sessionType } : {}),
           agentType: session.agentType,
           cwd: session.cwd,
           ...(session.origin ? { origin: session.origin } : {}),
@@ -1275,13 +1362,24 @@ export function createCompanionServer({
         const requestId = String(body.requestId || '').trim()
         const result = await serializeApprovalMutation(requestId, async () => {
           const existing = requestId ? await getApprovalById(requestId).catch(() => null) : null
-          const existingRunId = String(existing?.meta?.runId || '').trim()
+          const existingRunId = String(
+            resolveApprovalTrackingMeta(existing?.meta).runId
+            || existing?.meta?.runId
+            || '',
+          ).trim()
           let run = existingRunId ? await getRunById(existingRunId).catch(() => null) : null
+          const sessionTracking = resolveApprovalSessionTracking({
+            bodyMeta: body.meta,
+            existingApproval: existing,
+            run,
+          })
           if (!run) {
             run = await createRun({
               type: 'approval',
               state: 'waiting_approval',
               startedAt: Date.now(),
+              ...(sessionTracking.sessionId ? { sessionId: sessionTracking.sessionId } : {}),
+              ...(sessionTracking.sessionType ? { sessionType: sessionTracking.sessionType } : {}),
               laneId: 'remote:approval',
               source: 'remote',
               contractVersion: RUN_CONTRACT_VERSION,
@@ -1294,6 +1392,7 @@ export function createCompanionServer({
                 riskLevel: String(body.riskLevel || 'medium'),
                 channels: Array.isArray(body.channels) ? body.channels.map(String) : [],
                 ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+                ...sessionTracking,
               },
             }).catch(() => null)
           }
@@ -1301,6 +1400,7 @@ export function createCompanionServer({
             ...body,
             meta: {
               ...(body.meta && typeof body.meta === 'object' ? body.meta : {}),
+              ...sessionTracking,
               ...(run?.runId ? { runId: run.runId } : {}),
             },
           })
@@ -1315,6 +1415,8 @@ export function createCompanionServer({
                 : 'cancelled'
             await updateRun(run.runId, {
               state: desiredState,
+              ...(sessionTracking.sessionId ? { sessionId: sessionTracking.sessionId } : {}),
+              ...(sessionTracking.sessionType ? { sessionType: sessionTracking.sessionType } : {}),
               ...(desiredState === 'waiting_approval'
                 ? {}
                 : { finishedAt: Number(run.finishedAt) || Date.now() }),
@@ -1334,6 +1436,7 @@ export function createCompanionServer({
                 channels: record.channels,
                 toolCallId: record.meta?.toolCallId,
                 correlationId: record.meta?.correlationId,
+                ...sessionTracking,
                 approvalStatus: record.status,
                 ...(record.resolvedBy ? { resolvedBy: record.resolvedBy } : {}),
               }),

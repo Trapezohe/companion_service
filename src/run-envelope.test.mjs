@@ -47,3 +47,21 @@ test('normalizeRun derives a default attemptId for new canonical rows', () => {
 
   assert.equal(run.attemptId, 'run-attempt:attempt-1')
 })
+
+test('normalizeRun keeps assistant sessionType and mirrors it into meta', () => {
+  const run = normalizeRun({
+    runId: 'run-session-type',
+    type: 'acp',
+    state: 'idle',
+    createdAt: 1_710_000_000_000,
+    updatedAt: 1_710_000_000_000,
+    sessionId: 'acp-session-1',
+    sessionType: 'acp/acp-session-1',
+    contractVersion: RUN_CONTRACT_VERSION,
+  })
+
+  assert.equal(run.sessionId, 'acp-session-1')
+  assert.equal(run.sessionType, 'acp/acp-session-1')
+  assert.equal(run.meta.sessionId, 'acp-session-1')
+  assert.equal(run.meta.sessionType, 'acp/acp-session-1')
+})

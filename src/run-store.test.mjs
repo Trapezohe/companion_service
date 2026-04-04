@@ -45,6 +45,7 @@ test('run store supports create -> update -> list -> get -> diagnostics', async 
       summary: 'Executing command',
       startedAt: Date.now(),
       sessionId: 'session-exec-1',
+      sessionType: 'chat/main',
       laneId: 'remote:exec',
       source: 'remote',
       contractVersion: 2,
@@ -53,10 +54,12 @@ test('run store supports create -> update -> list -> get -> diagnostics', async 
     assert.ok(run.runId)
     assert.equal(run.state, 'running')
     assert.equal(run.sessionId, 'session-exec-1')
+    assert.equal(run.sessionType, 'chat/main')
     assert.equal(run.laneId, 'remote:exec')
     assert.equal(run.source, 'remote')
     assert.equal(run.contractVersion, 2)
     assert.equal(run.attemptId, `${run.runId}:attempt-1`)
+    assert.equal(run.meta?.sessionType, 'chat/main')
 
     const updated = await mod.updateRun(run.runId, {
       state: 'done',
@@ -75,6 +78,7 @@ test('run store supports create -> update -> list -> get -> diagnostics', async 
     assert.equal(fetched.runId, run.runId)
     assert.equal(fetched.state, 'done')
     assert.equal(fetched.sessionId, 'session-exec-1')
+    assert.equal(fetched.sessionType, 'chat/main')
     assert.equal(fetched.contractVersion, 2)
 
     const diagnostics = await mod.getRunDiagnostics({ limit: 20 })
@@ -194,10 +198,12 @@ test('run store loads mixed legacy persisted rows and keeps replay lineage acros
             createdAt: 1_710_000_000_200,
             updatedAt: 1_710_000_000_300,
             source: 'replay',
+            sessionType: 'acp/acp-replay-upgrade',
             parentRunId: 'run-parent-upgrade',
             contractVersion: 2,
             meta: {
               sessionId: 'acp-replay-upgrade',
+              sessionType: 'acp/acp-replay-upgrade',
               replayOf: replayLineage,
             },
           },
@@ -225,6 +231,7 @@ test('run store loads mixed legacy persisted rows and keeps replay lineage acros
     assert.ok(replay)
     assert.equal(replay.contractVersion, 2)
     assert.equal(replay.sessionId, 'acp-replay-upgrade')
+    assert.equal(replay.sessionType, 'acp/acp-replay-upgrade')
     assert.equal(replay.source, 'replay')
     assert.equal(replay.parentRunId, 'run-parent-upgrade')
     assert.deepEqual(replay.meta?.replayOf, replayLineage)

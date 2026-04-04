@@ -169,6 +169,7 @@ test('timer firings keep extension_chat jobs on pending replay even when automat
 
     const runs = await runStore.listRuns({ type: 'cron', limit: 10, offset: 0 })
     assert.equal(runs.runs.length, 1)
+    assert.equal(runs.runs[0].sessionType, 'automation/job-extension-chat')
     assert.equal(runs.runs[0].meta?.sessionTarget, 'isolated')
     assert.deepEqual(runs.runs[0].meta?.replayOf, {
       kind: 'cron_pending',

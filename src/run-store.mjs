@@ -42,6 +42,8 @@ function RUNS_BACKUP_FILE() {
  *   error?: string,
  *   meta?: Record<string, unknown>,
  *   deliveryState?: { channel?: string, attempts?: number, lastAttemptAt?: number }
+ *   sessionId?: string,
+ *   sessionType?: string,
  * }} RunEnvelope
  */
 
@@ -226,6 +228,7 @@ export async function createRun(input) {
     startedAt: input?.startedAt,
     finishedAt: input?.finishedAt,
     sessionId: input?.sessionId,
+    sessionType: input?.sessionType,
     attemptId: input?.attemptId,
     laneId: input?.laneId,
     source: input?.source,

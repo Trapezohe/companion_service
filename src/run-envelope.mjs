@@ -47,6 +47,17 @@ export function normalizeRunSource(value) {
   return RUN_SOURCES.has(normalized) ? normalized : undefined
 }
 
+export function normalizeAssistantSessionType(value) {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  if (!normalized) return undefined
+  if (normalized === 'chat/main') return normalized
+  if (normalized.startsWith('workflow/')) return normalized
+  if (normalized.startsWith('automation/')) return normalized
+  if (normalized.startsWith('acp/')) return normalized
+  return undefined
+}
+
 function normalizeContractVersion(value) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return undefined
@@ -73,12 +84,15 @@ export function normalizeDeliveryState(input) {
   }
 }
 
-function normalizeRunMeta(input, sessionId) {
+function normalizeRunMeta(input, sessionId, sessionType) {
   const base = input && typeof input === 'object' && !Array.isArray(input)
     ? cloneJson(input)
     : {}
   if (sessionId && typeof base.sessionId !== 'string') {
     base.sessionId = sessionId
+  }
+  if (sessionType && typeof base.sessionType !== 'string') {
+    base.sessionType = sessionType
   }
   return Object.keys(base).length > 0 ? base : undefined
 }
@@ -86,6 +100,7 @@ function normalizeRunMeta(input, sessionId) {
 function hasExplicitV2Fields(input) {
   return Boolean(
     normalizeOptionalId(input.sessionId)
+    || normalizeAssistantSessionType(input.sessionType)
     || normalizeOptionalId(input.attemptId)
     || normalizeOptionalId(input.laneId)
     || normalizeRunSource(input.source)
@@ -113,6 +128,8 @@ export function normalizeRun(input) {
   const finishedAt = normalizeTimestamp(input.finishedAt)
   const sessionId = normalizeOptionalId(input.sessionId)
     || normalizeOptionalId(input.meta?.sessionId)
+  const sessionType = normalizeAssistantSessionType(input.sessionType)
+    || normalizeAssistantSessionType(input.meta?.sessionType)
   const explicitContractVersion = normalizeContractVersion(input.contractVersion)
   const contractVersion = explicitContractVersion
     || (hasExplicitV2Fields(input) ? RUN_CONTRACT_VERSION : LEGACY_RUN_CONTRACT_VERSION)
@@ -124,7 +141,7 @@ export function normalizeRun(input) {
   const stateFallback = finishedAt !== undefined
     ? (finishedAt && startedAt !== undefined ? 'done' : 'failed')
     : 'queued'
-  const meta = normalizeRunMeta(input.meta, sessionId)
+  const meta = normalizeRunMeta(input.meta, sessionId, sessionType)
   const deliveryState = normalizeDeliveryState(input.deliveryState)
   const summary = normalizeOptionalText(input.summary, 500)
   const error = normalizeOptionalText(input.error, 500)
@@ -142,6 +159,7 @@ export function normalizeRun(input) {
     ...(meta ? { meta } : {}),
     ...(deliveryState ? { deliveryState } : {}),
     ...(sessionId ? { sessionId } : {}),
+    ...(sessionType ? { sessionType } : {}),
     ...(attemptId ? { attemptId } : {}),
     ...(laneId ? { laneId } : {}),
     ...(source ? { source } : {}),

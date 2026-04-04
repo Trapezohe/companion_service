@@ -20,6 +20,7 @@ import {
   buildAgentPath,
   classifyNoOutputDiagnostic,
   setAcpSessionEventHook,
+  listAcpSessions,
 } from './acp-session.mjs'
 import { setAcpSessionTransitionHook } from './acp-lifecycle.mjs'
 
@@ -73,6 +74,46 @@ async function waitForEventCount(sessionId, minCount, timeoutMs = 8000) {
 }
 
 // ── Test 1: createAcpSession creates idle session ──
+
+
+test('listAcpSessions exposes the latest stall diagnostic summary for diagnostics rollups', async (t) => {
+  cleanupAllAcpSessions()
+  t.after(() => cleanupAllAcpSessions())
+
+  const { sessionId } = createAcpSession({
+    agentType: 'raw',
+    cwd: process.cwd(),
+    command: [
+      'node',
+      '-e',
+      `console.log(${JSON.stringify(JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: { path: 'demo.txt' } },
+          ],
+        },
+      }))}); setTimeout(() => process.exit(0), 700)`,
+    ],
+    timeoutMs: 0,
+    noOutputHeartbeatMs: 100,
+    noOutputCheckIntervalMs: 25,
+  })
+  await enqueuePrompt(sessionId, { prompt: '' })
+  await waitForEventMatch(
+    sessionId,
+    (event) => event.type === 'status' && event.statusCode === 'no_output_tool_wait',
+    5_000,
+  )
+
+  const snapshot = listAcpSessions({ limit: 10, offset: 0 })
+  assert.equal(snapshot.sessions[0].stallKind, 'tool_wait')
+  assert.equal(snapshot.sessions[0].stallStatusCode, 'no_output_tool_wait')
+  assert.match(snapshot.sessions[0].stallSummary || '', /stalled after tool execution/i)
+  assert.ok((snapshot.sessions[0].stallHeartbeatCount || 0) >= 1)
+  await waitForState(sessionId, 'done', 5_000)
+})
+
 
 test('createAcpSession creates session in idle state', async (t) => {
   cleanupAllAcpSessions()

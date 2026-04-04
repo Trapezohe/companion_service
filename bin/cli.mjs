@@ -7,6 +7,7 @@
  *   trapezohe-companion start [-d]          Start the companion daemon
  *   trapezohe-companion stop [--force]      Stop the daemon
  *   trapezohe-companion status              Show daemon status
+ *   trapezohe-companion doctor              Show a compact diagnostics summary
  *   trapezohe-companion init                Create default config
  *   trapezohe-companion config              Print config file path
  *   trapezohe-companion token               Show current access token
@@ -103,6 +104,8 @@ async function main() {
       return handleStop()
     case 'status':
       return handleStatus()
+    case 'doctor':
+      return handleDoctor()
     case 'init':
       return handleInit()
     case 'config':
@@ -170,6 +173,19 @@ async function fetchHealth(config, token) {
     if (!res.ok) return null
     const data = await res.json()
     return data && data.ok ? data : null
+  } catch {
+    return null
+  }
+}
+
+async function fetchDiagnostics(config, token) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${config.port}/api/system/diagnostics`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(2000),
+    })
+    if (!res.ok) return null
+    return await res.json()
   } catch {
     return null
   }
@@ -515,6 +531,70 @@ async function handleStatus() {
     console.log(`  MCP:        ${health.mcpServers} server(s), ${health.mcpTools} tool(s)`)
   } else {
     console.log('  MCP:        health check failed (token mismatch or service degraded)')
+  }
+}
+
+async function handleDoctor() {
+  const jsonMode = hasFlag('--json')
+  const config = await loadConfig()
+  const token = resolveToken(config)
+  const state = await inspectDaemonState(config, token)
+
+  if (state.state === 'stopped') {
+    const payload = { ok: false, status: 'stopped', cleaned: state.cleaned || null }
+    if (jsonMode) {
+      console.log(JSON.stringify(payload))
+      return
+    }
+    const suffix = state.cleaned ? ` (${state.cleaned})` : ''
+    console.log(`[trapezohe-companion] Doctor: stopped${suffix}`)
+    return
+  }
+
+  if (state.state === 'unknown') {
+    const payload = { ok: false, status: 'unknown', pid: state.pid || null }
+    if (jsonMode) {
+      console.log(JSON.stringify(payload))
+      return
+    }
+    console.log(`[trapezohe-companion] Doctor: unknown (PID file points to ${state.pid})`)
+    return
+  }
+
+  const diagnostics = await fetchDiagnostics(config, token)
+  if (!diagnostics) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ ok: false, status: 'unreachable' }))
+      return
+    }
+    console.log('[trapezohe-companion] Doctor: unreachable')
+    console.log('  Failed to fetch /api/system/diagnostics from the running daemon.')
+    return
+  }
+
+  if (jsonMode) {
+    console.log(JSON.stringify(diagnostics))
+    return
+  }
+
+  const doctor = diagnostics.doctor || {
+    status: 'unknown',
+    summary: {},
+    issues: [],
+  }
+  const summary = doctor.summary || {}
+  console.log(`[trapezohe-companion] Doctor: ${doctor.status}`)
+  console.log(`  Pending approvals:   ${summary.pendingApprovals ?? 0}`)
+  console.log(`  Recent failed runs:  ${summary.recentFailedRuns ?? 0}`)
+  console.log(`  Running ACP:         ${summary.runningAcpSessions ?? 0}`)
+  console.log(`  Stalled ACP:         ${summary.stalledAcpSessions ?? 0}`)
+  console.log(`  Active workflows:    ${summary.activeWorkflowRuns ?? 0}`)
+  console.log(`  Browser loaded:      ${summary.browserLoaded == null ? 'unknown' : String(summary.browserLoaded)}`)
+  if (Array.isArray(doctor.issues) && doctor.issues.length > 0) {
+    console.log('  Issues:')
+    for (const issue of doctor.issues) {
+      console.log(`    - ${issue.code}: ${issue.message}`)
+    }
   }
 }
 
@@ -1097,6 +1177,7 @@ Commands:
   start [-d]            Start the companion service (-d for daemon mode)
   stop [--force]        Stop the daemon (--force sends SIGKILL if needed)
   status                Show current status
+  doctor [--json]       Show compact diagnostics summary
   init                  Create default config at ~/.trapezohe/companion.json
   config                Print config file path
   token                 Print access token
@@ -1112,6 +1193,7 @@ Examples:
   trapezohe-companion start         # Start in foreground
   trapezohe-companion start -d      # Start as background daemon
   trapezohe-companion status        # Check if running
+  trapezohe-companion doctor        # Show compact diagnostics
   trapezohe-companion stop --force  # Force-stop if graceful stop hangs
   trapezohe-companion policy        # Print current policy JSON
   trapezohe-companion policy full

@@ -1,7 +1,7 @@
 {
   "name": "trapezohe-companion",
   "version": "0.1.16",
-  "description": "Local companion daemon for Trapezohe AI — MCP server host & command runtime",
+  "description": "Local companion daemon for Trapezohe AI \u2014 MCP server host & command runtime",
   "type": "module",
   "bin": {
     "trapezohe-companion": "./bin/cli.mjs"
@@ -23,7 +23,8 @@
     "build:installer:macos": "bash scripts/build-macos-pkg.sh",
     "build:installer:windows": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1",
     "stage:tray:macos": "bash scripts/build-tray-macos.sh",
-    "stage:tray:windows": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-tray-windows.ps1"
+    "stage:tray:windows": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-tray-windows.ps1",
+    "test:critical": "node scripts/test-critical.mjs"
   },
   "keywords": [
     "trapezohe",

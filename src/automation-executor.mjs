@@ -228,6 +228,13 @@ function buildSessionLineage(sessionId) {
   }
 }
 
+function buildAutomationSessionType(taskId) {
+  const normalizedTaskId = typeof taskId === 'string' && taskId.trim()
+    ? taskId.trim()
+    : ''
+  return normalizedTaskId ? `automation/${normalizedTaskId}` : undefined
+}
+
 function resolvePersistentBudgetSessionKey(sessionTarget) {
   return typeof sessionTarget === 'string' && sessionTarget.startsWith('persistent:')
     ? sessionTarget
@@ -379,6 +386,7 @@ async function recordRejectedRun(job, spec, deps) {
     type: 'cron',
     state: 'failed',
     finishedAt: Date.now(),
+    ...(buildAutomationSessionType(job?.id) ? { sessionType: buildAutomationSessionType(job?.id) } : {}),
     summary: `Companion automation rejected: ${job?.name || 'unnamed job'}`,
     error: reason,
     meta: buildAutomationMeta(job, spec, {
@@ -409,10 +417,12 @@ export async function executeAutomationJob(job, overrides = {}) {
   }
 
   const replayOf = cloneReplayOf(job?.replayOf)
+  const sessionType = buildAutomationSessionType(job?.id)
   const queuedRun = await deps.createRun({
     type: 'cron',
     state: 'queued',
     summary: `Launching companion automation: ${job?.name || 'unnamed job'}`,
+    ...(sessionType ? { sessionType } : {}),
     ...(replayOf ? { source: 'replay' } : {}),
     ...(typeof job?.parentRunId === 'string' && job.parentRunId ? { parentRunId: job.parentRunId } : {}),
     meta: buildAutomationMeta(job, spec),
