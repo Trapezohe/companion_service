@@ -59,14 +59,30 @@ tauri_updater_write_sanitized_key_file() {
     key_content="${inline_key}"
   fi
 
-  key_content="${key_content//$'\r'/}"
-  if [[ "${key_content}" == \"*\" && "${key_content}" == *\" ]]; then
-    key_content="${key_content:1:${#key_content}-2}"
-  elif [[ "${key_content}" == \'*\' && "${key_content}" == *\' ]]; then
-    key_content="${key_content:1:${#key_content}-2}"
-  fi
+  TRAPEZOHE_UPDATER_KEY_CONTENT="${key_content}" python3 - "${temp_key_file}" <<'PY'
+import base64
+import os
+import sys
+from pathlib import Path
 
-  printf '%s' "${key_content}" > "${temp_key_file}"
+content = os.environ.get("TRAPEZOHE_UPDATER_KEY_CONTENT", "")
+content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+if len(content) >= 2 and content[0] == content[-1] and content[0] in {'"', "'"}:
+    content = content[1:-1].strip()
+
+if content.startswith("untrusted comment:"):
+    if not content.endswith("\n"):
+        content = f"{content}\n"
+    normalized = base64.b64encode(content.encode("utf-8")).decode("ascii")
+else:
+    normalized = "".join(content.split())
+
+if not normalized:
+    raise SystemExit("Updater key content is empty after normalization.")
+
+Path(sys.argv[1]).write_text(normalized, encoding="utf-8")
+PY
 
   printf '%s\n' "${temp_key_file}"
 }
