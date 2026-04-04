@@ -59,7 +59,7 @@ tauri_updater_write_sanitized_key_file() {
     key_content="${inline_key}"
   fi
 
-  TRAPEZOHE_UPDATER_KEY_CONTENT="${key_content}" python3 - "${temp_key_file}" <<'PY'
+TRAPEZOHE_UPDATER_KEY_CONTENT="${key_content}" python3 - "${temp_key_file}" <<'PY'
 import base64
 import os
 import sys
@@ -77,6 +77,7 @@ if content.startswith("untrusted comment:"):
     normalized = base64.b64encode(content.encode("utf-8")).decode("ascii")
 else:
     normalized = "".join(content.split())
+    normalized = normalized.replace('"', "").replace("'", "")
 
 if not normalized:
     raise SystemExit("Updater key content is empty after normalization.")

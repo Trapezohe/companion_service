@@ -600,6 +600,59 @@ printf 'signed' > "$archive_path.sig"
   assert.equal(readFileSync(copiedKeyPath, 'utf8'), base64Key)
 })
 
+test('tauri updater signer removes embedded quote characters from quoted base64 key files before signing', () => {
+  const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-key-quote-test-'))
+  const fakeBinDir = path.join(tempDir, 'bin')
+  const archivePath = path.join(tempDir, 'artifact.tar.gz')
+  const signaturePath = path.join(tempDir, 'artifact.tar.gz.sig.out')
+  const fakeNpxPath = path.join(fakeBinDir, 'npx')
+  const sourceKeyPath = path.join(tempDir, 'quoted-lines.key')
+  const copiedKeyPath = path.join(tempDir, 'copied.key')
+  const base64Key = 'dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5Cg=='
+
+  execFileSync('mkdir', ['-p', fakeBinDir])
+  writeFileSync(archivePath, 'archive')
+  writeFileSync(sourceKeyPath, '"dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWdu"\n"IGVuY3J5cHRlZCBzZWNyZXQga2V5Cg=="\n')
+  writeFileSync(
+    fakeNpxPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+key_path=""
+archive_path=""
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    key_path="$2"
+    shift 2
+    continue
+  fi
+  archive_path="$1"
+  shift
+done
+cp "$key_path" "${copiedKeyPath}"
+printf 'signed' > "$archive_path.sig"
+`,
+    { mode: 0o755 },
+  )
+
+  execFileSync(
+    'bash',
+    [
+      '-lc',
+      `
+        set -euo pipefail
+        PATH="${fakeBinDir}:$PATH"
+        source "${updaterLibPath}"
+        export TAURI_PRIVATE_KEY_PATH='${sourceKeyPath}'
+        tauri_sign_archive "${archivePath}" "${signaturePath}"
+      `,
+    ],
+    { encoding: 'utf8' },
+  )
+
+  assert.equal(readFileSync(copiedKeyPath, 'utf8'), base64Key)
+})
+
 test('tauri updater signer strips a single wrapping quote pair from key files before signing', () => {
   const updaterLibPath = path.join(root, 'scripts/lib/tauri-updater.sh')
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'trapezohe-updater-quoted-key-test-'))
