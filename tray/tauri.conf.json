@@ -4,7 +4,8 @@
   "version": "0.1.18",
   "identifier": "ai.trapezohe.companion.tray",
   "build": {
-    "frontendDist": "ui"
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "ui-react/dist"
   },
   "app": {
     "withGlobalTauri": true,

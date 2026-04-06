@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod health;
 mod models;
+mod permissions;
 mod preferences;
 mod startup;
 mod tray;
@@ -31,6 +32,7 @@ struct ShellResources {
     startup_context: Mutex<Option<StartupContextView>>,
     update_info: Mutex<Option<UpdateInfo>>,
     preferences: Mutex<TrayPreferences>,
+    permissions: Mutex<permissions::PermissionsState>,
     exit_in_progress: Mutex<bool>,
 }
 
@@ -469,6 +471,31 @@ fn quit_tray(app: AppHandle<Wry>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_permissions_snapshot(app: AppHandle<Wry>) -> Result<permissions::PermissionsSnapshot, String> {
+    let state = app.state::<ShellResources>();
+    Ok(permissions::build_permissions_snapshot(&state.permissions))
+}
+
+#[tauri::command]
+fn toggle_companion_permission(
+    app: AppHandle<Wry>,
+    id: String,
+    enabled: bool,
+) -> Result<permissions::PermissionsSnapshot, String> {
+    let state = app.state::<ShellResources>();
+    {
+        let mut perms = state.permissions.lock().map_err(|e| e.to_string())?;
+        perms.set_enabled(&id, enabled);
+    }
+    Ok(permissions::build_permissions_snapshot(&state.permissions))
+}
+
+#[tauri::command]
+fn open_system_permission_settings(id: String) -> Result<(), String> {
+    permissions::open_system_settings_for_permission(&id)
+}
+
 fn spawn_update_checker(app: AppHandle<Wry>) {
     tauri::async_runtime::spawn(async move {
         // Wait 30 seconds after launch before first check
@@ -514,6 +541,9 @@ pub fn run() {
             install_update,
             open_release_page,
             quit_tray,
+            get_permissions_snapshot,
+            toggle_companion_permission,
+            open_system_permission_settings,
         ])
         .setup(|app| {
             let config_result = config::load_config();
@@ -540,6 +570,7 @@ pub fn run() {
                 startup_context: Mutex::new(startup_note),
                 update_info: Mutex::new(None),
                 preferences: Mutex::new(preferences.clone()),
+                permissions: Mutex::new(permissions::PermissionsState::new()),
                 exit_in_progress: Mutex::new(false),
             });
 
