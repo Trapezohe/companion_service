@@ -42,7 +42,11 @@
 
 html, body, #root {
   height: 100%;
-  background: transparent;
+  /* Use opaque dark fallback – the PanelShell component applies the
+     actual glass effect (semi-transparent bg + backdrop-blur). If
+     transparency is working at the OS-window level, the PanelShell
+     still looks correct because it covers the whole viewport. */
+  background: #1e1e1e;
 }
 
 body {
