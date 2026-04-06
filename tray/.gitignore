@@ -1,2 +1,4 @@
 target/
 gen/
+tray/ui-react/node_modules
+node_modules

@@ -228,6 +228,26 @@ Useful local outputs:
 - macOS package: `dist/installers/trapezohe-companion-macos.pkg`
 - Windows MSI: `dist/installers/trapezohe-companion-windows.msi`
 
+### Rust companion workspace
+
+The repo root now also contains the first Rust rewrite scaffold for the daemon stack. The initial crates are:
+
+- `crates/companion-shared`
+- `crates/companion-config`
+- `crates/companion-runtime`
+- `crates/companion-mcp`
+- `crates/companion-daemon`
+- `crates/companion-cli`
+
+Useful Rust commands during the migration:
+
+```bash
+cargo check --workspace
+cargo test -p companion-runtime -p companion-mcp -p companion-daemon
+cargo run -p companion-cli -- --help
+cargo run -p companion-cli -- status
+```
+
 ### GitHub release signing inputs
 
 The `Auto Release Companion Installers` workflow now treats signed + notarized macOS releases as the default path. If any required secret is missing, the macOS release job now fails instead of quietly producing an unsigned package. Set these repository secrets before relying on GitHub auto-publish:

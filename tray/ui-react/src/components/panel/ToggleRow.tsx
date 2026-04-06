@@ -1,4 +1,5 @@
 import { Switch } from "@/components/ui/switch";
+import { type Lang, useT } from "@/lib/translations";
 
 interface ToggleRowProps {
   title: string;
@@ -9,6 +10,7 @@ interface ToggleRowProps {
   companionStatus?: "open" | "closed";
   risk?: "high" | null;
   requireConfirm?: boolean;
+  lang: Lang;
 }
 
 const ToggleRow = ({
@@ -20,7 +22,9 @@ const ToggleRow = ({
   companionStatus,
   risk,
   requireConfirm,
+  lang,
 }: ToggleRowProps) => {
+  const tr = useT(lang);
   return (
     <div className="flex items-start justify-between gap-3 py-3 px-4">
       <div className="flex-1 min-w-0">
@@ -28,12 +32,12 @@ const ToggleRow = ({
           <span className="text-[13px] font-medium text-foreground">{title}</span>
           {risk === "high" && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/20 text-destructive font-medium">
-              高风险
+              {tr.highRisk}
             </span>
           )}
           {requireConfirm && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/20 text-warning font-medium">
-              每次都确认
+              {tr.requireConfirm}
             </span>
           )}
         </div>
@@ -47,12 +51,12 @@ const ToggleRow = ({
                   : "bg-warning/15 text-warning"
               }`}
             >
-              {systemStatus === "authorized" ? "系统已授权" : "系统未授权"}
+              {systemStatus === "authorized" ? tr.systemAuthorized : tr.systemUnauthorized}
             </span>
           )}
           {companionStatus && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">
-              Companion {companionStatus === "open" ? "已开启" : "已关闭"}
+              {companionStatus === "open" ? tr.companionOpen : tr.companionClosed}
             </span>
           )}
         </div>
