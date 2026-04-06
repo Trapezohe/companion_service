@@ -62,6 +62,9 @@ test('initConfig creates config and token', async () => {
     assert.deepEqual(loaded.mcpServers, {})
     assert.equal(loaded.permissionPolicy.mode, 'full')
     assert.deepEqual(loaded.permissionPolicy.workspaceRoots, [])
+    assert.equal(loaded.companionCapabilities.local_command, false)
+    assert.equal(loaded.companionCapabilities.browser_control, false)
+    assert.equal(loaded.companionCapabilities.admin_action, false)
   })
 })
 
@@ -118,6 +121,10 @@ test('repairConfigDefaults restores token while preserving MCP servers and exten
         },
       },
       permissionPolicy: { mode: 'workspace', workspaceRoots: ['/tmp/ws'] },
+      companionCapabilities: {
+        local_command: true,
+        admin_action: true,
+      },
       extensionIds: ['ext-1'],
     })
 
@@ -132,6 +139,29 @@ test('repairConfigDefaults restores token while preserving MCP servers and exten
     assert.ok(loaded.mcpServers['bnbchain-mcp'])
     assert.deepEqual(loaded.extensionIds, ['ext-1'])
     assert.equal(loaded.permissionPolicy.mode, 'workspace')
+    assert.equal(loaded.companionCapabilities.local_command, true)
+    assert.equal(loaded.companionCapabilities.admin_action, true)
+  })
+})
+
+test('saveConfig normalizes companion capability flags and fills missing permissions as false', async () => {
+  await withTempHome(async ({ mod }) => {
+    await mod.saveConfig({
+      port: 41591,
+      token: 'test-token',
+      mcpServers: {},
+      permissionPolicy: { mode: 'full', workspaceRoots: [] },
+      companionCapabilities: {
+        local_command: true,
+        browser_control: true,
+      },
+    })
+
+    const loaded = await mod.loadConfig()
+    assert.equal(loaded.companionCapabilities.local_command, true)
+    assert.equal(loaded.companionCapabilities.browser_control, true)
+    assert.equal(loaded.companionCapabilities.admin_action, false)
+    assert.equal(loaded.companionCapabilities.screen_recording, false)
   })
 })
 

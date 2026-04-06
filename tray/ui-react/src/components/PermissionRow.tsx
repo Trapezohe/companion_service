@@ -20,7 +20,6 @@ function systemAuthBadge(item: PermissionItem, lang: DisplayLanguage) {
 
 function canToggle(item: PermissionItem): boolean {
   if (!item.platform_supported) return false
-  if (item.system_auth === 'not_authorized') return false
   return true
 }
 
@@ -40,6 +39,10 @@ export function PermissionRow({
   const toggleable = canToggle(item)
 
   const handleToggle = (checked: boolean) => {
+    if (checked && item.group === 'system' && item.system_auth === 'not_authorized') {
+      selectPermission(item.id)
+      return
+    }
     if (checked && item.is_high_risk && !item.companion_enabled) {
       showRiskConfirm(item.id)
       return
@@ -94,22 +97,13 @@ export function PermissionRow({
         </div>
       </div>
 
-      {/* Toggle or auth button */}
+      {/* Toggle */}
       <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
-        {item.platform_supported && item.system_auth === 'not_authorized' ? (
-          <button
-            onClick={() => selectPermission(item.id)}
-            className="text-[11px] font-medium text-[var(--color-status-yellow)] bg-[var(--color-status-yellow-soft)] border border-[rgba(255,159,10,0.2)] rounded-md px-2 py-1 cursor-pointer hover:brightness-110 transition-all"
-          >
-            {t('needsAuth', lang)}
-          </button>
-        ) : (
-          <Switch
-            checked={item.companion_enabled}
-            disabled={!toggleable}
-            onCheckedChange={handleToggle}
-          />
-        )}
+        <Switch
+          checked={item.companion_enabled}
+          disabled={!toggleable}
+          onCheckedChange={handleToggle}
+        />
       </div>
     </div>
   )

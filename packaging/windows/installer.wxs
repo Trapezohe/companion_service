@@ -2,7 +2,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
-    Name="Trapezohe Companion Installer"
+    Name="GhastAI Companion Installer"
     Manufacturer="Trapezohe"
     Language="1033"
     Version="$(var.ProductVersion)"
@@ -12,7 +12,7 @@
          StopTrayBeforeInstall can execute the old run-install.cmd to stop the tray,
          then InstallFiles overwrites them (tray is stopped, no file lock), and finally
          RemoveExistingProducts cleans up old registry entries. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer Trapezohe Companion Installer is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer GhastAI Companion Installer is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <WixVariable Id="WixUILicenseRtf" Value="$(var.InstallerSourceDir)/license.rtf" />

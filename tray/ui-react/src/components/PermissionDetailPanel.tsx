@@ -15,7 +15,30 @@ export function PermissionDetailPanel({
 }) {
   const selectPermission = useUIStore((s) => s.selectPermission)
   const setPage = useUIStore((s) => s.setPage)
+  const setLogFilter = useUIStore((s) => s.setLogFilter)
+  const setLogPermission = useUIStore((s) => s.setLogPermission)
   const openSystemSettings = useOpenSystemSettings()
+
+  const behaviorText = (() => {
+    if (!item.platform_supported) return t('permBehaviorUnsupported', lang)
+    if (item.group === 'system' && item.system_auth === 'not_authorized') {
+      return t('permBehaviorNeedsSystemAuth', lang)
+    }
+    if (item.companion_enabled) {
+      return item.requires_per_action_confirm
+        ? t('permBehaviorEnabledWithConfirm', lang)
+        : t('permBehaviorEnabled', lang)
+    }
+    return item.group === 'high_risk'
+      ? t('permBehaviorHighRiskDisabled', lang)
+      : t('permBehaviorDisabled', lang)
+  })()
+
+  const handleViewLogs = () => {
+    setLogFilter('all')
+    setLogPermission(item.id)
+    setPage('logs')
+  }
 
   return (
     <div className="mx-3.5 my-2 bg-[var(--color-card)] border border-[var(--color-card-border)] rounded-lg overflow-hidden">
@@ -73,6 +96,15 @@ export function PermissionDetailPanel({
           </Badge>
         </div>
 
+        <div>
+          <div className="text-[10px] font-semibold text-[var(--color-foreground-muted)] uppercase tracking-wide mb-0.5">
+            {t('permDetailWhenEnabled', lang)}
+          </div>
+          <div className="text-[11px] text-[var(--color-foreground)] leading-relaxed">
+            {behaviorText}
+          </div>
+        </div>
+
         {/* Action buttons */}
         <div className="flex flex-col gap-1.5 mt-1">
           {item.platform_supported && item.system_auth === 'not_authorized' && (
@@ -90,7 +122,7 @@ export function PermissionDetailPanel({
             variant="secondary"
             size="sm"
             className="w-full justify-start gap-1.5"
-            onClick={() => setPage('logs')}
+            onClick={handleViewLogs}
           >
             <ScrollText className="w-3 h-3" />
             {t('permDetailViewLogs', lang)}

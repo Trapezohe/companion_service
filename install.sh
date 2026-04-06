@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Trapezohe Companion — One-click installer for macOS / Linux
+# GhastAI Companion — One-click installer for macOS / Linux
 # Usage: curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash
 
 BOLD='\033[1m'
@@ -51,7 +51,7 @@ done
 
 echo ""
 echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}${BOLD}  ║     Trapezohe Companion — Installer          ║${NC}"
+echo -e "${CYAN}${BOLD}  ║     GhastAI Companion — Installer          ║${NC}"
 echo -e "${CYAN}${BOLD}  ╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -201,7 +201,7 @@ setup_systemd() {
 
   cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=Trapezohe Companion - Local MCP Server Host
+Description=GhastAI Companion - Local MCP Server Host
 After=network.target
 
 [Service]

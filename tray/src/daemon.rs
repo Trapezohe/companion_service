@@ -404,7 +404,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let app_root = temp
             .path()
-            .join("Trapezohe Companion.app")
+            .join("GhastAI Companion.app")
             .join("Contents");
         let exe_path = app_root.join("MacOS").join("trapezohe-companion-tray");
         let node_path = app_root.join("Resources").join("runtime").join("node").join("bin").join("node");

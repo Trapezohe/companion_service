@@ -23,7 +23,8 @@ cat > "${TMP_SCRIPT}" <<'EOS'
 set -euo pipefail
 
 TRAPEZOHE_DIR="$HOME/.trapezohe"
-TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
+TRAY_APP_PATH="/Applications/GhastAI Companion.app"
+LEGACY_TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
 TRAY_BIN_PATH="${TRAY_APP_PATH}/Contents/MacOS/trapezohe-companion-tray"
 APP_RUNTIME_DIR="${TRAY_APP_PATH}/Contents/Resources/companion"
 APP_NODE_DIR="${TRAY_APP_PATH}/Contents/Resources/runtime/node"
@@ -62,6 +63,19 @@ remove_legacy_daemon_login_item() {
   launchctl unload "${LEGACY_DAEMON_AGENT_PATH}" >/dev/null 2>&1 || true
   rm -f "${LEGACY_DAEMON_AGENT_PATH}"
   log "Removed legacy daemon login item if present"
+}
+
+cleanup_legacy_tray_app() {
+  if [[ "${LEGACY_TRAY_APP_PATH}" == "${TRAY_APP_PATH}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -e "${LEGACY_TRAY_APP_PATH}" ]]; then
+    return 0
+  fi
+
+  rm -rf "${LEGACY_TRAY_APP_PATH}"
+  log "Removed legacy tray app bundle at ${LEGACY_TRAY_APP_PATH}"
 }
 
 register_tray_login_item() {
@@ -158,7 +172,7 @@ LAUNCHER
       cat > "${dir}/${host_name}.json" <<MANIFEST
 {
   "name": "${host_name}",
-  "description": "Ghast Companion — local runtime bridge for the Ghast browser extension",
+  "description": "GhastAI Companion — local runtime bridge for the Ghast browser extension",
   "path": "${launcher}",
   "type": "stdio",
   "allowed_origins": [
@@ -216,6 +230,7 @@ register_native_host || true
 restart_companion_daemon || true
 write_startup_policy
 remove_legacy_daemon_login_item
+cleanup_legacy_tray_app
 register_tray_login_item
 launch_tray_once
 EOS

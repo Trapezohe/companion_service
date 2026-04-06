@@ -2,17 +2,20 @@ import { useStatus, useCheckUpdate, useInstallUpdate, useRunRepair, useRunSelfCh
 import { usePermissions } from '@/hooks/use-status'
 import { useUIStore } from '@/stores/ui-store'
 import { t } from '@/i18n/translations'
+import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NavRow } from '@/components/PanelShell'
-import { RotateCw, Settings, Shield, ShieldAlert, ScrollText } from 'lucide-react'
+import { RotateCw, Settings, Shield, ScrollText } from 'lucide-react'
 import type { RepairAction, StatusViewModel, DisplayLanguage } from '@/types/companion'
 
-function statusVariant(kind: string) {
-  if (kind === 'healthy') return 'healthy' as const
-  if (kind === 'checking' || kind === 'degraded') return 'warning' as const
-  if (kind === 'stopped' || kind === 'misconfigured') return 'error' as const
-  return 'muted' as const
+function StatPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[10px] text-[var(--color-foreground-soft)]">{label}</span>
+      <span className="text-[11px] font-medium text-[var(--color-foreground-muted)]">{value}</span>
+    </div>
+  )
 }
 
 function statusLabel(kind: string, lang: DisplayLanguage) {
@@ -149,36 +152,49 @@ export function Overview() {
   }
 
   return (
-    <div className="flex flex-col gap-2 p-2.5">
-      {/* Status Card */}
-      <section className="rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] px-3.5 py-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] font-semibold text-[var(--color-foreground-primary)]">
-            {t('statusHeading', lang)}
-          </span>
+    <div className="flex flex-col py-2">
+      {/* ── Status hero ── */}
+      <section className="px-4 py-3">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-2.5">
+            {/* Status dot */}
+            <div className={cn(
+              'w-8 h-8 rounded-full flex items-center justify-center shrink-0',
+              kind === 'healthy' && 'bg-[var(--color-status-green-soft)]',
+              kind === 'checking' && 'bg-[var(--color-status-yellow-soft)]',
+              kind === 'degraded' && 'bg-[var(--color-status-yellow-soft)]',
+              (kind === 'stopped' || kind === 'misconfigured') && 'bg-[var(--color-status-red-soft)]',
+            )}>
+              <div className={cn(
+                'w-2.5 h-2.5 rounded-full',
+                kind === 'healthy' && 'bg-[var(--color-status-green)]',
+                kind === 'checking' && 'bg-[var(--color-status-yellow)]',
+                kind === 'degraded' && 'bg-[var(--color-status-yellow)]',
+                (kind === 'stopped' || kind === 'misconfigured') && 'bg-[var(--color-status-red)]',
+              )} />
+            </div>
+            <div>
+              <div className="text-[13px] font-semibold text-[var(--color-foreground-primary)] leading-tight">
+                {statusLabel(kind, lang)}
+              </div>
+              <div className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5 leading-tight">
+                {statusDescription(status, lang)}
+              </div>
+            </div>
+          </div>
           <Button
             variant={updateModel.variant}
             size="sm"
             disabled={updateModel.disabled}
             onClick={handleUpdate}
+            className="shrink-0 mt-0.5"
           >
             {updateModel.label}
           </Button>
         </div>
 
-        <div className="flex items-center gap-2 mt-2">
-          <Badge variant={statusVariant(kind)}>
-            <span className="w-1.5 h-1.5 rounded-full bg-current" />
-            {statusLabel(kind, lang)}
-          </Badge>
-        </div>
-
-        <p className="text-xs text-[var(--color-foreground-muted)] mt-2 leading-snug">
-          {statusDescription(status, lang)}
-        </p>
-
         {updateNote && (
-          <div className="mt-2 rounded-md bg-[var(--color-surface)] border border-[var(--color-line)] px-2.5 py-2">
+          <div className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5">
             <div className="text-[11px] text-[var(--color-foreground)] leading-relaxed">
               {updateNote}
             </div>
@@ -187,7 +203,7 @@ export function Overview() {
                 version: update?.current_version ?? status.health?.version ?? '',
               })}
               {update?.latest_version
-                ? ` · ${t('latestVersion', lang, { version: update.latest_version })}`
+                ? ` → ${update.latest_version}`
                 : ''}
             </div>
           </div>
@@ -195,23 +211,10 @@ export function Overview() {
 
         {/* Stats row */}
         {kind === 'healthy' && status.state.pid && (
-          <div className="grid grid-cols-3 gap-2 mt-3">
-            <div>
-              <div className="text-[10px] text-[var(--color-foreground-muted)]">{t('pid', lang)}</div>
-              <div className="text-[13px] font-medium text-[var(--color-foreground-primary)]">{status.state.pid}</div>
-            </div>
-            <div>
-              <div className="text-[10px] text-[var(--color-foreground-muted)]">{t('approvals', lang)}</div>
-              <div className="text-[13px] font-medium text-[var(--color-foreground-primary)]">
-                {status.diagnostics?.pending_approvals ?? 0}
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] text-[var(--color-foreground-muted)]">{t('updated', lang)}</div>
-              <div className="text-[13px] font-medium text-[var(--color-foreground-primary)]">
-                {formatRelativeTime(status.checked_at_ms, lang)}
-              </div>
-            </div>
+          <div className="flex items-center gap-4 mt-3">
+            <StatPill label={t('pid', lang)} value={String(status.state.pid)} />
+            <StatPill label={t('approvals', lang)} value={String(status.diagnostics?.pending_approvals ?? 0)} />
+            <StatPill label={t('updated', lang)} value={formatRelativeTime(status.checked_at_ms, lang)} />
           </div>
         )}
 
@@ -240,20 +243,22 @@ export function Overview() {
         )}
       </section>
 
+      <div className="mx-3 h-px bg-[var(--color-line)]" />
+
       {(failingChecks.length > 0 || repairActions.length > 0) && (
-        <section className="rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] px-3.5 py-3">
-          <div className="flex items-start justify-between gap-3">
+        <>
+        <section className="px-4 py-3">
+          <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold text-[var(--color-foreground-primary)]">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-foreground-muted)]">
                   {t('selfCheckHeading', lang)}
                 </span>
                 <Badge variant="warning">
-                  <ShieldAlert className="w-3 h-3" />
                   {t('selfCheckNeedsAttention', lang)}
                 </Badge>
               </div>
-              <div className="text-xs text-[var(--color-foreground-muted)] mt-1 leading-snug">
+              <div className="text-[11px] text-[var(--color-foreground-muted)] mt-1.5 leading-snug">
                 {status.state.reason || t('selfCheckHint', lang)}
               </div>
             </div>
@@ -265,13 +270,12 @@ export function Overview() {
                 onClick={() => runSelfCheck.mutate()}
               >
                 <RotateCw className="w-3 h-3" />
-                {t('selfCheckRefresh', lang)}
               </Button>
             )}
           </div>
 
           {failingChecks.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
               {failingChecks.slice(0, 4).map((item) => (
                 <Badge key={item} variant="muted">
                   {humanizeCheckName(item, lang)}
@@ -281,18 +285,18 @@ export function Overview() {
           )}
 
           {repairActions.length > 0 && (
-            <div className="mt-3 flex flex-col gap-2">
+            <div className="mt-2.5 flex flex-col gap-2">
               {repairActions.map((action) => (
                 <div
                   key={action.id}
-                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-2.5"
+                  className="rounded-lg bg-[var(--color-surface)] px-3 py-2.5"
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-xs font-medium text-[var(--color-foreground-primary)]">
+                      <div className="text-[12px] font-medium text-[var(--color-foreground-primary)]">
                         {action.title}
                       </div>
-                      <div className="mt-1 text-[11px] text-[var(--color-foreground-muted)] leading-relaxed">
+                      <div className="mt-0.5 text-[11px] text-[var(--color-foreground-muted)] leading-relaxed">
                         {action.description}
                       </div>
                     </div>
@@ -319,15 +323,18 @@ export function Overview() {
             </div>
           )}
         </section>
+        <div className="mx-3 h-px bg-[var(--color-line)]" />
+        </>
       )}
 
       {/* MCP Summary */}
       {kind === 'healthy' && (
-        <section className="rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] px-3.5 py-3">
-          <span className="text-[11px] font-semibold text-[var(--color-foreground-primary)]">
+        <>
+        <section className="px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-foreground-muted)]">
             {t('mcpHeading', lang)}
-          </span>
-          <div className="text-xs text-[var(--color-foreground-muted)] mt-1">
+          </div>
+          <div className="text-[11px] text-[var(--color-foreground-muted)] mt-1">
             {t('mcpSummary', lang, {
               connected: status.diagnostics?.connected_mcp_servers ?? status.state.mcp_servers ?? 0,
               tools: status.diagnostics?.total_mcp_tools ?? status.state.mcp_tools ?? 0,
@@ -335,10 +342,10 @@ export function Overview() {
           </div>
           {/* MCP server list */}
           {(status.diagnostics?.servers ?? []).slice(0, 3).map((server) => (
-            <div key={server.name} className="flex justify-between items-center py-1.5 border-t border-[var(--color-line)] first:border-t-0 first:mt-2 mt-0">
+            <div key={server.name} className="flex justify-between items-center mt-2 py-2 px-3 rounded-lg bg-[var(--color-surface)]">
               <div>
-                <div className="text-xs font-medium text-[var(--color-foreground-primary)]">{server.name}</div>
-                <div className="text-[11px] text-[var(--color-foreground-muted)]">
+                <div className="text-[12px] font-medium text-[var(--color-foreground-primary)]">{server.name}</div>
+                <div className="text-[10px] text-[var(--color-foreground-muted)] mt-0.5">
                   {t('toolCount', lang, { count: server.tool_count })}
                 </div>
               </div>
@@ -348,10 +355,12 @@ export function Overview() {
             </div>
           ))}
         </section>
+        <div className="mx-3 h-px bg-[var(--color-line)]" />
+        </>
       )}
 
       {/* Nav rows */}
-      <div className="flex flex-col rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] overflow-hidden">
+      <div className="py-1">
         <NavRow
           page="permissions"
           label={t('navPermissions', lang)}
@@ -373,7 +382,7 @@ export function Overview() {
 
       {/* Version footer */}
       {status.health?.version && (
-        <div className="px-3.5 py-1.5 text-center text-[11px] text-[var(--color-foreground-soft)]">
+        <div className="pb-1 text-center text-[10px] text-[var(--color-foreground-soft)]">
           {t('versionFooter', lang, { version: status.health.version })}
         </div>
       )}

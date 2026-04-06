@@ -438,7 +438,7 @@ function Bootstrap-Companion {
     Write-InstallerLog "Bundled companion package missing at $packageTarballPath; falling back to npm registry target $npmInstallTarget"
   }
 
-  Write-InstallerStep 2 4 "Installing Trapezohe Companion from the bundled package."
+  Write-InstallerStep 2 4 "Installing GhastAI Companion from the bundled package."
   Write-InstallerLog "Running: npm install -g $npmInstallTarget"
   try {
     $npmExitCode = Invoke-LoggedProcess -FilePath $npmCli -ArgumentList @("install", "-g", $npmInstallTarget) -LogPrefix "npm"
@@ -461,7 +461,7 @@ function Bootstrap-Companion {
   $nodeCli = Resolve-InstallerCommand @("node.exe", "node")
   $companionCliScript = Resolve-InstalledCompanionCliScript -NpmCli $npmCli
   if (-not $nodeCli -or -not $companionCliScript) {
-    Write-InstallerStatus "The Trapezohe Companion command was not found after installation. Setup cannot continue."
+    Write-InstallerStatus "The GhastAI Companion command was not found after installation. Setup cannot continue."
     Write-InstallerLog "ERROR: installed companion CLI script could not be resolved after npm install -g. node=$nodeCli script=$companionCliScript PATH=$($env:PATH)"
     return $false
   }
@@ -508,7 +508,12 @@ function Create-DesktopShortcut {
 
     $WshShell = New-Object -ComObject WScript.Shell
     $desktopPath = [Environment]::GetFolderPath("Desktop")
-    $shortcutPath = Join-Path $desktopPath "Trapezohe Companion.lnk"
+    $legacyShortcutPath = Join-Path $desktopPath "Trapezohe Companion.lnk"
+    if (Test-Path $legacyShortcutPath) {
+      Remove-Item -Path $legacyShortcutPath -Force -ErrorAction SilentlyContinue
+      Write-InstallerLog "Removed legacy desktop shortcut at $legacyShortcutPath"
+    }
+    $shortcutPath = Join-Path $desktopPath "GhastAI Companion.lnk"
     $shortcut = $WshShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $trayExePath
     $shortcut.WorkingDirectory = Split-Path $trayExePath
@@ -529,9 +534,15 @@ function Create-StartMenuShortcut {
 
     $WshShell = New-Object -ComObject WScript.Shell
     $startMenuPath = [Environment]::GetFolderPath("Programs")
-    $folderPath = Join-Path $startMenuPath "Trapezohe"
+    $legacyFolderPath = Join-Path $startMenuPath "Trapezohe"
+    if (Test-Path $legacyFolderPath) {
+      Remove-Item -Path $legacyFolderPath -Recurse -Force -ErrorAction SilentlyContinue
+      Write-InstallerLog "Removed legacy start menu folder at $legacyFolderPath"
+    }
+
+    $folderPath = Join-Path $startMenuPath "GhastAI"
     New-Item -ItemType Directory -Force -Path $folderPath | Out-Null
-    $shortcutPath = Join-Path $folderPath "Trapezohe Companion.lnk"
+    $shortcutPath = Join-Path $folderPath "GhastAI Companion.lnk"
     $shortcut = $WshShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $trayExePath
     $shortcut.WorkingDirectory = Split-Path $trayExePath
@@ -591,10 +602,15 @@ function Launch-TrayOnce {
 function Remove-DesktopShortcut {
   try {
     $desktopPath = [Environment]::GetFolderPath("Desktop")
-    $shortcutPath = Join-Path $desktopPath "Trapezohe Companion.lnk"
-    if (Test-Path $shortcutPath) {
-      Remove-Item -Path $shortcutPath -Force
-      Write-InstallerLog "Removed desktop shortcut at $shortcutPath"
+    $shortcutPaths = @(
+      (Join-Path $desktopPath "GhastAI Companion.lnk"),
+      (Join-Path $desktopPath "Trapezohe Companion.lnk")
+    )
+    foreach ($shortcutPath in $shortcutPaths) {
+      if (Test-Path $shortcutPath) {
+        Remove-Item -Path $shortcutPath -Force
+        Write-InstallerLog "Removed desktop shortcut at $shortcutPath"
+      }
     }
   } catch {
     Write-InstallerLog "Warning: failed to remove desktop shortcut: $_"
@@ -604,10 +620,15 @@ function Remove-DesktopShortcut {
 function Remove-StartMenuShortcut {
   try {
     $startMenuPath = [Environment]::GetFolderPath("Programs")
-    $folderPath = Join-Path $startMenuPath "Trapezohe"
-    if (Test-Path $folderPath) {
-      Remove-Item -Path $folderPath -Recurse -Force
-      Write-InstallerLog "Removed start menu folder at $folderPath"
+    $folderPaths = @(
+      (Join-Path $startMenuPath "GhastAI"),
+      (Join-Path $startMenuPath "Trapezohe")
+    )
+    foreach ($folderPath in $folderPaths) {
+      if (Test-Path $folderPath) {
+        Remove-Item -Path $folderPath -Recurse -Force
+        Write-InstallerLog "Removed start menu folder at $folderPath"
+      }
     }
   } catch {
     Write-InstallerLog "Warning: failed to remove start menu shortcut: $_"
@@ -653,7 +674,7 @@ try {
   if (-not $bootstrapOk) {
     Write-InstallerStatus "Windows installer stopped because bootstrap did not complete. Review the installer log and try again."
     Write-InstallerLog "Bootstrap failed; aborting installer. Review $logFile for details."
-    throw "Trapezohe Companion bootstrap failed. Review installer log at $logFile."
+    throw "GhastAI Companion bootstrap failed. Review installer log at $logFile."
   }
 
   Write-InstallerStep 4 4 "Saving tray startup preferences and launching the tray."

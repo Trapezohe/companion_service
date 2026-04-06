@@ -84,6 +84,12 @@ pub struct ActionLogEntry {
     #[serde(rename = "actionName", default)]
     pub action_name: String,
     #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(rename = "permissionId", default)]
+    pub permission_id: String,
+    #[serde(default)]
     pub target: String,
     #[serde(default)]
     pub status: String,
@@ -450,6 +456,9 @@ mod tests {
                 run_id: "run_action_1".into(),
                 timestamp: 1_710_000_000_000,
                 action_name: "open_url".into(),
+                source: "extension".into(),
+                capability: "browser_control".into(),
+                permission_id: "browser_control".into(),
                 target: "https://example.com".into(),
                 status: "success".into(),
                 detail: "page opened".into(),

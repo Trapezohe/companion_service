@@ -384,7 +384,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
-          name: Trapezohe Companion v${{ needs.check-version.outputs.version }}
+          name: GhastAI Companion v${{ needs.check-version.outputs.version }}
           files: |
             dist/release/trapezohe-companion-macos.pkg
             dist/release/trapezohe-companion-macos.app.tar.gz
@@ -393,9 +393,9 @@ jobs:
             dist/release/trapezohe-companion-windows.msi
             dist/release/SHA256SUMS.txt
           body: |
-            ## Trapezohe Companion v${{ needs.check-version.outputs.version }}
+            ## GhastAI Companion v${{ needs.check-version.outputs.version }}
 
-            Local companion daemon for the Trapezohe AI browser extension, bundled with the desktop tray panel for ordinary users.
+            Local companion daemon for the GhastAI browser extension, bundled with the desktop tray panel for ordinary users.
 
             ---
 

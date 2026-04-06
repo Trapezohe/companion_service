@@ -11,6 +11,7 @@ import {
   COMPANION_PROTOCOL_VERSION,
   COMPANION_SUPPORTED_FEATURES,
   getDefaultMemoryShadowRefreshSlaHours,
+  normalizeCompanionCapabilities,
   repairConfigDefaults,
 } from './config.mjs'
 import { COMPANION_VERSION } from './version.mjs'
@@ -166,6 +167,70 @@ function sendJson(res, status, payload) {
     'Cache-Control': 'no-store',
   })
   res.end(JSON.stringify(payload))
+}
+
+class CompanionCapabilityError extends Error {
+  constructor(capability, message, meta = {}) {
+    super(message)
+    this.name = 'CompanionCapabilityError'
+    this.capability = capability
+    this.code = 'companion_capability_disabled'
+    this.meta = meta
+  }
+}
+
+function clipCompanionText(value, limit = 140) {
+  const normalized = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return ''
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`
+}
+
+function capabilityPolicyReason(capability) {
+  return `blocked_by_companion_capability_${capability}`
+}
+
+async function recordBlockedCapabilityRun({
+  type = 'exec',
+  capability,
+  toolName,
+  targetSummary = '',
+  summary,
+  error,
+  extraMeta = {},
+}) {
+  await createRun({
+    type,
+    state: 'failed',
+    startedAt: Date.now(),
+    finishedAt: Date.now(),
+    laneId: `remote:${capability}`,
+    source: 'remote',
+    contractVersion: RUN_CONTRACT_VERSION,
+    summary,
+    error,
+    meta: {
+      toolName,
+      targetSummary: clipCompanionText(targetSummary, 140),
+      policyReason: capabilityPolicyReason(capability),
+      capability,
+      permissionId: capability,
+      actionSource: 'extension',
+      resultSummary: error,
+      ...extraMeta,
+    },
+  }).catch(() => null)
+}
+
+function ensureCompanionCapabilityEnabled(capabilities, capability, meta = {}) {
+  const normalized = normalizeCompanionCapabilities(capabilities)
+  if (normalized[capability] === true) return normalized
+  throw new CompanionCapabilityError(
+    capability,
+    meta.message || `Companion capability is disabled: ${capability}`,
+    meta,
+  )
 }
 
 function buildCompanionCapabilitiesPayload(dynamicFeatures = {}) {
@@ -524,12 +589,16 @@ function authorize(req, token) {
 
 // ── Command execution handler ──
 
-async function handleExec(req, res, getPermissionPolicy) {
+async function handleExec(req, res, getPermissionPolicy, getCompanionCapabilities) {
   const body = await readJsonBody(req)
   const command = typeof body.command === 'string' ? body.command.trim() : ''
   if (!command) return sendJson(res, 400, { error: 'command is required.' })
   if (command.length > 10_000) return sendJson(res, 400, { error: 'command exceeds max length (10000).' })
 
+  ensureCompanionCapabilityEnabled(getCompanionCapabilities(), 'local_command', {
+    message: 'Local command execution is disabled in Companion permissions.',
+    targetSummary: command,
+  })
   const permissionPolicy = normalizePermissionPolicy(getPermissionPolicy())
   const cwd = await resolveCwd(body.cwd, permissionPolicy)
   enforceCommandPolicy({ command, cwd, permissionPolicy })
@@ -548,6 +617,9 @@ async function handleExec(req, res, getPermissionPolicy) {
       command: command.slice(0, 500),
       cwd,
       timeoutMs,
+      capability: 'local_command',
+      permissionId: 'local_command',
+      actionSource: 'extension',
     },
   }).catch(() => null)
 
@@ -573,24 +645,33 @@ async function handleExec(req, res, getPermissionPolicy) {
       summary: result.ok ? 'Local command completed' : 'Local command failed',
       error: result.ok ? undefined : result.stderr,
       meta: {
-        command: command.slice(0, 500),
-        cwd,
-        timeoutMs,
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        durationMs: result.durationMs,
+        ...mergeRunMeta(run, {
+          command: command.slice(0, 500),
+          cwd,
+          timeoutMs,
+          capability: 'local_command',
+          permissionId: 'local_command',
+          actionSource: 'extension',
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          durationMs: result.durationMs,
+        }),
       },
     }).catch(() => undefined)
   }
   sendJson(res, 200, { ...result, command, cwd })
 }
 
-async function handleSessionStart(req, res, getPermissionPolicy, registerSessionRun) {
+async function handleSessionStart(req, res, getPermissionPolicy, getCompanionCapabilities, registerSessionRun) {
   const body = await readJsonBody(req)
   const command = typeof body.command === 'string' ? body.command.trim() : ''
   if (!command) return sendJson(res, 400, { error: 'command is required.' })
   if (command.length > 10_000) return sendJson(res, 400, { error: 'command exceeds max length (10000).' })
 
+  ensureCompanionCapabilityEnabled(getCompanionCapabilities(), 'local_command', {
+    message: 'Local command execution is disabled in Companion permissions.',
+    targetSummary: command,
+  })
   const permissionPolicy = normalizePermissionPolicy(getPermissionPolicy())
   const cwd = await resolveCwd(body.cwd, permissionPolicy)
   enforceCommandPolicy({ command, cwd, permissionPolicy })
@@ -744,8 +825,12 @@ export function createCompanionServer({
   mcpManager,
   getAllowedOrigins = async () => [],
   getPermissionPolicy = () => normalizePermissionPolicy({ mode: 'full' }),
+  getCompanionCapabilities = () => normalizeCompanionCapabilities(),
   setPermissionPolicy = async () => {
     throw new Error('Permission policy updates are not enabled.')
+  },
+  setCompanionCapabilities = async () => {
+    throw new Error('Companion capability updates are not enabled.')
   },
   setMcpServerConfig = async () => {
     throw new Error('MCP server config updates are not enabled.')
@@ -927,6 +1012,9 @@ export function createCompanionServer({
           command: session.command?.slice(0, 500),
           cwd: session.cwd,
           timeoutMs: session.timeoutMs,
+          capability: 'local_command',
+          permissionId: 'local_command',
+          actionSource: 'extension',
         },
       })
       sessionRunIndex.set(session.id, run.runId)
@@ -1198,11 +1286,76 @@ export function createCompanionServer({
     if (req.method === 'POST' && pathname === '/api/system/repair') {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      const body = await readJsonBody(req).catch(() => ({}))
+      let adminRun = null
       try {
-        const body = await readJsonBody(req)
+        ensureCompanionCapabilityEnabled(getCompanionCapabilities(), 'admin_action', {
+          message: 'Administrator actions are disabled in Companion permissions.',
+        })
+        const actionName = typeof body.action === 'string' && body.action.trim()
+          ? body.action.trim()
+          : 'system_repair'
+        adminRun = await createRun({
+          type: 'exec',
+          state: 'running',
+          startedAt: Date.now(),
+          laneId: 'remote:admin_action',
+          source: 'remote',
+          contractVersion: RUN_CONTRACT_VERSION,
+          summary: 'Administrator action started',
+          meta: {
+            toolName: 'admin_action',
+            targetSummary: actionName,
+            target: actionName,
+            capability: 'admin_action',
+            permissionId: 'admin_action',
+            actionSource: 'extension',
+          },
+        }).catch(() => null)
         const result = await runCompanionRepairAction(body, { getPermissionPolicy })
+        if (adminRun?.runId) {
+          await updateRun(adminRun.runId, {
+            state: 'done',
+            finishedAt: Date.now(),
+            summary: 'Administrator action completed',
+            meta: mergeRunMeta(adminRun, {
+              toolName: 'admin_action',
+              targetSummary: actionName,
+              target: actionName,
+              capability: 'admin_action',
+              permissionId: 'admin_action',
+              actionSource: 'extension',
+              resultSummary: result?.message || 'Administrator action completed',
+            }),
+          }).catch(() => undefined)
+        }
         return sendJson(res, 200, result)
       } catch (err) {
+        if (err instanceof CompanionCapabilityError) {
+          await recordBlockedCapabilityRun({
+            type: 'exec',
+            capability: err.capability,
+            toolName: 'admin_action',
+            targetSummary: 'system_repair',
+            summary: 'Administrator action blocked by companion permission',
+            error: err.message,
+            extraMeta: {
+              target: 'system_repair',
+            },
+          })
+          return sendJson(res, 403, { error: err.message, code: err.code, capability: err.capability })
+        }
+        if (adminRun?.runId) {
+          await updateRun(adminRun.runId, {
+            state: 'failed',
+            finishedAt: Date.now(),
+            summary: 'Administrator action failed',
+            error: err.message || 'Invalid request.',
+            meta: mergeRunMeta(adminRun, {
+              resultSummary: err.message || 'Administrator action failed',
+            }),
+          }).catch(() => undefined)
+        }
         return sendJson(res, 400, { error: err.message || 'Invalid request.' })
       }
     }
@@ -1217,8 +1370,19 @@ export function createCompanionServer({
     if (isExec) {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      try { return await handleExec(req, res, getPermissionPolicy) }
+      try { return await handleExec(req, res, getPermissionPolicy, getCompanionCapabilities) }
       catch (err) {
+        if (err instanceof CompanionCapabilityError) {
+          await recordBlockedCapabilityRun({
+            type: 'exec',
+            capability: err.capability,
+            toolName: 'run_local_command',
+            targetSummary: err.meta?.targetSummary || '',
+            summary: 'Local command blocked by companion permission',
+            error: err.message,
+          })
+          return sendJson(res, 403, { error: err.message, code: err.code, capability: err.capability })
+        }
         if (err instanceof PermissionPolicyError) {
           return sendJson(res, 403, { error: err.message, code: 'permission_policy_violation' })
         }
@@ -1233,8 +1397,19 @@ export function createCompanionServer({
     if (isSessionStart) {
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
-      try { return await handleSessionStart(req, res, getPermissionPolicy, registerSessionRun) }
+      try { return await handleSessionStart(req, res, getPermissionPolicy, getCompanionCapabilities, registerSessionRun) }
       catch (err) {
+        if (err instanceof CompanionCapabilityError) {
+          await recordBlockedCapabilityRun({
+            type: 'exec',
+            capability: err.capability,
+            toolName: 'run_local_command_session',
+            targetSummary: err.meta?.targetSummary || '',
+            summary: 'Command session blocked by companion permission',
+            error: err.message,
+          })
+          return sendJson(res, 403, { error: err.message, code: err.code, capability: err.capability })
+        }
         if (err instanceof PermissionPolicyError) {
           return sendJson(res, 403, { error: err.message, code: 'permission_policy_violation' })
         }
@@ -1652,6 +1827,12 @@ export function createCompanionServer({
       return sendJson(res, 200, { policy: normalizePermissionPolicy(getPermissionPolicy()) })
     }
 
+    if (req.method === 'GET' && pathname === '/api/security/capabilities') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      return sendJson(res, 200, { capabilities: normalizeCompanionCapabilities(getCompanionCapabilities()) })
+    }
+
     // Update permission policy
     if (req.method === 'POST' && pathname === '/api/security/policy') {
       const auth = authorize(req, token)
@@ -1661,6 +1842,19 @@ export function createCompanionServer({
         const nextPolicy = normalizePermissionPolicy(body.policy || body, { strict: true })
         await setPermissionPolicy(nextPolicy)
         return sendJson(res, 200, { ok: true, policy: nextPolicy })
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message || 'Invalid request.' })
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/security/capabilities') {
+      const auth = authorize(req, token)
+      if (!auth.ok) return sendJson(res, 401, { error: auth.error })
+      try {
+        const body = await readJsonBody(req)
+        const nextCapabilities = normalizeCompanionCapabilities(body.capabilities || body)
+        await setCompanionCapabilities(nextCapabilities)
+        return sendJson(res, 200, { ok: true, capabilities: nextCapabilities })
       } catch (err) {
         return sendJson(res, 400, { ok: false, error: err.message || 'Invalid request.' })
       }
@@ -1787,6 +1981,31 @@ export function createCompanionServer({
       const auth = authorize(req, token)
       if (!auth.ok) return sendJson(res, 401, { error: auth.error })
       const body = await readJsonBody(req)
+      let browserRun = null
+      try {
+        ensureCompanionCapabilityEnabled(getCompanionCapabilities(), 'browser_control', {
+          message: 'Browser control is disabled in Companion permissions.',
+          targetSummary: JSON.stringify(body.params || {}),
+          toolName: typeof body.action === 'string' ? body.action : 'browser_control',
+          target: typeof body.sessionId === 'string' ? body.sessionId : 'browser_session',
+        })
+      } catch (err) {
+        if (err instanceof CompanionCapabilityError) {
+          await recordBlockedCapabilityRun({
+            type: 'exec',
+            capability: err.capability,
+            toolName: err.meta?.toolName || 'browser_control',
+            targetSummary: err.meta?.targetSummary || '',
+            summary: 'Browser control blocked by companion permission',
+            error: err.message,
+            extraMeta: {
+              target: err.meta?.target || 'browser_session',
+            },
+          })
+          return sendJson(res, 403, { error: err.message, code: err.code, capability: err.capability })
+        }
+        throw err
+      }
       const { action, params, sessionId } = body
 
       if (!action) {
@@ -1837,6 +2056,31 @@ export function createCompanionServer({
           return sendJson(res, 400, { error: `No DevTools MCP mapping for action: ${action}` })
         }
 
+        browserRun = await createRun({
+          type: 'exec',
+          state: 'running',
+          startedAt: Date.now(),
+          laneId: 'remote:browser_control',
+          source: 'remote',
+          contractVersion: RUN_CONTRACT_VERSION,
+          summary: 'Browser action started',
+          meta: {
+            toolName: action,
+            targetSummary: clipCompanionText(
+              typeof sessionId === 'string' && sessionId.trim()
+                ? sessionId
+                : JSON.stringify(params || {}),
+              140,
+            ),
+            target: typeof sessionId === 'string' && sessionId.trim()
+              ? sessionId.trim()
+              : 'browser_session',
+            capability: 'browser_control',
+            permissionId: 'browser_control',
+            actionSource: 'extension',
+          },
+        }).catch(() => null)
+
         // Build tool args based on action type
         let toolArgs = params || {}
         if (action === 'scroll') {
@@ -1850,6 +2094,17 @@ export function createCompanionServer({
         const result = await mcpManager.callTool(DEVTOOLS_SERVER_NAME, toolName, toolArgs)
 
         if (!result.ok) {
+          if (browserRun?.runId) {
+            await updateRun(browserRun.runId, {
+              state: 'failed',
+              finishedAt: Date.now(),
+              summary: 'Browser action failed',
+              error: result.error || 'DevTools MCP tool call failed',
+              meta: mergeRunMeta(browserRun, {
+                resultSummary: result.error || 'DevTools MCP tool call failed',
+              }),
+            }).catch(() => undefined)
+          }
           return sendJson(res, 500, {
             success: false,
             error: result.error || 'DevTools MCP tool call failed',
@@ -1863,12 +2118,37 @@ export function createCompanionServer({
           .map(c => c.text)
           .join('\n') || ''
 
+        if (browserRun?.runId) {
+          await updateRun(browserRun.runId, {
+            state: 'done',
+            finishedAt: Date.now(),
+            summary: 'Browser action completed',
+            meta: mergeRunMeta(browserRun, {
+              resultSummary: clipCompanionText(
+                textContent || 'Browser action completed',
+                140,
+              ),
+            }),
+          }).catch(() => undefined)
+        }
+
         return sendJson(res, 200, {
           success: true,
           result: textContent,
           sessionId: sessionId || `cdp-${Date.now()}`,
         })
       } catch (err) {
+        if (browserRun?.runId) {
+          await updateRun(browserRun.runId, {
+            state: 'failed',
+            finishedAt: Date.now(),
+            summary: 'Browser action failed',
+            error: err.message,
+            meta: mergeRunMeta(browserRun, {
+              resultSummary: err.message || 'Browser action failed',
+            }),
+          }).catch(() => undefined)
+        }
         return sendJson(res, 500, {
           success: false,
           error: err.message,

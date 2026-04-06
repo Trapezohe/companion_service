@@ -11,6 +11,8 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = $package.version
 }
 
+$uiDir = Join-Path $root "tray/ui-react"
+
 $stageRoot = Join-Path $root "dist/stage"
 $stageDir = Join-Path $stageRoot "windows-tray"
 $archiveDir = Join-Path $root "dist/debug-artifacts"
@@ -32,6 +34,11 @@ if (Test-Path $zipPath) {
 
 New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
 
+& npm --prefix $uiDir run build
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows tray frontend build failed."
+}
+
 & $plan.cargoCommand @($plan.cargoArgs)
 if ($LASTEXITCODE -ne 0) {
     throw "Windows tray build failed."
@@ -40,7 +47,7 @@ if ($LASTEXITCODE -ne 0) {
 Copy-Item $exeSource (Join-Path $stageDir $exeName)
 Copy-Item (Join-Path $root "tray/icons/icon.png") (Join-Path $stageDir "icon.png")
 @"
-Trapezohe Companion Tray
+GhastAI Companion Tray
 Version: $Version
 
 This stage directory contains the tray executable used by the platform installers.

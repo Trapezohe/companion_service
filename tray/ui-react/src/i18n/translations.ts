@@ -4,7 +4,7 @@ type TranslationTable = Record<string, string>
 
 const en: TranslationTable = {
   // ─── Brand ───
-  brandTitle: 'Companion',
+  brandTitle: 'GhastAI Companion',
   brandSubtitle: 'Local bridge for the browser extension',
 
   // ─── Navigation ───
@@ -145,6 +145,12 @@ const en: TranslationTable = {
   permDetailWhenEnabled: 'What happens when enabled?',
   permDetailGoToSettings: 'Open System Settings',
   permDetailViewLogs: 'View Related Logs',
+  permBehaviorUnsupported: 'This capability is not available on the current platform.',
+  permBehaviorNeedsSystemAuth: 'Companion stays off until the system permission is granted. After you approve it in system settings, you can enable it here.',
+  permBehaviorEnabled: 'The browser extension can use this capability when needed. Related activity is recorded in the plugin action log.',
+  permBehaviorEnabledWithConfirm: 'The browser extension can request this capability, but each sensitive action still requires a separate confirmation.',
+  permBehaviorDisabled: 'Companion will not use this capability until you turn it on here, even if the system permission is already granted.',
+  permBehaviorHighRiskDisabled: 'This high-risk capability stays off until you explicitly enable it here.',
 
   // Risk confirm dialog
   riskConfirmTitle: 'Enable High-Risk Capability',
@@ -160,6 +166,19 @@ const en: TranslationTable = {
   adminConfirmImpact: 'Impact scope:',
   adminConfirmCancel: 'Cancel',
   adminConfirmContinue: 'Continue',
+  adminConfirmRunning: 'Running...',
+  adminTriggerPanel: 'Companion panel',
+
+  // Self-check / repairs
+  selfCheckHeading: 'Needs Attention',
+  selfCheckNeedsAttention: 'Action needed',
+  selfCheckHint: 'Companion found local setup items that still need your confirmation or repair.',
+  selfCheckRefresh: 'Check Again',
+  selfCheckIssueGeneric: 'Configuration issue',
+  repairRunNow: 'Run',
+  repairReviewAction: 'Review',
+  repairReasonRegisterNativeHost: 'This action rewrites the local browser native messaging registration so the extension can find Companion again.',
+  repairImpactRegisterNativeHost: 'It updates local browser registration files for the configured extension id and may restart the local bridge flow.',
 
   // Action log statuses
   logStatusExecuted: 'Executed',
@@ -173,13 +192,22 @@ const en: TranslationTable = {
   logFilterAll: 'All',
   logFilterBlocked: 'Blocked',
   logFilterFailed: 'Failed',
+  logPermissionFilterLabel: 'Filtering by permission',
+  clearFilter: 'Clear',
+  logSourceExtension: 'Extension',
+  logSourceAutomation: 'Automation',
+  logSourceReplay: 'Replay',
+  logSourceAcp: 'ACP',
+  logSourceUnknown: 'Unknown',
   logNoEntries: 'No plugin action logs yet.',
+  logNoRelatedEntries: 'No related plugin action logs yet.',
   logEmptyHint: 'Logs will appear here when the browser extension requests actions through companion.',
+  logRelatedEmptyHint: 'When this permission is used or blocked, the related records will appear here.',
 }
 
 const zh: TranslationTable = {
   // ─── Brand ───
-  brandTitle: 'Companion',
+  brandTitle: 'GhastAI Companion',
   brandSubtitle: '浏览器插件使用的本地桥接服务',
 
   // ─── Navigation ───
@@ -320,6 +348,12 @@ const zh: TranslationTable = {
   permDetailWhenEnabled: '打开后会发生什么？',
   permDetailGoToSettings: '前往系统设置',
   permDetailViewLogs: '查看相关日志',
+  permBehaviorUnsupported: '当前平台还不能使用这项能力。',
+  permBehaviorNeedsSystemAuth: '在系统层完成授权前，Companion 会保持关闭。完成系统授权后，你可以回到这里开启它。',
+  permBehaviorEnabled: '开启后，浏览器插件在需要时可以调用这项能力，相关使用记录会写入插件动作日志。',
+  permBehaviorEnabledWithConfirm: '开启后，浏览器插件可以请求这项能力，但每一次敏感操作仍然需要你单独确认。',
+  permBehaviorDisabled: '即使系统层已经授权，只要这里保持关闭，Companion 就不会使用这项能力。',
+  permBehaviorHighRiskDisabled: '这是一项高风险能力，只有你在这里明确开启后 Companion 才会使用。',
 
   // Risk confirm dialog
   riskConfirmTitle: '启用高风险能力',
@@ -335,6 +369,19 @@ const zh: TranslationTable = {
   adminConfirmImpact: '影响范围：',
   adminConfirmCancel: '取消',
   adminConfirmContinue: '继续执行',
+  adminConfirmRunning: '执行中...',
+  adminTriggerPanel: 'Companion 面板',
+
+  // Self-check / repairs
+  selfCheckHeading: '需要处理',
+  selfCheckNeedsAttention: '待处理',
+  selfCheckHint: 'Companion 检查到本机还有一些设置问题，需要你确认或修复。',
+  selfCheckRefresh: '重新检查',
+  selfCheckIssueGeneric: '配置问题',
+  repairRunNow: '立即执行',
+  repairReviewAction: '查看并执行',
+  repairReasonRegisterNativeHost: '这会重新写入浏览器本地消息通信注册，让插件重新找到 Companion。',
+  repairImpactRegisterNativeHost: '它会更新当前扩展 ID 对应的本地浏览器注册文件，并可能影响本地桥接链路。',
 
   // Action log statuses
   logStatusExecuted: '已执行',
@@ -348,8 +395,17 @@ const zh: TranslationTable = {
   logFilterAll: '全部',
   logFilterBlocked: '被拦截',
   logFilterFailed: '失败',
+  logPermissionFilterLabel: '当前筛选权限',
+  clearFilter: '清除',
+  logSourceExtension: '插件',
+  logSourceAutomation: '自动任务',
+  logSourceReplay: '重放',
+  logSourceAcp: 'ACP',
+  logSourceUnknown: '未知',
   logNoEntries: '最近还没有插件动作记录。',
+  logNoRelatedEntries: '这项权限暂时还没有相关动作记录。',
   logEmptyHint: '当浏览器插件请求 companion 执行动作时，日志将显示在这里。',
+  logRelatedEmptyHint: '当这项权限被使用、拦截或执行失败时，相关记录会显示在这里。',
 }
 
 const tables: Record<DisplayLanguage, TranslationTable> = { en, zh }

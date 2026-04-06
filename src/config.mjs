@@ -14,6 +14,21 @@ const MIN_MEMORY_SHADOW_REFRESH_SLA_HOURS = 1
 const MAX_MEMORY_SHADOW_REFRESH_SLA_HOURS = 24 * 30
 
 const DEFAULT_PERMISSION_POLICY = normalizePermissionPolicy({ mode: 'full' })
+export const COMPANION_PERMISSION_IDS = Object.freeze([
+  'screen_recording',
+  'accessibility',
+  'automation',
+  'camera',
+  'microphone',
+  'location',
+  'notifications',
+  'local_command',
+  'browser_control',
+  'admin_action',
+])
+const DEFAULT_COMPANION_CAPABILITIES = Object.freeze(
+  Object.fromEntries(COMPANION_PERMISSION_IDS.map((id) => [id, false])),
+)
 export const COMPANION_PROTOCOL_VERSION = '2026-03-07'
 export const COMPANION_SUPPORTED_FEATURES = {
   acp: true,
@@ -39,6 +54,14 @@ const DEFAULT_CONFIG = {
   token: '',
   mcpServers: {},
   permissionPolicy: DEFAULT_PERMISSION_POLICY,
+  companionCapabilities: DEFAULT_COMPANION_CAPABILITIES,
+}
+
+export function normalizeCompanionCapabilities(input = {}) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+  return Object.fromEntries(
+    COMPANION_PERMISSION_IDS.map((id) => [id, source[id] === true]),
+  )
 }
 
 export function getConfigDir() {
@@ -139,6 +162,7 @@ export async function loadConfig() {
         ? parsed.mcpServers
         : {},
       permissionPolicy: normalizePermissionPolicy(parsed.permissionPolicy),
+      companionCapabilities: normalizeCompanionCapabilities(parsed.companionCapabilities),
       ...(Array.isArray(parsed.extensionIds) && parsed.extensionIds.length > 0
         ? {
             extensionIds: parsed.extensionIds
@@ -152,6 +176,7 @@ export async function loadConfig() {
       return {
         ...DEFAULT_CONFIG,
         permissionPolicy: normalizePermissionPolicy(DEFAULT_PERMISSION_POLICY),
+        companionCapabilities: normalizeCompanionCapabilities(DEFAULT_COMPANION_CAPABILITIES),
       }
     }
     throw err
@@ -167,6 +192,7 @@ export async function saveConfig(config) {
       ? config.mcpServers
       : {},
     permissionPolicy: normalizePermissionPolicy(config?.permissionPolicy),
+    companionCapabilities: normalizeCompanionCapabilities(config?.companionCapabilities),
   }
   // Preserve extensionIds for native messaging host registration
   if (Array.isArray(config?.extensionIds) && config.extensionIds.length > 0) {
@@ -299,6 +325,7 @@ export async function repairConfigDefaults() {
     existing = {
       ...DEFAULT_CONFIG,
       permissionPolicy: normalizePermissionPolicy(DEFAULT_PERMISSION_POLICY),
+      companionCapabilities: normalizeCompanionCapabilities(DEFAULT_COMPANION_CAPABILITIES),
     }
   }
 
@@ -310,6 +337,7 @@ export async function repairConfigDefaults() {
       ? existing.mcpServers
       : {},
     permissionPolicy: normalizePermissionPolicy(existing?.permissionPolicy),
+    companionCapabilities: normalizeCompanionCapabilities(existing?.companionCapabilities),
     ...(Array.isArray(existing?.extensionIds) && existing.extensionIds.length > 0
       ? { extensionIds: existing.extensionIds.filter((id) => typeof id === 'string' && id.trim()) }
       : {}),

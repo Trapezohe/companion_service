@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { usePermissions } from '@/hooks/use-status'
 import { useStatus } from '@/hooks/use-status'
 import { t } from '@/i18n/translations'
@@ -25,7 +26,15 @@ export function PermissionsSafety() {
   ).length
   const highRiskOffCount = highRiskPerms.filter((p) => !p.companion_enabled).length
 
-  const selectedItem = selectedId ? items.find((p) => p.id === selectedId) : null
+  const renderGroup = (groupItems: typeof items) =>
+    groupItems.map((perm) => (
+      <Fragment key={perm.id}>
+        <PermissionRow item={perm} lang={lang} />
+        {selectedId === perm.id && (
+          <PermissionDetailPanel item={perm} lang={lang} />
+        )}
+      </Fragment>
+    ))
 
   if (isLoading) {
     return (
@@ -57,9 +66,7 @@ export function PermissionsSafety() {
               {t('systemPermissionsGroup', lang)}
             </span>
           </div>
-          {systemPerms.map((perm) => (
-            <PermissionRow key={perm.id} item={perm} lang={lang} />
-          ))}
+          {renderGroup(systemPerms)}
         </section>
       )}
 
@@ -71,15 +78,8 @@ export function PermissionsSafety() {
               {t('highRiskGroup', lang)}
             </span>
           </div>
-          {highRiskPerms.map((perm) => (
-            <PermissionRow key={perm.id} item={perm} lang={lang} />
-          ))}
+          {renderGroup(highRiskPerms)}
         </section>
-      )}
-
-      {/* Inline detail panel */}
-      {selectedItem && (
-        <PermissionDetailPanel item={selectedItem} lang={lang} />
       )}
     </div>
   )

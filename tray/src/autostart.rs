@@ -266,7 +266,7 @@ fn registration_for_linux(executable: &str, home: &str) -> RegistrationTarget {
         .join("autostart")
         .join(LINUX_DESKTOP_NAME);
     let contents = format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=Trapezohe Companion\nComment=Launch the Trapezohe Companion tray on login and let it ensure the local daemon\nExec=\"{}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=GhastAI Companion\nComment=Launch the GhastAI Companion tray on login and let it ensure the local daemon\nExec=\"{}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
         desktop_escape(executable),
     );
     RegistrationTarget {
@@ -630,7 +630,7 @@ mod tests {
     fn builds_macos_launch_agent_target_under_home() {
         let target = registration_for_platform(
             "darwin",
-            "/Applications/Trapezohe Companion.app/Contents/MacOS/trapezohe-companion-tray",
+            "/Applications/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray",
             "/Users/test",
         );
         assert!(normalize_test_path(&target.target)
@@ -656,7 +656,7 @@ mod tests {
             "/Users/test/trapezohe-companion/tray/target/debug/trapezohe-companion-tray"
         ));
         assert!(should_enable_by_default(
-            "/Applications/Trapezohe Companion.app/Contents/MacOS/trapezohe-companion-tray"
+            "/Applications/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray"
         ));
     }
 }

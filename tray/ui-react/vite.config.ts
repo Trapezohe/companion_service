@@ -3,7 +3,9 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Tauri installed apps need relative asset paths; dev server still uses root paths.
+  base: command === 'serve' ? '/' : './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -20,4 +22,4 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
   },
-})
+}))

@@ -31,6 +31,9 @@ export interface ActionLogEntry {
   runId: string
   timestamp: number
   actionName: string
+  source: string
+  capability: string
+  permissionId: string
   target: string
   status: string
   detail: string
@@ -164,6 +167,7 @@ export interface PluginActionLogEntry {
 }
 
 export interface AdminActionConfirmPayload {
+  action_id: string
   action_name: string
   trigger: string
   reason: string

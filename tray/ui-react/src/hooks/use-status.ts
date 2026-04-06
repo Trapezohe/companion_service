@@ -131,9 +131,25 @@ export function useQuitTray() {
 
 export function useRunRepair() {
   const queryClient = useQueryClient()
+  const setBusy = useUIStore((s) => s.setBusy)
   return useMutation({
     mutationFn: (action: string) =>
       invoke<StatusViewModel>('run_repair', { action }),
+    onMutate: () => setBusy(true),
+    onSettled: () => setBusy(false),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['status'], data)
+    },
+  })
+}
+
+export function useRunSelfCheck() {
+  const queryClient = useQueryClient()
+  const setBusy = useUIStore((s) => s.setBusy)
+  return useMutation({
+    mutationFn: () => invoke<StatusViewModel>('run_self_check'),
+    onMutate: () => setBusy(true),
+    onSettled: () => setBusy(false),
     onSuccess: (data) => {
       queryClient.setQueryData(['status'], data)
     },
@@ -155,7 +171,7 @@ export function useTogglePermission() {
   return useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       invoke<PermissionsSnapshot>('toggle_companion_permission', {
-        permissionId: id,
+        id,
         enabled,
       }),
     onSuccess: (data) => {
@@ -166,7 +182,7 @@ export function useTogglePermission() {
 
 export function useOpenSystemSettings() {
   return useMutation({
-    mutationFn: (permissionId: string) =>
-      invoke('open_system_permission_settings', { permissionId }),
+    mutationFn: (id: string) =>
+      invoke('open_system_permission_settings', { id }),
   })
 }

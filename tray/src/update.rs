@@ -453,14 +453,14 @@ mod tests {
 
         assert_eq!(
             macos_installability_reason_for_bundle(
-                Path::new("/Applications/Trapezohe Companion.app"),
+                Path::new("/Applications/GhastAI Companion.app"),
                 Some(home),
             ),
             None,
         );
         assert_eq!(
             macos_installability_reason_for_bundle(
-                Path::new("/Users/tester/Applications/Trapezohe Companion.app"),
+                Path::new("/Users/tester/Applications/GhastAI Companion.app"),
                 Some(home),
             ),
             None,
@@ -472,7 +472,7 @@ mod tests {
     fn macos_installability_rejects_dev_stage_locations() {
         let home = Path::new("/Users/tester");
         let reason = macos_installability_reason_for_bundle(
-            Path::new("/Users/tester/Desktop/trapezohe-companion/dist/stage/macos-tray/Trapezohe Companion.app"),
+            Path::new("/Users/tester/Desktop/trapezohe-companion/dist/stage/macos-tray/GhastAI Companion.app"),
             Some(home),
         );
 
@@ -484,12 +484,12 @@ mod tests {
     #[test]
     fn macos_bundle_path_is_derived_from_current_executable_path() {
         let exe_path = Path::new(
-            "/Applications/Trapezohe Companion.app/Contents/MacOS/trapezohe-companion-tray",
+            "/Applications/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray",
         );
 
         assert_eq!(
             macos_bundle_path_from_executable(exe_path),
-            Some(PathBuf::from("/Applications/Trapezohe Companion.app")),
+            Some(PathBuf::from("/Applications/GhastAI Companion.app")),
         );
     }
 

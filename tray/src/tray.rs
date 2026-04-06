@@ -66,7 +66,7 @@ pub fn tooltip_for_state(snapshot: &StatusViewModel) -> String {
                 mcp_tools,
                 ..
             } => format!(
-                "Trapezohe Companion · {} · v{version} · MCP {mcp_servers}/{mcp_tools}{update_suffix}",
+                "GhastAI Companion · {} · v{version} · MCP {mcp_servers}/{mcp_tools}{update_suffix}",
                 localized_status_word(&snapshot.state, snapshot.language)
             ),
             CompanionShellState::Checking
@@ -74,7 +74,7 @@ pub fn tooltip_for_state(snapshot: &StatusViewModel) -> String {
             | CompanionShellState::Degraded { .. }
             | CompanionShellState::Misconfigured { .. } => {
                 let mut label = format!(
-                    "Trapezohe Companion · {}",
+                    "GhastAI Companion · {}",
                     localized_status_word(&snapshot.state, snapshot.language)
                 );
                 if let CompanionShellState::Degraded { reason }

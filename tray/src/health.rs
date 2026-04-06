@@ -86,6 +86,12 @@ struct DiagnosticsActionLogPayload {
     #[serde(rename = "actionName", default)]
     action_name: String,
     #[serde(default)]
+    source: String,
+    #[serde(default)]
+    capability: String,
+    #[serde(rename = "permissionId", default)]
+    permission_id: String,
+    #[serde(default)]
     target: String,
     #[serde(default)]
     status: String,
@@ -176,6 +182,9 @@ fn map_diagnostics_payload(payload: DiagnosticsPayload) -> DiagnosticsSnapshot {
                 run_id: item.run_id,
                 timestamp: item.timestamp,
                 action_name: item.action_name,
+                source: item.source,
+                capability: item.capability,
+                permission_id: item.permission_id,
                 target: item.target,
                 status: item.status,
                 detail: item.detail,
@@ -313,6 +322,9 @@ mod tests {
                     run_id: "run_action_1".into(),
                     timestamp: 1_710_000_000_000,
                     action_name: "open_url".into(),
+                    source: "extension".into(),
+                    capability: "browser_control".into(),
+                    permission_id: "browser_control".into(),
                     target: "https://example.com".into(),
                     status: "success".into(),
                     detail: "page opened".into(),
@@ -334,6 +346,9 @@ mod tests {
         assert_eq!(mapped.recent_failures.len(), 1);
         assert_eq!(mapped.action_logs.len(), 1);
         assert_eq!(mapped.action_logs[0].action_name, "open_url");
+        assert_eq!(mapped.action_logs[0].source, "extension");
+        assert_eq!(mapped.action_logs[0].capability, "browser_control");
+        assert_eq!(mapped.action_logs[0].permission_id, "browser_control");
         assert_eq!(mapped.servers[0].tool_count, 4);
     }
 

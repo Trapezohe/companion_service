@@ -775,10 +775,14 @@ test('buildDiagnosticsPayload builds panel-friendly recent action logs from runs
     runId: 'run-action-success',
     type: 'exec',
     state: 'done',
+    source: 'remote',
     summary: 'Open URL finished',
     meta: {
       toolName: 'open_url',
       targetSummary: 'https://example.com',
+      capability: 'browser_control',
+      permissionId: 'browser_control',
+      actionSource: 'extension',
       resultSummary: 'page opened',
     },
   })
@@ -786,6 +790,7 @@ test('buildDiagnosticsPayload builds panel-friendly recent action logs from runs
     runId: 'run-action-approval',
     type: 'approval',
     state: 'waiting_approval',
+    source: 'remote',
     summary: 'Awaiting file approval',
     meta: {
       requestId: 'approval-log-1',
@@ -796,11 +801,29 @@ test('buildDiagnosticsPayload builds panel-friendly recent action logs from runs
     runId: 'run-action-failed',
     type: 'exec',
     state: 'failed',
+    source: 'remote',
     summary: 'Screenshot failed',
     error: 'browser not responding',
     meta: {
       toolName: 'capture_screenshot',
+      capability: 'browser_control',
+      permissionId: 'browser_control',
+      actionSource: 'extension',
       targetSummary: 'Chrome active tab',
+    },
+  })
+  await createRun({
+    runId: 'run-action-blocked',
+    type: 'exec',
+    state: 'failed',
+    source: 'remote',
+    summary: 'Command blocked',
+    error: 'Local command execution is disabled in Companion permissions.',
+    meta: {
+      toolName: 'run_local_command',
+      policyReason: 'blocked_by_companion_capability_local_command',
+      actionSource: 'extension',
+      targetSummary: 'npm run build',
     },
   })
   await flushRunStore()
@@ -822,21 +845,38 @@ test('buildDiagnosticsPayload builds panel-friendly recent action logs from runs
   const success = payload.runs.recentActions.find((item) => item.runId === 'run-action-success')
   const approval = payload.runs.recentActions.find((item) => item.runId === 'run-action-approval')
   const failed = payload.runs.recentActions.find((item) => item.runId === 'run-action-failed')
+  const blocked = payload.runs.recentActions.find((item) => item.runId === 'run-action-blocked')
 
   assert.equal(success.actionName, 'open_url')
+  assert.equal(success.source, 'extension')
+  assert.equal(success.capability, 'browser_control')
+  assert.equal(success.permissionId, 'browser_control')
   assert.equal(success.target, 'https://example.com')
   assert.equal(success.status, 'success')
   assert.match(success.detail, /page opened/i)
 
   assert.equal(approval.actionName, 'read_file')
+  assert.equal(approval.source, 'extension')
+  assert.equal(approval.capability, '')
+  assert.equal(approval.permissionId, '')
   assert.match(approval.target, /notes\.md/)
   assert.equal(approval.status, 'pending_approval')
   assert.match(approval.detail, /waiting for user approval/i)
 
   assert.equal(failed.actionName, 'capture_screenshot')
+  assert.equal(failed.source, 'extension')
+  assert.equal(failed.capability, 'browser_control')
+  assert.equal(failed.permissionId, 'browser_control')
   assert.equal(failed.target, 'Chrome active tab')
   assert.equal(failed.status, 'failed')
   assert.match(failed.detail, /browser not responding/i)
+
+  assert.equal(blocked.actionName, 'run_local_command')
+  assert.equal(blocked.source, 'extension')
+  assert.equal(blocked.capability, 'local_command')
+  assert.equal(blocked.permissionId, 'local_command')
+  assert.equal(blocked.status, 'permission_blocked')
+  assert.match(blocked.detail, /disabled in companion permissions/i)
 })
 
 test('buildDiagnosticsPayload summarizes companion budget health across tracked persistent sessions', async (t) => {

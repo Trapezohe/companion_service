@@ -1,37 +1,33 @@
 @import "tailwindcss";
 
 @theme inline {
-  /* Panel glass effect colors - matching the original tray UI */
-  --color-panel: rgba(30, 30, 30, 0.70);
-  --color-panel-border: rgba(255, 255, 255, 0.15);
+  /* ── Panel shell ── */
+  --color-panel: rgba(28, 28, 30, 0.82);
+  --color-panel-border: rgba(255, 255, 255, 0.12);
 
-  /* Foreground */
+  /* ── Foreground ── */
   --color-foreground: rgba(255, 255, 255, 0.85);
   --color-foreground-primary: rgba(255, 255, 255, 0.95);
-  --color-foreground-muted: rgba(235, 235, 245, 0.6);
-  --color-foreground-soft: rgba(235, 235, 245, 0.3);
+  --color-foreground-muted: rgba(235, 235, 245, 0.55);
+  --color-foreground-soft: rgba(235, 235, 245, 0.25);
 
-  /* Surfaces */
-  --color-surface: rgba(255, 255, 255, 0.10);
-  --color-surface-2: rgba(255, 255, 255, 0.14);
-  --color-card: rgba(255, 255, 255, 0.06);
-  --color-card-border: rgba(255, 255, 255, 0.08);
-  --color-line: rgba(255, 255, 255, 0.1);
+  /* ── Surfaces (inset layers inside the panel) ── */
+  --color-surface: rgba(255, 255, 255, 0.07);
+  --color-surface-hover: rgba(255, 255, 255, 0.10);
+  --color-surface-2: rgba(255, 255, 255, 0.12);
+  --color-card: rgba(255, 255, 255, 0.045);
+  --color-card-hover: rgba(255, 255, 255, 0.07);
+  --color-line: rgba(255, 255, 255, 0.08);
 
-  /* Status colors (Apple dark mode palette) */
+  /* ── Status (Apple HIG dark) ── */
   --color-status-blue: #0A84FF;
-  --color-status-blue-soft: rgba(10, 132, 255, 0.15);
-  --color-status-green: #32D74B;
-  --color-status-green-soft: rgba(50, 215, 75, 0.15);
-  --color-status-yellow: #FF9F0A;
-  --color-status-yellow-soft: rgba(255, 159, 10, 0.15);
+  --color-status-blue-soft: rgba(10, 132, 255, 0.14);
+  --color-status-green: #30D158;
+  --color-status-green-soft: rgba(48, 209, 88, 0.14);
+  --color-status-yellow: #FFD60A;
+  --color-status-yellow-soft: rgba(255, 214, 10, 0.14);
   --color-status-red: #FF453A;
-  --color-status-red-soft: rgba(255, 69, 58, 0.15);
-
-  /* Radii */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.625rem;
+  --color-status-red-soft: rgba(255, 69, 58, 0.14);
 }
 
 * {
@@ -42,18 +38,17 @@
 
 html, body, #root {
   height: 100%;
-  /* Transparent so the PanelShell glassmorphic background shows through
-     and the rounded corners reveal the desktop behind the window. */
   background: transparent;
 }
 
 body {
   color: var(--color-foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   -webkit-user-select: none;
   user-select: none;
   overflow: hidden;
   color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Scrollbar */

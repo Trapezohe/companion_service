@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -29,8 +29,10 @@ test('tray stage scripts write internal artifacts outside dist/installers public
   const windowsScript = read('scripts/build-tray-windows.ps1')
 
   assert.match(macosScript, /dist\/stage/)
+  assert.match(macosScript, /--prefix "\$\{UI_DIR\}" run build/)
   assert.doesNotMatch(macosScript, /OUT_DIR="\$\{ROOT_DIR\}\/dist\/installers"/)
   assert.match(windowsScript, /dist[\\\/]stage/)
+  assert.match(windowsScript, /npm --prefix \$uiDir run build/)
   assert.doesNotMatch(windowsScript, /dist[\\\/]installers/)
 })
 
@@ -46,12 +48,20 @@ test('public docs and release copy describe tray as bundled installer UX, not op
   assert.match(releaseWorkflow, /desktop tray panel is installed together/i)
 })
 
-test('tray shell exposes the global Tauri bridge required by the static panel UI', () => {
+test('tray shell now loads the React tray frontend and no longer keeps the legacy static panel entry', () => {
   const trayConfig = JSON.parse(read('tray/tauri.conf.json'))
-  const trayHtml = read('tray/ui/index.html')
+  const reactIndex = read('tray/ui-react/index.html')
+  const reactMain = read('tray/ui-react/src/main.tsx')
+  const reactPkg = JSON.parse(read('tray/ui-react/package.json'))
 
-  assert.match(trayHtml, /window\.__TAURI__/)
-  assert.equal(trayConfig.app?.withGlobalTauri, true)
+  assert.equal(trayConfig.build?.devUrl, 'http://localhost:1420')
+  assert.equal(trayConfig.build?.frontendDist, 'ui-react/dist')
+  assert.equal(trayConfig.app?.withGlobalTauri, false)
+  assert.equal(reactPkg.scripts?.build, 'tsc -b && vite build --config vite.config.ts')
+  assert.match(reactIndex, /<div id="root"><\/div>/)
+  assert.match(reactIndex, /src="\/src\/main\.tsx"/)
+  assert.match(reactMain, /createRoot\(document\.getElementById\('root'\)!/)
+  assert.equal(existsSync(path.join(root, 'tray/ui/index.html')), false)
 })
 
 test('status panel window is configured like a tray dropdown instead of a normal app window', () => {
@@ -79,7 +89,7 @@ test('macOS installer bootstrap writes its temp script to a user-accessible path
   assert.match(postinstall, /mktemp "\/Users\/Shared\/trapezohe-companion-bootstrap\.XXXXXX"/)
   assert.doesNotMatch(postinstall, /mktemp -t trapezohe-companion-bootstrap/)
   assert.doesNotMatch(postinstall, /mktemp \/tmp\/trapezohe-companion-bootstrap\.XXXXXX\.sh/)
-  assert.match(postinstall, /TRAY_APP_PATH="\/Applications\/Trapezohe Companion\.app"/)
+  assert.match(postinstall, /TRAY_APP_PATH="\/Applications\/GhastAI Companion\.app"/)
   assert.match(postinstall, /TRAY_BIN_PATH="\$\{TRAY_APP_PATH\}\/Contents\/MacOS\/trapezohe-companion-tray"/)
 })
 
@@ -236,7 +246,7 @@ test('Windows installer hands runtime over to the installed CLI after bootstrap'
   assert.doesNotMatch(installer, /npm-uninstall/)
   assert.match(installer, /\$packageTarballPath = Join-Path \$PSScriptRoot "trapezohe-companion-package\.tgz"/)
   assert.match(installer, /Write-InstallerStep 1 4 "Checking for Node\.js runtime\."/)
-  assert.match(installer, /Write-InstallerStep 2 4 "Installing Trapezohe Companion from the bundled package\."/)
+  assert.match(installer, /Write-InstallerStep 2 4 "Installing GhastAI Companion from the bundled package\."/)
   assert.match(installer, /Write-InstallerStep 3 4 "Running first-time companion setup\."/)
   assert.match(installer, /Write-InstallerStep 4 4 "Saving tray startup preferences and launching the tray\."/)
   assert.match(installer, /Write-InstallerLog "Tray launch is responsible for syncing auto-start and ensuring the background service if needed\."/)
@@ -248,7 +258,7 @@ test('Windows installer hands runtime over to the installed CLI after bootstrap'
   assert.match(installer, /\$bootstrapOk = Bootstrap-Companion/)
   assert.match(installer, /if \(-not \$bootstrapOk\) \{[\s\S]+?Write-InstallerLog "Bootstrap failed; aborting installer\./s)
   assert.match(runInstall, /install-companion\.ps1" %\*/)
-  assert.match(installer, /\$bootstrapOk = Bootstrap-Companion[\s\S]+?if \(-not \$bootstrapOk\) \{[\s\S]+?throw "Trapezohe Companion bootstrap failed\.[\s\S]+?\}[\s\S]+?Write-InstallerStep 4 4 "Saving tray startup preferences and launching the tray\."[\s\S]+?Write-StartupPolicy[\s\S]+?Register-TrayAutoStart[\s\S]+?Launch-TrayOnce[\s\S]+?Write-InstallerStatus "Windows installer completed successfully\."[\s\S]+?exit 0/s)
+  assert.match(installer, /\$bootstrapOk = Bootstrap-Companion[\s\S]+?if \(-not \$bootstrapOk\) \{[\s\S]+?throw "GhastAI Companion bootstrap failed\.[\s\S]+?\}[\s\S]+?Write-InstallerStep 4 4 "Saving tray startup preferences and launching the tray\."[\s\S]+?Write-StartupPolicy[\s\S]+?Register-TrayAutoStart[\s\S]+?Launch-TrayOnce[\s\S]+?Write-InstallerStatus "Windows installer completed successfully\."[\s\S]+?exit 0/s)
   assert.match(installer, /function Register-TrayAutoStart/)
   assert.match(installer, /New-ItemProperty -Path \$trayRunKey -Name \$trayRunValueName/)
   assert.match(installer, /Write-InstallerLog "Bootstrap-Companion returned: \$bootstrapOk"/)
@@ -256,7 +266,7 @@ test('Windows installer hands runtime over to the installed CLI after bootstrap'
   assert.match(installer, /FATAL: stack trace:/)
   assert.match(installer, /Warning: failed to write unified startup policy:/)
   assert.match(installer, /Warning: failed to launch tray executable:/)
-  assert.match(installer, /throw "Trapezohe Companion bootstrap failed\./)
+  assert.match(installer, /throw "GhastAI Companion bootstrap failed\./)
   assert.doesNotMatch(installer, /PostBootstrapFinish/)
   assert.doesNotMatch(installer, /Detached post-bootstrap finisher/)
   assert.doesNotMatch(installer, /Restart-CompanionDaemon/)
@@ -333,7 +343,9 @@ test('macOS tray updater is wired for signed in-app updates with a manual-instal
   const cargoToml = read('tray/Cargo.toml')
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
   const capabilities = read('tray/capabilities/default.json')
-  const trayUi = read('tray/ui/index.html')
+  const overview = read('tray/ui-react/src/components/Overview.tsx')
+  const settings = read('tray/ui-react/src/components/Settings.tsx')
+  const translations = read('tray/ui-react/src/i18n/translations.ts')
   const trayLib = read('tray/src/lib.rs')
   const updaterRs = read('tray/src/update.rs')
 
@@ -352,59 +364,89 @@ test('macOS tray updater is wired for signed in-app updates with a manual-instal
   assert.match(updaterRs, /download_and_install/)
   assert.match(updaterRs, /Automatic updates only work for the packaged app installed in \/Applications or ~\/Applications/)
 
-  assert.match(trayUi, /install_update/)
-  assert.match(trayUi, /open_release_page/)
-  assert.match(trayUi, /updateManualInstall/)
-  assert.match(trayUi, /update\.available && !update\.can_install/)
-  assert.match(trayUi, /Download & Install|Installing|Downloading update/)
-  assert.doesNotMatch(trayUi, /\$\('updateBanner'\)\.addEventListener\('click', async \(\) => \{\s*if \(invoke\) await invoke\('open_release_page'\)/)
+  assert.match(overview, /useCheckUpdate, useInstallUpdate/)
+  assert.match(overview, /update\.available && isVersionNewer/)
+  assert.match(overview, /update\.can_install/)
+  assert.match(overview, /updateManualInstall/)
+  assert.match(overview, /currentVersion/)
+  assert.match(overview, /latestVersion/)
+  assert.match(settings, /useOpenReleasePage/)
+  assert.match(settings, /openReleasePage\.mutate\(\)/)
+  assert.match(translations, /updateManualInstall/)
 })
 
-test('tray panel surface is a narrow unified dashboard with built-in language switching', () => {
-  const trayUi = read('tray/ui/index.html')
+test('tray panel surface is a narrow React dashboard with built-in language switching', () => {
+  const app = read('tray/ui-react/src/App.tsx')
+  const shell = read('tray/ui-react/src/components/PanelShell.tsx')
+  const settings = read('tray/ui-react/src/components/Settings.tsx')
+  const logs = read('tray/ui-react/src/components/ActionLogList.tsx')
+  const viteConfig = read('tray/ui-react/vite.config.ts')
 
-  assert.match(trayUi, /set_display_language/)
-  assert.match(trayUi, /recentActions|action_logs/)
-  assert.match(trayUi, /language-picker|language-option/)
-  assert.match(trayUi, /panel-shell|panel-card|panel-footer/)
-  assert.doesNotMatch(trayUi, /menuBtn/)
-  assert.doesNotMatch(trayUi, /dropdown-item/)
+  assert.match(app, /PermissionsSafety/)
+  assert.match(app, /ActionLogList/)
+  assert.match(app, /Settings/)
+  assert.match(viteConfig, /base:\s*command === 'serve' \? '\/' : '\.\/'/)
+  assert.match(shell, /navOverview/)
+  assert.match(shell, /navPermissions/)
+  assert.match(shell, /navLogs/)
+  assert.match(shell, /navSettings/)
+  assert.match(settings, /setLanguage\.mutate\('en'\)/)
+  assert.match(settings, /setLanguage\.mutate\('zh'\)/)
+  assert.match(logs, /action_logs/)
 })
 
-test('tray panel exposes a release-page fallback and stable MCP status styling helpers', () => {
-  const trayUi = read('tray/ui/index.html')
+test('tray panel exposes a release-page fallback and stable MCP status helpers from React components', () => {
+  const overview = read('tray/ui-react/src/components/Overview.tsx')
+  const settings = read('tray/ui-react/src/components/Settings.tsx')
 
-  assert.match(trayUi, /id="releasePageButton"/)
-  assert.match(trayUi, /open_release_page/)
-  assert.match(trayUi, /function serverStatusClass\(/)
-  assert.match(trayUi, /function localizedServerStatus\(/)
-  assert.match(trayUi, /status-\$\{esc\(serverStatusClass\(server\.status\)\)\}/)
+  assert.match(settings, /openReleasePage\.mutate\(\)/)
+  assert.match(overview, /function serverStatusVariant\(/)
+  assert.match(overview, /function localizedServerStatus\(/)
+  assert.match(overview, /status\.diagnostics\?\.servers/)
 })
 
-test('tray panel uses a dark anchored dropdown surface instead of the previous light popup look', () => {
-  const trayUi = read('tray/ui/index.html')
+test('tray panel uses a dark anchored dropdown surface in the React frontend', () => {
+  const panelCss = read('tray/ui-react/src/index.css')
+  const shell = read('tray/ui-react/src/components/PanelShell.tsx')
   const tauriConfig = JSON.parse(read('tray/tauri.conf.json'))
 
-  assert.match(trayUi, /color-scheme:\s*dark/)
-  assert.match(trayUi, /--window-bg:\s*transparent/i)
-  assert.match(trayUi, /\.panel-shell::before/)
-  assert.match(trayUi, /--panel:\s*rgba\(30,\s*30,\s*30,\s*0\.70\)/i)
+  assert.match(panelCss, /color-scheme:\s*dark/)
+  assert.match(panelCss, /background:\s*transparent/)
+  assert.match(panelCss, /--color-panel:\s*rgba\(30,\s*30,\s*30,\s*0\.70\)/i)
+  assert.match(shell, /backdrop-blur-\[40px\]/)
   assert.equal(tauriConfig.app?.windows?.[0]?.width, 344)
   assert.equal(tauriConfig.app?.windows?.[0]?.minWidth, 344)
 })
 
-test('tray panel keeps only settings on the main footer, moves logs and service actions into settings, and hides latest-version noise', () => {
-  const trayUi = read('tray/ui/index.html')
+test('tray panel keeps service actions in settings, keeps version info on overview, and avoids latest-version noise', () => {
+  const overview = read('tray/ui-react/src/components/Overview.tsx')
+  const settings = read('tray/ui-react/src/components/Settings.tsx')
 
-  assert.match(trayUi, /id="logsEntryButton"/)
-  assert.match(trayUi, /id="serviceActionButton"/)
-  assert.match(trayUi, /id="quitQuickButton"/)
-  assert.match(trayUi, /id="versionMeta"/)
-  assert.match(trayUi, /function shouldShowUpdateNote\(/)
-  assert.match(trayUi, /updateNote'\)\.hidden = !shouldShowUpdateNote/)
-  assert.doesNotMatch(trayUi, /id="showLogsButton"/)
-  assert.doesNotMatch(trayUi, /id="serviceButton"/)
-  assert.doesNotMatch(trayUi, /id="versionPill"/)
+  assert.match(overview, /page=\"logs\"/)
+  assert.match(overview, /page=\"settings\"/)
+  assert.match(overview, /versionFooter/)
+  assert.match(overview, /updateNote/)
+  assert.doesNotMatch(overview, /upToDate/)
+  assert.match(settings, /stopService\.mutate\(\)/)
+  assert.match(settings, /quitTray\.mutate\(\)/)
+})
+
+test('React overview exposes self-check repair actions and the admin confirm dialog executes sensitive repairs', () => {
+  const overview = read('tray/ui-react/src/components/Overview.tsx')
+  const adminDialog = read('tray/ui-react/src/components/AdminActionConfirmDialog.tsx')
+  const statusHooks = read('tray/ui-react/src/hooks/use-status.ts')
+
+  assert.match(overview, /self_check/)
+  assert.match(overview, /repair_actions/)
+  assert.match(overview, /showAdminConfirm\(/)
+  assert.match(overview, /register_native_host/)
+  assert.match(overview, /runRepair\.mutate\(action\.id\)/)
+
+  assert.match(adminDialog, /useRunRepair/)
+  assert.match(adminDialog, /runRepair\.mutate\(action\.action_id/)
+  assert.match(adminDialog, /adminConfirmRunning/)
+  assert.match(statusHooks, /invoke<StatusViewModel>\('run_repair'/)
+  assert.match(statusHooks, /invoke<StatusViewModel>\('run_self_check'/)
 })
 
 test('release workflow publishes macOS updater archive, signature, and latest manifest', () => {

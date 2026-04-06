@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Trapezohe Companion CLI
+ * GhastAI Companion CLI
  *
  * Usage:
  *   trapezohe-companion start [-d]          Start the companion daemon
@@ -37,6 +37,7 @@ import {
   writePid,
   readPid,
   removePid,
+  normalizeCompanionCapabilities,
 } from '../src/config.mjs'
 import { createCompanionServer } from '../src/server.mjs'
 import { McpManager } from '../src/mcp-manager.mjs'
@@ -110,7 +111,12 @@ async function resolveBundledMacosRuntime(entryScript = __filename) {
   if (path.basename(companionDir) !== 'companion') return null
   if (path.basename(resourcesDir) !== 'Resources') return null
   if (path.basename(contentsDir) !== 'Contents') return null
-  if (!appPath.endsWith('Trapezohe Companion.app')) return null
+
+  const supportedAppNames = new Set([
+    'GhastAI Companion.app',
+    'Trapezohe Companion.app',
+  ])
+  if (!supportedAppNames.has(path.basename(appPath))) return null
 
   const runtime = {
     appPath,
@@ -341,6 +347,7 @@ async function handleStart() {
 
   const mcpManager = new McpManager(config.mcpServers)
   let currentPermissionPolicy = normalizePermissionPolicy(config.permissionPolicy)
+  let currentCompanionCapabilities = normalizeCompanionCapabilities(config.companionCapabilities)
   const hooks = {}
   const server = createCompanionServer({
     token,
@@ -353,6 +360,12 @@ async function handleStart() {
     setPermissionPolicy: async (nextPolicy) => {
       currentPermissionPolicy = normalizePermissionPolicy(nextPolicy)
       config.permissionPolicy = currentPermissionPolicy
+      await saveConfig(config)
+    },
+    getCompanionCapabilities: () => currentCompanionCapabilities,
+    setCompanionCapabilities: async (nextCapabilities) => {
+      currentCompanionCapabilities = normalizeCompanionCapabilities(nextCapabilities)
+      config.companionCapabilities = currentCompanionCapabilities
       await saveConfig(config)
     },
     setMcpServerConfig: async (name, nextServerConfig) => {
@@ -435,7 +448,7 @@ async function handleStart() {
 
     console.log('')
     console.log('  ╔══════════════════════════════════════════════╗')
-    console.log(`  ║        Trapezohe Companion v${COMPANION_VERSION.padEnd(15, ' ')}║`)
+    console.log(`  ║        GhastAI Companion v${COMPANION_VERSION.padEnd(15, ' ')}║`)
     console.log('  ╚══════════════════════════════════════════════╝')
     console.log('')
     console.log(`  Listening:  http://127.0.0.1:${config.port}`)
@@ -486,7 +499,7 @@ async function handleStart() {
       console.error(`  Runs:       Failed to load run store: ${err.message}`)
     }
 
-    console.log('  Save the token in your Trapezohe extension:')
+    console.log('  Save the token in your GhastAI extension:')
     console.log('    Settings → Local Command Runtime → Access Token')
     console.log('')
     console.log('  Press Ctrl+C to stop')
@@ -897,7 +910,7 @@ async function registerNativeHost(
   for (const target of manifestTargets) {
     const manifest = {
       name: target.hostName,
-      description: 'Ghast Companion — local runtime bridge for the Ghast browser extension',
+      description: 'GhastAI Companion — local runtime bridge for the Ghast browser extension',
       path: nativeHostExecutable,
       type: 'stdio',
       allowed_origins: allowedOrigins,
@@ -1034,7 +1047,7 @@ ${programArguments}
     await fs.mkdir(serviceDir, { recursive: true })
 
     const service = `[Unit]
-Description=Trapezohe Companion - Local MCP Server Host
+Description=GhastAI Companion - Local MCP Server Host
 After=network.target
 
 [Service]
@@ -1231,7 +1244,7 @@ async function handleUnregister() {
 
 function printHelp() {
   console.log(`
-Trapezohe Companion — Local MCP server host & command runtime
+GhastAI Companion — Local MCP server host & command runtime
 
 Usage:
   trapezohe-companion <command> [flags]

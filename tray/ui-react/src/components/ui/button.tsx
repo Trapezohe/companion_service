@@ -4,20 +4,20 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-xs font-medium transition-colors cursor-pointer disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-[12px] font-medium transition-colors cursor-pointer disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {
         default:
-          'bg-[var(--color-status-blue)] text-white border border-black/20 shadow-sm',
+          'bg-[var(--color-status-blue)] text-white shadow-sm hover:brightness-110 active:brightness-90',
         secondary:
-          'bg-[var(--color-surface-2)] text-[var(--color-foreground)] border border-[var(--color-panel-border)] hover:bg-[var(--color-surface)] hover:text-[var(--color-foreground-primary)]',
+          'bg-[var(--color-surface)] text-[var(--color-foreground)] border border-[var(--color-line)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-foreground-primary)]',
         destructive:
-          'bg-[var(--color-status-red-soft)] text-[var(--color-status-red)] border border-[rgba(255,69,58,0.2)]',
+          'bg-[var(--color-status-red-soft)] text-[var(--color-status-red)] border border-[rgba(255,69,58,0.15)]',
         ghost:
-          'bg-transparent border border-transparent text-[var(--color-foreground-muted)] hover:bg-[var(--color-surface)] hover:border-[var(--color-card-border)] hover:text-[var(--color-foreground-primary)]',
+          'bg-transparent border border-transparent text-[var(--color-foreground-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-foreground-primary)]',
         attention:
-          'bg-[var(--color-status-yellow-soft)] text-[var(--color-status-yellow)] border border-[rgba(255,159,10,0.2)]',
+          'bg-[var(--color-status-yellow-soft)] text-[var(--color-status-yellow)] border border-[rgba(255,214,10,0.15)]',
       },
       size: {
         default: 'h-7 px-3',

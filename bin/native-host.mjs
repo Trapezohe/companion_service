@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Chrome Native Messaging host for Trapezohe Companion.
+ * Chrome Native Messaging host for GhastAI Companion.
  *
  * Chrome launches this script and communicates over stdin/stdout using
  * length-prefixed JSON messages (4-byte little-endian uint32 + UTF-8 JSON).

@@ -1,4 +1,4 @@
-# Trapezohe Companion — One-click installer for Windows
+# GhastAI Companion — One-click installer for Windows
 # Usage: irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
@@ -37,7 +37,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 
 Write-Host ""
 Write-Host "  ===============================" -ForegroundColor Cyan
-Write-Host "   Trapezohe Companion Installer  " -ForegroundColor Cyan
+Write-Host "   GhastAI Companion Installer  " -ForegroundColor Cyan
 Write-Host "  ===============================" -ForegroundColor Cyan
 Write-Host ""
 

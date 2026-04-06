@@ -243,9 +243,11 @@ function resolveRunApprovalRequestId(run) {
 
 function resolveActionStatus(run, approval) {
   const meta = getRunMeta(run)
+  const policyReason = resolveRunPolicyReason(run)
   const approvalStatus = firstNonEmptyString(meta.approvalStatus, approval?.status)
   if (approvalStatus === 'pending' || run?.state === 'waiting_approval') return 'pending_approval'
   if (approvalStatus === 'rejected' || approvalStatus === 'expired' || run?.state === 'cancelled') return 'cancelled'
+  if (policyReason && policyReason.startsWith('blocked_by_')) return 'permission_blocked'
   if (run?.state === 'failed') return 'failed'
   if (run?.state === 'running' || run?.state === 'retrying' || run?.state === 'queued' || run?.state === 'idle') {
     return 'running'
@@ -265,6 +267,93 @@ function resolveActionName(run, approval) {
   )
 }
 
+const KNOWN_PERMISSION_IDS = new Set([
+  'screen_recording',
+  'accessibility',
+  'automation',
+  'camera',
+  'microphone',
+  'location',
+  'notifications',
+  'local_command',
+  'browser_control',
+  'admin_action',
+])
+
+const ACTION_NAME_PERMISSION_MAP = new Map([
+  ['local_command', 'local_command'],
+  ['run_local_command', 'local_command'],
+  ['run_local_command_session', 'local_command'],
+  ['admin_action', 'admin_action'],
+  ['navigate', 'browser_control'],
+  ['click', 'browser_control'],
+  ['type', 'browser_control'],
+  ['snapshot', 'browser_control'],
+  ['wait', 'browser_control'],
+  ['scroll', 'browser_control'],
+  ['select', 'browser_control'],
+  ['hover', 'browser_control'],
+  ['close', 'browser_control'],
+  ['goBack', 'browser_control'],
+  ['screenshot', 'browser_control'],
+  ['list_tabs', 'browser_control'],
+  ['new_tab', 'browser_control'],
+  ['select_tab', 'browser_control'],
+  ['close_tab', 'browser_control'],
+  ['navigate_page', 'browser_control'],
+  ['type_text', 'browser_control'],
+  ['take_snapshot', 'browser_control'],
+  ['wait_for', 'browser_control'],
+  ['evaluate_script', 'browser_control'],
+  ['close_page', 'browser_control'],
+  ['new_page', 'browser_control'],
+  ['select_page', 'browser_control'],
+  ['list_pages', 'browser_control'],
+  ['take_screenshot', 'browser_control'],
+])
+
+function normalizePermissionId(value) {
+  const normalized = firstNonEmptyString(value)
+  return KNOWN_PERMISSION_IDS.has(normalized) ? normalized : ''
+}
+
+function extractCapabilityFromPolicyReason(policyReason) {
+  const normalized = firstNonEmptyString(policyReason)
+  const prefix = 'blocked_by_companion_capability_'
+  if (!normalized.startsWith(prefix)) return ''
+  return normalizePermissionId(normalized.slice(prefix.length))
+}
+
+function resolveActionPermissionId(run, approval, status) {
+  const meta = getRunMeta(run)
+  const actionName = resolveActionName(run, approval)
+  return (
+    normalizePermissionId(meta.permissionId)
+    || normalizePermissionId(meta.capability)
+    || (status === 'permission_blocked'
+      ? extractCapabilityFromPolicyReason(resolveRunPolicyReason(run))
+      : '')
+    || ACTION_NAME_PERMISSION_MAP.get(actionName)
+    || ''
+  )
+}
+
+function resolveActionSource(run, approval) {
+  const meta = getRunMeta(run)
+  const explicit = firstNonEmptyString(
+    meta.actionSource,
+    approval?.meta?.actionSource,
+    approval?.meta?.approvalSource,
+  )
+  if (explicit) return explicit
+
+  const owner = resolveRunOwner(run)
+  if (owner === 'remote') return 'extension'
+  if (owner === 'cron') return 'automation'
+  if (owner === 'replay') return 'replay'
+  return owner || 'unknown'
+}
+
 function resolveActionTarget(run, approval) {
   const meta = getRunMeta(run)
   return clipPanelText(
@@ -282,6 +371,9 @@ function resolveActionDetail(run, approval, status) {
   const meta = getRunMeta(run)
   if (status === 'pending_approval') return 'Waiting for user approval'
   if (status === 'cancelled') return 'Request was rejected or cancelled'
+  if (status === 'permission_blocked') {
+    return clipPanelText(firstNonEmptyString(meta.resultSummary, run?.error, run?.summary, 'Action blocked by companion permissions'), 140)
+  }
   if (status === 'failed') {
     return clipPanelText(firstNonEmptyString(run?.error, meta.resultSummary, run?.summary, approval?.toolPreview), 140)
   }
@@ -312,10 +404,14 @@ function buildRecentActionLogs(runs, approvals) {
     .map((run) => {
       const approval = approvalsById.get(resolveRunApprovalRequestId(run))
       const status = resolveActionStatus(run, approval)
+      const permissionId = resolveActionPermissionId(run, approval, status)
       return {
         runId: run.runId,
         timestamp: Number.isFinite(run.updatedAt) ? Number(run.updatedAt) : Date.now(),
         actionName: resolveActionName(run, approval),
+        source: resolveActionSource(run, approval),
+        capability: permissionId,
+        permissionId,
         target: resolveActionTarget(run, approval),
         status,
         detail: resolveActionDetail(run, approval, status),

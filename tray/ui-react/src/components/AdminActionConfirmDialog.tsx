@@ -1,5 +1,5 @@
 import { useUIStore } from '@/stores/ui-store'
-import { useStatus } from '@/hooks/use-status'
+import { useRunRepair, useStatus } from '@/hooks/use-status'
 import { t } from '@/i18n/translations'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,13 +15,17 @@ export function AdminActionConfirmDialog() {
   const action = useUIStore((s) => s.adminConfirmAction)
   const hideAdminConfirm = useUIStore((s) => s.hideAdminConfirm)
   const { data: status } = useStatus()
+  const runRepair = useRunRepair()
 
   const lang = status?.language ?? 'en'
 
   const handleContinue = () => {
-    // In production this would invoke the actual admin action
-    // For now we just close the dialog
-    hideAdminConfirm()
+    if (!action?.action_id) return
+    runRepair.mutate(action.action_id, {
+      onSuccess: () => {
+        hideAdminConfirm()
+      },
+    })
   }
 
   return (
@@ -80,6 +84,7 @@ export function AdminActionConfirmDialog() {
             variant="secondary"
             size="default"
             className="flex-1"
+            disabled={runRepair.isPending}
             onClick={hideAdminConfirm}
           >
             {t('adminConfirmCancel', lang)}
@@ -88,11 +93,19 @@ export function AdminActionConfirmDialog() {
             variant="destructive"
             size="default"
             className="flex-1"
+            disabled={runRepair.isPending}
             onClick={handleContinue}
           >
-            {t('adminConfirmContinue', lang)}
+            {runRepair.isPending
+              ? t('adminConfirmRunning', lang)
+              : t('adminConfirmContinue', lang)}
           </Button>
         </div>
+        {runRepair.error && (
+          <div className="text-[11px] text-[var(--color-status-red)] leading-relaxed">
+            {String(runRepair.error)}
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )

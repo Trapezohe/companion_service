@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const PRODUCT_NAME = 'Trapezohe Companion Installer'
+const PRODUCT_NAME = 'GhastAI Companion Installer'
 const MANUFACTURER = 'Trapezohe'
 const UPGRADE_CODE = '4AF4D4EF-2C1D-4FB9-99EB-387DABEE6D20'
 const INSTALL_FOLDER_NAME = 'TrapezoheCompanion'

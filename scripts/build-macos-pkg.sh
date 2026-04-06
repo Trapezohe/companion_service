@@ -13,7 +13,7 @@ PKG_SCRIPTS="${WORK_DIR}/scripts"
 APPLICATIONS_DIR="${PKG_ROOT}/Applications"
 PACKAGE_FILE="${OUT_DIR}/trapezohe-companion-macos.pkg"
 SIGNED_PACKAGE_FILE="${OUT_DIR}/trapezohe-companion-macos-signed.pkg"
-TRAY_APP_NAME="Trapezohe Companion.app"
+TRAY_APP_NAME="GhastAI Companion.app"
 TRAY_APP_PATH="${STAGE_ROOT}/${TRAY_APP_NAME}"
 
 cleanup() {
