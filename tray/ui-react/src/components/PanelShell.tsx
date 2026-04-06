@@ -21,53 +21,29 @@ export function PanelShell({ children }: { children: ReactNode }) {
   const showBack = currentPage !== 'overview'
 
   return (
-    <div className="w-full h-screen p-1">
-      <div className="relative w-full h-full flex flex-col rounded-xl bg-[var(--color-panel)] border border-[var(--color-panel-border)] shadow-[0_8px_32px_rgba(0,0,0,0.55),0_0_0_0.5px_rgba(0,0,0,0.3)] backdrop-blur-[20px] backdrop-saturate-[120%] overflow-hidden">
+    <div className="w-full h-screen p-[5px]">
+      <div className="relative w-full h-full flex flex-col rounded-[10px] bg-[var(--color-panel)] border border-[var(--color-panel-border)] shadow-[0_8px_40px_rgba(0,0,0,0.6),0_0_0_0.5px_rgba(0,0,0,0.4)] backdrop-blur-[20px] overflow-hidden">
         {/* Header */}
-        <header className="shrink-0 px-4 pt-3.5 pb-2">
-          <div className="flex items-center gap-2 min-w-0">
-            {showBack && (
-              <button
-                onClick={() => setPage('overview')}
-                className="flex items-center justify-center w-6 h-6 -ml-1 rounded-md text-[var(--color-status-blue)] hover:bg-[var(--color-surface)] transition-colors cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-            )}
-            <div className="min-w-0">
-              <div className="text-[13px] font-semibold text-[var(--color-foreground-primary)] tracking-[-0.01em]">
-                {showBack
-                  ? t(
-                      NAV_ITEMS.find((n) => n.page === currentPage)?.labelKey ??
-                        'navOverview',
-                      lang,
-                    )
-                  : t('brandTitle', lang)}
-              </div>
-              {!showBack && (
-                <div className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5 leading-tight">
-                  {t('brandSubtitle', lang)}
-                </div>
-              )}
-            </div>
-          </div>
+        <header className="shrink-0 flex items-center h-10 px-3">
+          {showBack ? (
+            <button
+              onClick={() => setPage('overview')}
+              className="flex items-center gap-0.5 text-[13px] text-[var(--color-status-blue)] hover:opacity-80 transition-opacity cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>{t(NAV_ITEMS.find((n) => n.page === currentPage)?.labelKey ?? 'navOverview', lang)}</span>
+            </button>
+          ) : (
+            <span className="text-[13px] font-semibold text-[var(--color-foreground-primary)]">
+              {t('brandTitle', lang)}
+            </span>
+          )}
         </header>
 
-        {/* Separator */}
-        <div className="mx-3 h-px bg-[var(--color-line)]" />
-
         {/* Body */}
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div className="flex-1 min-h-0 overflow-auto px-2.5 pb-2.5">
           {children}
         </div>
-
-        {/* Footer */}
-        <div className="mx-3 h-px bg-[var(--color-line)]" />
-        <footer className="shrink-0 px-4 py-2 text-center">
-          <div className="text-[10px] text-[var(--color-foreground-soft)] tracking-wide">
-            {t('footer', lang)}
-          </div>
-        </footer>
       </div>
     </div>
   )
@@ -78,11 +54,13 @@ export function NavRow({
   label,
   detail,
   icon,
+  isLast,
 }: {
   page: Page
   label: string
   detail?: string
   icon?: ReactNode
+  isLast?: boolean
 }) {
   const setPage = useUIStore((s) => s.setPage)
 
@@ -90,22 +68,23 @@ export function NavRow({
     <button
       onClick={() => setPage(page)}
       className={cn(
-        'w-full flex items-center gap-3 py-2.5 px-3',
+        'w-full flex items-center gap-2.5 py-2 px-2.5',
         'hover:bg-[var(--color-surface-hover)] active:bg-[var(--color-surface-2)]',
         'transition-colors cursor-pointer text-left',
+        !isLast && 'border-b border-[var(--color-line)]',
       )}
     >
       {icon && (
-        <div className="flex items-center justify-center w-7 h-7 rounded-md bg-[var(--color-surface)] text-[var(--color-foreground-muted)] shrink-0">
+        <div className="flex items-center justify-center w-[26px] h-[26px] rounded-[6px] bg-[var(--color-surface-2)] text-[var(--color-foreground-muted)] shrink-0">
           {icon}
         </div>
       )}
       <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-medium text-[var(--color-foreground-primary)] leading-tight">
+        <div className="text-[13px] text-[var(--color-foreground-primary)] leading-tight">
           {label}
         </div>
         {detail && (
-          <div className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5 truncate leading-tight">
+          <div className="text-[11px] text-[var(--color-foreground-muted)] mt-px truncate leading-tight">
             {detail}
           </div>
         )}

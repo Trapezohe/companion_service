@@ -2,22 +2,22 @@
 
 @theme inline {
   /* ── Panel shell ── */
-  --color-panel: rgba(28, 28, 30, 0.96);
-  --color-panel-border: rgba(255, 255, 255, 0.10);
+  --color-panel: rgba(30, 30, 32, 0.97);
+  --color-panel-border: rgba(255, 255, 255, 0.08);
 
   /* ── Foreground ── */
   --color-foreground: rgba(255, 255, 255, 0.85);
-  --color-foreground-primary: rgba(255, 255, 255, 0.95);
-  --color-foreground-muted: rgba(235, 235, 245, 0.55);
-  --color-foreground-soft: rgba(235, 235, 245, 0.25);
+  --color-foreground-primary: #f5f5f7;
+  --color-foreground-muted: rgba(235, 235, 245, 0.6);
+  --color-foreground-soft: rgba(235, 235, 245, 0.3);
 
-  /* ── Surfaces (inset layers inside the panel) ── */
-  --color-surface: rgba(255, 255, 255, 0.07);
-  --color-surface-hover: rgba(255, 255, 255, 0.10);
+  /* ── Surfaces ── */
+  --color-surface: rgba(255, 255, 255, 0.06);
+  --color-surface-hover: rgba(255, 255, 255, 0.09);
   --color-surface-2: rgba(255, 255, 255, 0.12);
-  --color-card: rgba(255, 255, 255, 0.045);
-  --color-card-hover: rgba(255, 255, 255, 0.07);
-  --color-line: rgba(255, 255, 255, 0.08);
+  --color-card: rgba(255, 255, 255, 0.055);
+  --color-card-hover: rgba(255, 255, 255, 0.08);
+  --color-line: rgba(255, 255, 255, 0.06);
 
   /* ── Status (Apple HIG dark) ── */
   --color-status-blue: #0A84FF;

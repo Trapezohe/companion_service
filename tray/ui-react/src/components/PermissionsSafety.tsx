@@ -45,9 +45,9 @@ export function PermissionsSafety() {
   }
 
   return (
-    <div className="flex flex-col">
-      {/* Summary bar */}
-      <div className="px-4 py-2.5 border-b border-[var(--color-line)] flex flex-wrap gap-1.5">
+    <div className="flex flex-col gap-2.5">
+      {/* Summary */}
+      <div className="flex flex-wrap gap-1.5 px-0.5">
         <Badge variant="info">
           {t('permissionsSummary', lang, { enabled: enabledCount, attention: attentionCount })}
         </Badge>
@@ -58,28 +58,32 @@ export function PermissionsSafety() {
         )}
       </div>
 
-      {/* System permissions group */}
+      {/* System permissions card */}
       {systemPerms.length > 0 && (
-        <section>
-          <div className="px-4 pt-3 pb-1">
-            <span className="text-[11px] font-semibold text-[var(--color-foreground-primary)]">
+        <div>
+          <div className="px-0.5 pb-1">
+            <span className="text-[11px] font-semibold text-[var(--color-foreground-muted)] uppercase tracking-wide">
               {t('systemPermissionsGroup', lang)}
             </span>
           </div>
-          {renderGroup(systemPerms)}
-        </section>
+          <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
+            {renderGroup(systemPerms)}
+          </div>
+        </div>
       )}
 
-      {/* High-risk capabilities group */}
+      {/* High-risk card */}
       {highRiskPerms.length > 0 && (
-        <section>
-          <div className="px-4 pt-3 pb-1">
-            <span className="text-[11px] font-semibold text-[var(--color-status-yellow)]">
+        <div>
+          <div className="px-0.5 pb-1">
+            <span className="text-[11px] font-semibold text-[var(--color-status-yellow)] uppercase tracking-wide">
               {t('highRiskGroup', lang)}
             </span>
           </div>
-          {renderGroup(highRiskPerms)}
-        </section>
+          <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
+            {renderGroup(highRiskPerms)}
+          </div>
+        </div>
       )}
     </div>
   )

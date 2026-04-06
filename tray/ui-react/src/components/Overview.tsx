@@ -152,34 +152,32 @@ export function Overview() {
   }
 
   return (
-    <div className="flex flex-col py-2">
-      {/* ── Status hero ── */}
-      <section className="px-4 py-3">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-2.5">
-            {/* Status dot */}
+    <div className="flex flex-col gap-2.5">
+      {/* ── Card 1: Status ── */}
+      <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
+        {/* Status row */}
+        <div className="flex items-center gap-2.5 px-3 py-2.5">
+          <div className={cn(
+            'w-[34px] h-[34px] rounded-full flex items-center justify-center shrink-0',
+            kind === 'healthy' && 'bg-[var(--color-status-green-soft)]',
+            kind === 'checking' && 'bg-[var(--color-status-yellow-soft)]',
+            kind === 'degraded' && 'bg-[var(--color-status-yellow-soft)]',
+            (kind === 'stopped' || kind === 'misconfigured') && 'bg-[var(--color-status-red-soft)]',
+          )}>
             <div className={cn(
-              'w-8 h-8 rounded-full flex items-center justify-center shrink-0',
-              kind === 'healthy' && 'bg-[var(--color-status-green-soft)]',
-              kind === 'checking' && 'bg-[var(--color-status-yellow-soft)]',
-              kind === 'degraded' && 'bg-[var(--color-status-yellow-soft)]',
-              (kind === 'stopped' || kind === 'misconfigured') && 'bg-[var(--color-status-red-soft)]',
-            )}>
-              <div className={cn(
-                'w-2.5 h-2.5 rounded-full',
-                kind === 'healthy' && 'bg-[var(--color-status-green)]',
-                kind === 'checking' && 'bg-[var(--color-status-yellow)]',
-                kind === 'degraded' && 'bg-[var(--color-status-yellow)]',
-                (kind === 'stopped' || kind === 'misconfigured') && 'bg-[var(--color-status-red)]',
-              )} />
+              'w-3 h-3 rounded-full',
+              kind === 'healthy' && 'bg-[var(--color-status-green)]',
+              kind === 'checking' && 'bg-[var(--color-status-yellow)]',
+              kind === 'degraded' && 'bg-[var(--color-status-yellow)]',
+              (kind === 'stopped' || kind === 'misconfigured') && 'bg-[var(--color-status-red)]',
+            )} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--color-foreground-primary)] leading-tight">
+              {statusLabel(kind, lang)}
             </div>
-            <div>
-              <div className="text-[13px] font-semibold text-[var(--color-foreground-primary)] leading-tight">
-                {statusLabel(kind, lang)}
-              </div>
-              <div className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5 leading-tight">
-                {statusDescription(status, lang)}
-              </div>
+            <div className="text-[11px] text-[var(--color-foreground-muted)] mt-px leading-tight truncate">
+              {statusDescription(status, lang)}
             </div>
           </div>
           <Button
@@ -187,203 +185,176 @@ export function Overview() {
             size="sm"
             disabled={updateModel.disabled}
             onClick={handleUpdate}
-            className="shrink-0 mt-0.5"
+            className="shrink-0"
           >
             {updateModel.label}
           </Button>
         </div>
 
-        {updateNote && (
-          <div className="mt-3 rounded-lg bg-[var(--color-surface)] px-3 py-2.5">
-            <div className="text-[11px] text-[var(--color-foreground)] leading-relaxed">
-              {updateNote}
-            </div>
-            <div className="mt-1 text-[10px] text-[var(--color-foreground-soft)]">
-              {t('currentVersion', lang, {
-                version: update?.current_version ?? status.health?.version ?? '',
-              })}
-              {update?.latest_version
-                ? ` → ${update.latest_version}`
-                : ''}
-            </div>
-          </div>
-        )}
-
-        {/* Stats row */}
+        {/* Stats bar */}
         {kind === 'healthy' && status.state.pid && (
-          <div className="flex items-center gap-4 mt-3">
-            <StatPill label={t('pid', lang)} value={String(status.state.pid)} />
-            <StatPill label={t('approvals', lang)} value={String(status.diagnostics?.pending_approvals ?? 0)} />
-            <StatPill label={t('updated', lang)} value={formatRelativeTime(status.checked_at_ms, lang)} />
+          <>
+            <div className="mx-2.5 h-px bg-[var(--color-line)]" />
+            <div className="flex items-center justify-between px-3 py-1.5">
+              <StatPill label="PID" value={String(status.state.pid)} />
+              <StatPill label={t('approvals', lang)} value={String(status.diagnostics?.pending_approvals ?? 0)} />
+              <StatPill label={t('updated', lang)} value={formatRelativeTime(status.checked_at_ms, lang)} />
+              {(kind === 'healthy' || kind === 'degraded') && status.actions.can_restart && (
+                <button
+                  className="text-[11px] text-[var(--color-status-blue)] hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-40"
+                  disabled={busy}
+                  onClick={() => restartService.mutate()}
+                >
+                  {t('restart', lang)}
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Update note */}
+        {updateNote && (
+          <>
+            <div className="mx-2.5 h-px bg-[var(--color-line)]" />
+            <div className="px-3 py-2">
+              <div className="text-[11px] text-[var(--color-foreground)] leading-relaxed">
+                {updateNote}
+              </div>
+              <div className="mt-0.5 text-[10px] text-[var(--color-foreground-soft)]">
+                {t('currentVersion', lang, {
+                  version: update?.current_version ?? status.health?.version ?? '',
+                })}
+                {update?.latest_version ? ` → ${update.latest_version}` : ''}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Start button for stopped state */}
+        {(kind === 'stopped' || kind === 'misconfigured') && status.actions.can_start && (
+          <div className="px-3 pb-2.5">
+            <Button
+              variant="default"
+              size="default"
+              className="w-full"
+              disabled={busy}
+              onClick={() => startService.mutate()}
+            >
+              {t('start', lang)}
+            </Button>
           </div>
         )}
+      </div>
 
-        {/* Service action */}
-        {(kind === 'stopped' || kind === 'misconfigured') && status.actions.can_start && (
-          <Button
-            variant="default"
-            size="default"
-            className="w-full mt-3"
-            disabled={busy}
-            onClick={() => startService.mutate()}
-          >
-            {t('start', lang)}
-          </Button>
-        )}
-        {(kind === 'healthy' || kind === 'degraded') && status.actions.can_restart && (
-          <Button
-            variant="secondary"
-            size="sm"
-            className="mt-3"
-            disabled={busy}
-            onClick={() => restartService.mutate()}
-          >
-            {t('restart', lang)}
-          </Button>
-        )}
-      </section>
-
-      <div className="mx-3 h-px bg-[var(--color-line)]" />
-
+      {/* ── Card 2: Self-check (conditional) ── */}
       {(failingChecks.length > 0 || repairActions.length > 0) && (
-        <>
-        <section className="px-4 py-3">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-foreground-muted)]">
-                  {t('selfCheckHeading', lang)}
-                </span>
-                <Badge variant="warning">
-                  {t('selfCheckNeedsAttention', lang)}
-                </Badge>
-              </div>
-              <div className="text-[11px] text-[var(--color-foreground-muted)] mt-1.5 leading-snug">
-                {status.state.reason || t('selfCheckHint', lang)}
-              </div>
+        <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-[var(--color-foreground-muted)] uppercase tracking-wide">
+                {t('selfCheckHeading', lang)}
+              </span>
+              <Badge variant="warning">{t('selfCheckNeedsAttention', lang)}</Badge>
             </div>
             {status.actions.can_run_self_check && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy || runSelfCheck.isPending}
-                onClick={() => runSelfCheck.mutate()}
-              >
+              <Button variant="ghost" size="sm" disabled={busy || runSelfCheck.isPending} onClick={() => runSelfCheck.mutate()}>
                 <RotateCw className="w-3 h-3" />
               </Button>
             )}
           </div>
 
           {failingChecks.length > 0 && (
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
+            <div className="px-3 pb-2 flex flex-wrap gap-1.5">
               {failingChecks.slice(0, 4).map((item) => (
-                <Badge key={item} variant="muted">
-                  {humanizeCheckName(item, lang)}
-                </Badge>
+                <Badge key={item} variant="muted">{humanizeCheckName(item, lang)}</Badge>
               ))}
             </div>
           )}
 
-          {repairActions.length > 0 && (
-            <div className="mt-2.5 flex flex-col gap-2">
-              {repairActions.map((action) => (
-                <div
-                  key={action.id}
-                  className="rounded-lg bg-[var(--color-surface)] px-3 py-2.5"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-medium text-[var(--color-foreground-primary)]">
-                        {action.title}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-[var(--color-foreground-muted)] leading-relaxed">
-                        {action.description}
-                      </div>
-                    </div>
-                    <Button
-                      variant={requiresAdminConfirm(action) ? 'destructive' : 'attention'}
-                      size="sm"
-                      disabled={busy || runRepair.isPending}
-                      className="shrink-0"
-                      onClick={() => openRepairAction(action)}
-                    >
-                      {requiresAdminConfirm(action)
-                        ? t('repairReviewAction', lang)
-                        : t('repairRunNow', lang)}
-                    </Button>
-                  </div>
+          {repairActions.map((action) => (
+            <div key={action.id}>
+              <div className="mx-2.5 h-px bg-[var(--color-line)]" />
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-[12px] font-medium text-[var(--color-foreground-primary)]">{action.title}</div>
+                  <div className="text-[11px] text-[var(--color-foreground-muted)] leading-snug">{action.description}</div>
                 </div>
-              ))}
+                <Button
+                  variant={requiresAdminConfirm(action) ? 'destructive' : 'attention'}
+                  size="sm"
+                  disabled={busy || runRepair.isPending}
+                  className="shrink-0"
+                  onClick={() => openRepairAction(action)}
+                >
+                  {requiresAdminConfirm(action) ? t('repairReviewAction', lang) : t('repairRunNow', lang)}
+                </Button>
+              </div>
             </div>
-          )}
+          ))}
 
           {(runRepair.error || runSelfCheck.error) && (
-            <div className="mt-2 text-[11px] text-[var(--color-status-red)] leading-relaxed">
+            <div className="px-3 pb-2 text-[11px] text-[var(--color-status-red)]">
               {String(runRepair.error || runSelfCheck.error)}
             </div>
           )}
-        </section>
-        <div className="mx-3 h-px bg-[var(--color-line)]" />
-        </>
+        </div>
       )}
 
-      {/* MCP Summary */}
+      {/* ── Card 3: MCP ── */}
       {kind === 'healthy' && (
-        <>
-        <section className="px-4 py-3">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-foreground-muted)]">
-            {t('mcpHeading', lang)}
+        <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
+          <div className="px-3 py-2">
+            <div className="text-[11px] font-semibold text-[var(--color-foreground-muted)] uppercase tracking-wide">
+              {t('mcpHeading', lang)}
+            </div>
+            <div className="text-[11px] text-[var(--color-foreground-muted)] mt-0.5">
+              {t('mcpSummary', lang, {
+                connected: status.diagnostics?.connected_mcp_servers ?? status.state.mcp_servers ?? 0,
+                tools: status.diagnostics?.total_mcp_tools ?? status.state.mcp_tools ?? 0,
+              })}
+            </div>
           </div>
-          <div className="text-[11px] text-[var(--color-foreground-muted)] mt-1">
-            {t('mcpSummary', lang, {
-              connected: status.diagnostics?.connected_mcp_servers ?? status.state.mcp_servers ?? 0,
-              tools: status.diagnostics?.total_mcp_tools ?? status.state.mcp_tools ?? 0,
-            })}
-          </div>
-          {/* MCP server list */}
           {(status.diagnostics?.servers ?? []).slice(0, 3).map((server) => (
-            <div key={server.name} className="flex justify-between items-center mt-2 py-2 px-3 rounded-lg bg-[var(--color-surface)]">
-              <div>
-                <div className="text-[12px] font-medium text-[var(--color-foreground-primary)]">{server.name}</div>
-                <div className="text-[10px] text-[var(--color-foreground-muted)] mt-0.5">
-                  {t('toolCount', lang, { count: server.tool_count })}
+            <div key={server.name}>
+              <div className="mx-2.5 h-px bg-[var(--color-line)]" />
+              <div className="flex justify-between items-center px-3 py-2">
+                <div>
+                  <div className="text-[12px] font-medium text-[var(--color-foreground-primary)]">{server.name}</div>
+                  <div className="text-[10px] text-[var(--color-foreground-muted)] mt-px">{t('toolCount', lang, { count: server.tool_count })}</div>
                 </div>
+                <Badge variant={serverStatusVariant(server.status)}>{localizedServerStatus(server.status, lang)}</Badge>
               </div>
-              <Badge variant={serverStatusVariant(server.status)}>
-                {localizedServerStatus(server.status, lang)}
-              </Badge>
             </div>
           ))}
-        </section>
-        <div className="mx-3 h-px bg-[var(--color-line)]" />
-        </>
+        </div>
       )}
 
-      {/* Nav rows */}
-      <div className="py-1">
+      {/* ── Card 4: Navigation ── */}
+      <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
         <NavRow
           page="permissions"
           label={t('navPermissions', lang)}
           detail={t('permissionsSummary', lang, { enabled: enabledCount, attention: attentionCount })}
-          icon={<Shield className="w-4 h-4" />}
+          icon={<Shield className="w-3.5 h-3.5" />}
         />
         <NavRow
           page="logs"
           label={t('navLogs', lang)}
           detail={recentLogCount > 0 ? `${recentLogCount} ${lang === 'zh' ? '条记录' : 'entries'}` : t('noActivity', lang)}
-          icon={<ScrollText className="w-4 h-4" />}
+          icon={<ScrollText className="w-3.5 h-3.5" />}
         />
         <NavRow
           page="settings"
           label={t('navSettings', lang)}
-          icon={<Settings className="w-4 h-4" />}
+          icon={<Settings className="w-3.5 h-3.5" />}
+          isLast
         />
       </div>
 
-      {/* Version footer */}
+      {/* Version */}
       {status.health?.version && (
-        <div className="pb-1 text-center text-[10px] text-[var(--color-foreground-soft)]">
-          {t('versionFooter', lang, { version: status.health.version })}
+        <div className="text-center text-[10px] text-[var(--color-foreground-soft)] pb-0.5">
+          v{status.health.version}
         </div>
       )}
     </div>

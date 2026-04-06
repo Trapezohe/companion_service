@@ -110,9 +110,9 @@ export function ActionLogList() {
   })()
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5">
       {/* Filter tabs */}
-      <div className="flex gap-1 px-4 py-2 border-b border-[var(--color-line)]">
+      <div className="flex gap-1 px-0.5">
         {FILTER_OPTIONS.map((opt) => (
           <button
             key={opt.value}
@@ -130,18 +130,18 @@ export function ActionLogList() {
       </div>
 
       {logPermissionId && (
-        <div className="px-4 py-2 border-b border-[var(--color-line)] flex items-center justify-between gap-2">
+        <div className="rounded-lg bg-[var(--color-card)] px-3 py-2 flex items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="text-[10px] text-[var(--color-foreground-muted)]">
               {t('logPermissionFilterLabel', lang)}
             </div>
-            <div className="text-xs font-medium text-[var(--color-foreground-primary)] truncate">
+            <div className="text-[12px] font-medium text-[var(--color-foreground-primary)] truncate">
               {activePermissionLabel || logPermissionId}
             </div>
           </div>
           <button
             onClick={() => setLogPermission(null)}
-            className="text-[11px] text-[var(--color-foreground-muted)] hover:text-[var(--color-foreground-primary)] transition-colors cursor-pointer"
+            className="text-[11px] text-[var(--color-status-blue)] hover:opacity-80 transition-opacity cursor-pointer"
           >
             {t('clearFilter', lang)}
           </button>
@@ -150,8 +150,8 @@ export function ActionLogList() {
 
       {/* Log list */}
       {filteredLogs.length === 0 ? (
-        <div className="px-4 py-8 text-center">
-          <div className="text-xs text-[var(--color-foreground-muted)]">
+        <div className="rounded-lg bg-[var(--color-card)] px-3 py-6 text-center">
+          <div className="text-[12px] text-[var(--color-foreground-muted)]">
             {logPermissionId ? t('logNoRelatedEntries', lang) : t('logNoEntries', lang)}
           </div>
           <div className="text-[11px] text-[var(--color-foreground-soft)] mt-1">
@@ -159,11 +159,11 @@ export function ActionLogList() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col">
+        <div className="rounded-lg bg-[var(--color-card)] overflow-hidden">
           {filteredLogs.map((log, idx) => (
             <div
               key={log.runId || idx}
-              className="flex flex-col gap-1 px-4 py-2 border-t border-[var(--color-line)] first:border-t-0"
+              className="flex flex-col gap-1 px-3 py-2 border-b border-[var(--color-line)] last:border-b-0"
             >
               <div className="flex justify-between text-[10px] text-[var(--color-foreground-muted)]">
                 <span>{formatRelativeTime(log.timestamp, lang)}</span>
