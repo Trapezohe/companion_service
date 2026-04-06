@@ -20,40 +20,42 @@ export function Settings() {
   const autostartEnabled = status.autostart?.enabled ?? false
 
   return (
-    <div className="flex flex-col gap-3 p-3.5">
+    <div className="flex flex-col py-2">
       {/* Language */}
-      <div className="bg-[var(--color-card)] border border-[var(--color-card-border)] rounded-lg p-2.5 flex flex-col gap-2">
-        <div className="text-[11px] text-[var(--color-foreground-muted)]">
+      <section className="px-4 py-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-foreground-muted)] mb-2">
           {t('languageLabel', lang)}
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => setLanguage.mutate('en')}
             className={cn(
-              'bg-[var(--color-surface)] border border-[var(--color-card-border)] rounded-md px-2.5 py-2 text-left cursor-pointer flex flex-col gap-0.5',
+              'bg-[var(--color-surface)] border border-[var(--color-line)] rounded-md px-2.5 py-2 text-left cursor-pointer flex flex-col gap-0.5',
               lang === 'en' && 'bg-[var(--color-status-blue-soft)] border-[rgba(10,132,255,0.3)] text-[var(--color-status-blue)]',
               lang !== 'en' && 'text-[var(--color-foreground-muted)]',
             )}
           >
-            <div className="text-xs font-medium">{t('languageEnglish', lang)}</div>
+            <div className="text-[12px] font-medium">{t('languageEnglish', lang)}</div>
             <div className="text-[10px] opacity-80">{t('languageEnglishHelp', lang)}</div>
           </button>
           <button
             onClick={() => setLanguage.mutate('zh')}
             className={cn(
-              'bg-[var(--color-surface)] border border-[var(--color-card-border)] rounded-md px-2.5 py-2 text-left cursor-pointer flex flex-col gap-0.5',
+              'bg-[var(--color-surface)] border border-[var(--color-line)] rounded-md px-2.5 py-2 text-left cursor-pointer flex flex-col gap-0.5',
               lang === 'zh' && 'bg-[var(--color-status-blue-soft)] border-[rgba(10,132,255,0.3)] text-[var(--color-status-blue)]',
               lang !== 'zh' && 'text-[var(--color-foreground-muted)]',
             )}
           >
-            <div className="text-xs font-medium">{t('languageChinese', lang)}</div>
+            <div className="text-[12px] font-medium">{t('languageChinese', lang)}</div>
             <div className="text-[10px] opacity-80">{t('languageChineseHelp', lang)}</div>
           </button>
         </div>
-      </div>
+      </section>
+
+      <div className="mx-3 h-px bg-[var(--color-line)]" />
 
       {/* Action buttons */}
-      <div className="flex flex-col gap-2">
+      <section className="px-4 py-3 flex flex-col gap-2">
         {status.actions.can_toggle_autostart && (
           <Button
             variant="secondary"
@@ -92,7 +94,11 @@ export function Settings() {
             {t('stopService', lang)}
           </Button>
         )}
+      </section>
 
+      <div className="mx-3 h-px bg-[var(--color-line)]" />
+
+      <section className="px-4 py-3">
         <Button
           variant="destructive"
           className="w-full justify-start"
@@ -100,7 +106,7 @@ export function Settings() {
         >
           {t('quit', lang)}
         </Button>
-      </div>
+      </section>
     </div>
   )
 }

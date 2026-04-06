@@ -41,7 +41,7 @@ export function PermissionDetailPanel({
   }
 
   return (
-    <div className="mx-3.5 my-2 bg-[var(--color-card)] border border-[var(--color-card-border)] rounded-lg overflow-hidden">
+    <div className="mx-4 my-2 bg-[var(--color-card)] border border-[var(--color-line)] rounded-lg overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-line)]">
         <span className="text-xs font-semibold text-[var(--color-foreground-primary)]">

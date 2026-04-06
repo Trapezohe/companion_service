@@ -2,8 +2,8 @@
 
 @theme inline {
   /* ── Panel shell ── */
-  --color-panel: rgba(28, 28, 30, 0.82);
-  --color-panel-border: rgba(255, 255, 255, 0.12);
+  --color-panel: rgba(28, 28, 30, 0.96);
+  --color-panel-border: rgba(255, 255, 255, 0.10);
 
   /* ── Foreground ── */
   --color-foreground: rgba(255, 255, 255, 0.85);

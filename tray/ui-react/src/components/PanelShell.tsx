@@ -22,7 +22,7 @@ export function PanelShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="w-full h-screen p-1">
-      <div className="relative w-full h-full flex flex-col rounded-xl bg-[var(--color-panel)] border border-[var(--color-panel-border)] shadow-[0_8px_32px_rgba(0,0,0,0.55),0_0_0_0.5px_rgba(0,0,0,0.3)] backdrop-blur-[60px] backdrop-saturate-[180%] overflow-hidden">
+      <div className="relative w-full h-full flex flex-col rounded-xl bg-[var(--color-panel)] border border-[var(--color-panel-border)] shadow-[0_8px_32px_rgba(0,0,0,0.55),0_0_0_0.5px_rgba(0,0,0,0.3)] backdrop-blur-[20px] backdrop-saturate-[120%] overflow-hidden">
         {/* Header */}
         <header className="shrink-0 px-4 pt-3.5 pb-2">
           <div className="flex items-center gap-2 min-w-0">

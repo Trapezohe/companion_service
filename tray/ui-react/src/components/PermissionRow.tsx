@@ -57,7 +57,7 @@ export function PermissionRow({
   return (
     <div
       className={cn(
-        'flex items-center justify-between px-3.5 py-2.5',
+        'flex items-center justify-between px-4 py-2.5',
         'border-t border-[var(--color-line)] first:border-t-0',
         'transition-colors cursor-pointer',
         isSelected
