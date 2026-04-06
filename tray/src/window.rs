@@ -7,8 +7,8 @@ use crate::models::DisplayLanguage;
 
 pub const STATUS_WINDOW_LABEL: &str = "status";
 const STATUS_PANEL_VERTICAL_GAP: i32 = 10;
-const DEFAULT_STATUS_WINDOW_WIDTH: f64 = 320.0;
-const DEFAULT_STATUS_WINDOW_HEIGHT: f64 = 480.0;
+const DEFAULT_STATUS_WINDOW_WIDTH: f64 = 360.0;
+const DEFAULT_STATUS_WINDOW_HEIGHT: f64 = 460.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusWindowTrigger {

@@ -1,57 +1,63 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-@theme inline {
-  /* ── Panel shell ── */
-  --color-panel: rgba(30, 30, 32, 0.97);
-  --color-panel-border: rgba(255, 255, 255, 0.08);
+@layer base {
+  :root {
+    --background: 0 0% 13%;
+    --foreground: 0 0% 92%;
 
-  /* ── Foreground ── */
-  --color-foreground: rgba(255, 255, 255, 0.85);
-  --color-foreground-primary: #f5f5f7;
-  --color-foreground-muted: rgba(235, 235, 245, 0.6);
-  --color-foreground-soft: rgba(235, 235, 245, 0.3);
+    --card: 0 0% 16%;
+    --card-foreground: 0 0% 92%;
 
-  /* ── Surfaces ── */
-  --color-surface: rgba(255, 255, 255, 0.06);
-  --color-surface-hover: rgba(255, 255, 255, 0.09);
-  --color-surface-2: rgba(255, 255, 255, 0.12);
-  --color-card: rgba(255, 255, 255, 0.055);
-  --color-card-hover: rgba(255, 255, 255, 0.08);
-  --color-line: rgba(255, 255, 255, 0.06);
+    --popover: 0 0% 16%;
+    --popover-foreground: 0 0% 92%;
 
-  /* ── Status (Apple HIG dark) ── */
-  --color-status-blue: #0A84FF;
-  --color-status-blue-soft: rgba(10, 132, 255, 0.14);
-  --color-status-green: #30D158;
-  --color-status-green-soft: rgba(48, 209, 88, 0.14);
-  --color-status-yellow: #FFD60A;
-  --color-status-yellow-soft: rgba(255, 214, 10, 0.14);
-  --color-status-red: #FF453A;
-  --color-status-red-soft: rgba(255, 69, 58, 0.14);
+    --primary: 211 100% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 22%;
+    --secondary-foreground: 0 0% 85%;
+
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 55%;
+
+    --accent: 0 0% 22%;
+    --accent-foreground: 0 0% 92%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 0 0% 24%;
+    --input: 0 0% 24%;
+    --ring: 211 100% 50%;
+
+    --radius: 0.625rem;
+  }
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+@layer base {
+  * {
+    @apply border-border;
+  }
 
-html, body, #root {
-  height: 100%;
-  background: transparent;
-}
-
-body {
-  color: var(--color-foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
-  -webkit-user-select: none;
-  user-select: none;
-  overflow: hidden;
-  color-scheme: dark;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 0px;
+  body {
+    @apply text-foreground antialiased;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
 }
