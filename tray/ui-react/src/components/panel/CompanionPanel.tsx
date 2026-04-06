@@ -9,7 +9,7 @@ const CompanionPanel = () => {
 
   return (
     <div className="p-[5px] h-screen box-border">
-      <div className="w-full h-full overflow-y-auto rounded-xl bg-background border border-border shadow-2xl shadow-black/50">
+      <div className="w-full h-full overflow-y-auto rounded-xl bg-background shadow-2xl shadow-black/50">
         {page === "home" && <HomePage onNavigate={setPage} />}
         {page === "permissions" && <PermissionsPage onBack={() => setPage("home")} />}
         {page === "logs" && <LogsPage onBack={() => setPage("home")} />}
