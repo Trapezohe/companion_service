@@ -8,7 +8,7 @@ use crate::models::DisplayLanguage;
 pub const STATUS_WINDOW_LABEL: &str = "status";
 const STATUS_PANEL_VERTICAL_GAP: i32 = 10;
 const DEFAULT_STATUS_WINDOW_WIDTH: f64 = 360.0;
-const DEFAULT_STATUS_WINDOW_HEIGHT: f64 = 460.0;
+const DEFAULT_STATUS_WINDOW_HEIGHT: f64 = 700.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusWindowTrigger {
@@ -263,14 +263,14 @@ mod tests {
                 position: PhysicalPosition::new(200, 6),
                 size: PhysicalSize::new(24, 24),
             },
-            PhysicalSize::new(320, 480),
+            PhysicalSize::new(360, 700),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1440, 900),
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(52, 40));
+        assert_eq!(position, PhysicalPosition::new(32, 40));
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod tests {
                 position: PhysicalPosition::new(1412, 6),
                 size: PhysicalSize::new(24, 24),
             },
-            PhysicalSize::new(320, 480),
+            PhysicalSize::new(360, 700),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1440, 900),
@@ -291,14 +291,14 @@ mod tests {
                 position: PhysicalPosition::new(2, 6),
                 size: PhysicalSize::new(24, 24),
             },
-            PhysicalSize::new(320, 480),
+            PhysicalSize::new(360, 700),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 0),
                 size: PhysicalSize::new(1440, 900),
             },
         );
 
-        assert_eq!(right, PhysicalPosition::new(1120, 40));
+        assert_eq!(right, PhysicalPosition::new(1080, 40));
         assert_eq!(left, PhysicalPosition::new(0, 40));
     }
 
@@ -309,13 +309,13 @@ mod tests {
                 position: PhysicalPosition::new(240, 0),
                 size: PhysicalSize::new(24, 18),
             },
-            PhysicalSize::new(320, 480),
+            PhysicalSize::new(360, 700),
             PhysicalRect {
                 position: PhysicalPosition::new(0, 32),
                 size: PhysicalSize::new(1440, 868),
             },
         );
 
-        assert_eq!(position, PhysicalPosition::new(92, 32));
+        assert_eq!(position, PhysicalPosition::new(72, 32));
     }
 }

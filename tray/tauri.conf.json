@@ -17,7 +17,7 @@
         "label": "status",
         "title": "GhastAI Companion",
         "width": 360,
-        "height": 590,
+        "height": 700,
         "visible": false,
         "minWidth": 360,
         "minHeight": 360,

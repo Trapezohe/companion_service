@@ -62,17 +62,13 @@
   }
 }
 
-/* macOS-style overlay scrollbar */
+/* Hide native scrollbar — content scrolls via trackpad/mouse wheel */
+.panel-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
 .panel-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.panel-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.panel-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
-}
-.panel-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  display: none; /* Chrome/Safari/WKWebView */
+  width: 0;
+  height: 0;
 }
