@@ -149,9 +149,9 @@ export function Overview() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2 p-2.5">
       {/* Status Card */}
-      <section className="px-3.5 py-3 border-b border-[var(--color-line)]">
+      <section className="rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] px-3.5 py-3">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] font-semibold text-[var(--color-foreground-primary)]">
             {t('statusHeading', lang)}
@@ -241,7 +241,7 @@ export function Overview() {
       </section>
 
       {(failingChecks.length > 0 || repairActions.length > 0) && (
-        <section className="px-3.5 py-3 border-b border-[var(--color-line)]">
+        <section className="rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] px-3.5 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -323,7 +323,7 @@ export function Overview() {
 
       {/* MCP Summary */}
       {kind === 'healthy' && (
-        <section className="px-3.5 py-3 border-b border-[var(--color-line)]">
+        <section className="rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] px-3.5 py-3">
           <span className="text-[11px] font-semibold text-[var(--color-foreground-primary)]">
             {t('mcpHeading', lang)}
           </span>
@@ -351,7 +351,7 @@ export function Overview() {
       )}
 
       {/* Nav rows */}
-      <div className="flex flex-col">
+      <div className="flex flex-col rounded-lg bg-[var(--color-card)] border border-[var(--color-card-border)] overflow-hidden">
         <NavRow
           page="permissions"
           label={t('navPermissions', lang)}
@@ -373,7 +373,7 @@ export function Overview() {
 
       {/* Version footer */}
       {status.health?.version && (
-        <div className="px-3.5 py-2 text-[11px] text-[var(--color-foreground-muted)]">
+        <div className="px-3.5 py-1.5 text-center text-[11px] text-[var(--color-foreground-soft)]">
           {t('versionFooter', lang, { version: status.health.version })}
         </div>
       )}

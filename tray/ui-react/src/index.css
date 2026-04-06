@@ -12,10 +12,10 @@
   --color-foreground-soft: rgba(235, 235, 245, 0.3);
 
   /* Surfaces */
-  --color-surface: rgba(255, 255, 255, 0.08);
-  --color-surface-2: rgba(255, 255, 255, 0.12);
-  --color-card: rgba(255, 255, 255, 0.05);
-  --color-card-border: rgba(255, 255, 255, 0.05);
+  --color-surface: rgba(255, 255, 255, 0.10);
+  --color-surface-2: rgba(255, 255, 255, 0.14);
+  --color-card: rgba(255, 255, 255, 0.06);
+  --color-card-border: rgba(255, 255, 255, 0.08);
   --color-line: rgba(255, 255, 255, 0.1);
 
   /* Status colors (Apple dark mode palette) */
@@ -42,11 +42,9 @@
 
 html, body, #root {
   height: 100%;
-  /* Use opaque dark fallback – the PanelShell component applies the
-     actual glass effect (semi-transparent bg + backdrop-blur). If
-     transparency is working at the OS-window level, the PanelShell
-     still looks correct because it covers the whole viewport. */
-  background: #1e1e1e;
+  /* Transparent so the PanelShell glassmorphic background shows through
+     and the rounded corners reveal the desktop behind the window. */
+  background: transparent;
 }
 
 body {

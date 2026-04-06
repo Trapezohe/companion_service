@@ -21,7 +21,7 @@ export function PanelShell({ children }: { children: ReactNode }) {
   const showBack = currentPage !== 'overview'
 
   return (
-    <div className="relative w-full h-screen flex flex-col bg-[var(--color-panel)] backdrop-blur-[40px] backdrop-saturate-[180%] isolation-auto overflow-hidden">
+    <div className="relative w-full h-screen flex flex-col bg-[var(--color-panel)] backdrop-blur-[40px] backdrop-saturate-[180%] rounded-[10px] border border-[var(--color-panel-border)] shadow-[0_10px_40px_rgba(0,0,0,0.4)] overflow-hidden">
       {/* Header */}
       <header className="flex items-center justify-between px-3.5 pt-3 pb-1">
         <div className="flex items-center gap-1.5 min-w-0">

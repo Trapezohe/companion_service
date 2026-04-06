@@ -11,7 +11,7 @@ const buttonVariants = cva(
         default:
           'bg-[var(--color-status-blue)] text-white border border-black/20 shadow-sm',
         secondary:
-          'bg-[var(--color-surface)] text-[var(--color-foreground)] border border-[var(--color-line)]',
+          'bg-[var(--color-surface-2)] text-[var(--color-foreground)] border border-[var(--color-panel-border)] hover:bg-[var(--color-surface)] hover:text-[var(--color-foreground-primary)]',
         destructive:
           'bg-[var(--color-status-red-soft)] text-[var(--color-status-red)] border border-[rgba(255,69,58,0.2)]',
         ghost:
