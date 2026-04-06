@@ -6,22 +6,53 @@ import PermissionsPage from "./PermissionsPage";
 import LogsPage from "./LogsPage";
 import SettingsPage from "./SettingsPage";
 
+interface UpdateInfo {
+  available: boolean;
+  can_install: boolean;
+  current_version: string;
+  latest_version: string;
+  release_url: string;
+  status: string;
+}
+
+interface StatusSnapshot {
+  language: Lang;
+  endpoint: string;
+  update?: UpdateInfo;
+}
+
 const CompanionPanel = () => {
   const [page, setPage] = useState("home");
   const [lang, setLang] = useState<Lang>("en");
+  const [snapshot, setSnapshot] = useState<StatusSnapshot | null>(null);
   const tr = useT(lang);
 
-  // Fetch initial language from backend snapshot
-  useEffect(() => {
-    invoke<{ language: Lang }>("get_status_snapshot")
-      .then((snapshot) => {
-        if (snapshot?.language === "en" || snapshot?.language === "zh") {
-          setLang(snapshot.language);
+  const fetchSnapshot = () => {
+    invoke<StatusSnapshot>("get_status_snapshot")
+      .then((s) => {
+        setSnapshot(s);
+        if (s?.language === "en" || s?.language === "zh") {
+          setLang(s.language);
         }
       })
-      .catch(() => {
-        // fallback to "en" if invoke fails (e.g. dev mode outside Tauri)
-      });
+      .catch(() => {});
+  };
+
+  // Initial fetch + hourly update check via check_update invoke
+  useEffect(() => {
+    fetchSnapshot();
+    // Trigger backend update check on mount, then every hour
+    const runUpdateCheck = () => {
+      invoke<StatusSnapshot>("check_update")
+        .then((s) => {
+          setSnapshot(s);
+          if (s?.language === "en" || s?.language === "zh") setLang(s.language);
+        })
+        .catch(() => {});
+    };
+    runUpdateCheck();
+    const interval = setInterval(runUpdateCheck, 60 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleLangChange = (next: Lang) => {
@@ -29,10 +60,29 @@ const CompanionPanel = () => {
     invoke("set_display_language", { language: next }).catch(() => {});
   };
 
+  // Parse port from endpoint (e.g. "http://127.0.0.1:41591" → "41591")
+  const port = snapshot?.endpoint
+    ? snapshot.endpoint.split(":").pop()
+    : undefined;
+
+  const update = snapshot?.update?.available ? snapshot.update : undefined;
+
   return (
     <div className="p-[5px] h-screen box-border">
       <div className="w-full h-full overflow-y-auto rounded-[12px] bg-background panel-scrollbar">
-        {page === "home" && <HomePage onNavigate={setPage} lang={lang} />}
+        {page === "home" && (
+          <HomePage
+            onNavigate={setPage}
+            lang={lang}
+            port={port}
+            update={update}
+            onInstallUpdate={() => {
+              invoke<StatusSnapshot>("install_update")
+                .then((s) => { if (s) setSnapshot(s); })
+                .catch(() => {});
+            }}
+          />
+        )}
         {page === "permissions" && (
           <PermissionsPage onBack={() => setPage("home")} lang={lang} />
         )}
@@ -42,6 +92,7 @@ const CompanionPanel = () => {
             onBack={() => setPage("home")}
             lang={lang}
             onLangChange={handleLangChange}
+            onAfterAction={fetchSnapshot}
           />
         )}
 

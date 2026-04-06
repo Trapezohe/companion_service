@@ -6,12 +6,23 @@ interface SettingsPageProps {
   onBack: () => void;
   lang: Lang;
   onLangChange: (lang: Lang) => void;
+  onAfterAction?: () => void;
 }
 
-const SettingsPage = ({ onBack, lang, onLangChange }: SettingsPageProps) => {
+const SettingsPage = ({ onBack, lang, onLangChange, onAfterAction }: SettingsPageProps) => {
   const tr = useT(lang);
 
   const actions: { key: string; label: string; handler?: () => void }[] = [
+    {
+      key: "check-update",
+      label: tr.checkUpdateAction,
+      handler: () => invoke("check_update").then(onAfterAction).catch(() => {}),
+    },
+    {
+      key: "restart",
+      label: tr.restartService,
+      handler: () => invoke("restart_service").then(onAfterAction).catch(() => {}),
+    },
     {
       key: "autostart",
       label: tr.disableAutostart,
