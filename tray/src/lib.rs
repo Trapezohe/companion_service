@@ -16,6 +16,7 @@ use startup::{
     context_from_decision, decide_post_ensure_action, decide_startup_action, startup_context,
     StartupAction,
 };
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconEvent},
@@ -32,7 +33,6 @@ struct ShellResources {
     startup_context: Mutex<Option<StartupContextView>>,
     update_info: Mutex<Option<UpdateInfo>>,
     preferences: Mutex<TrayPreferences>,
-    permissions: Mutex<permissions::PermissionsState>,
     exit_in_progress: Mutex<bool>,
 }
 
@@ -52,6 +52,24 @@ fn claim_exit_shutdown(flag: &Mutex<bool>) -> bool {
 fn current_config(app: &AppHandle<Wry>) -> Option<CompanionConfig> {
     let state = app.state::<ShellResources>();
     state.config.lock().ok().and_then(|guard| guard.clone())
+}
+
+fn current_or_loaded_config(app: &AppHandle<Wry>) -> Result<CompanionConfig, String> {
+    current_config(app)
+        .or_else(|| config::load_config().ok())
+        .ok_or_else(|| "Companion config is unavailable".to_string())
+}
+
+fn load_permission_flags() -> Result<permissions::CompanionCapabilityFlags, String> {
+    let raw = config::load_companion_capabilities().map_err(|error| error.to_string())?;
+    Ok(permissions::normalize_companion_capability_flags(&raw))
+}
+
+fn persist_permission_flags(
+    flags: &permissions::CompanionCapabilityFlags,
+) -> Result<(), String> {
+    let raw: HashMap<String, bool> = flags.iter().map(|(key, value)| (key.clone(), *value)).collect();
+    config::save_companion_capabilities(&raw).map_err(|error| error.to_string())
 }
 
 fn begin_exit_shutdown(app: &AppHandle<Wry>) -> bool {
@@ -472,23 +490,33 @@ fn quit_tray(app: AppHandle<Wry>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_permissions_snapshot(app: AppHandle<Wry>) -> Result<permissions::PermissionsSnapshot, String> {
-    let state = app.state::<ShellResources>();
-    Ok(permissions::build_permissions_snapshot(&state.permissions))
+fn get_permissions_snapshot(_app: AppHandle<Wry>) -> Result<permissions::PermissionsSnapshot, String> {
+    let flags = load_permission_flags()?;
+    Ok(permissions::build_permissions_snapshot(&flags))
 }
 
 #[tauri::command]
-fn toggle_companion_permission(
+async fn toggle_companion_permission(
     app: AppHandle<Wry>,
     id: String,
     enabled: bool,
 ) -> Result<permissions::PermissionsSnapshot, String> {
-    let state = app.state::<ShellResources>();
-    {
-        let mut perms = state.permissions.lock().map_err(|e| e.to_string())?;
-        perms.set_enabled(&id, enabled);
+    permissions::validate_permission_id(&id)?;
+
+    let mut flags = load_permission_flags()?;
+    permissions::set_companion_capability_flag(&mut flags, &id, enabled)?;
+
+    let config = current_or_loaded_config(&app).ok();
+    if let Some(config) = config.as_ref() {
+        if health::fetch_health(config).await.is_ok() {
+            let synced = permissions::sync_companion_capabilities(config, &flags).await?;
+            persist_permission_flags(&synced)?;
+            return Ok(permissions::build_permissions_snapshot(&synced));
+        }
     }
-    Ok(permissions::build_permissions_snapshot(&state.permissions))
+
+    persist_permission_flags(&flags)?;
+    Ok(permissions::build_permissions_snapshot(&flags))
 }
 
 #[tauri::command]
@@ -570,7 +598,6 @@ pub fn run() {
                 startup_context: Mutex::new(startup_note),
                 update_info: Mutex::new(None),
                 preferences: Mutex::new(preferences.clone()),
-                permissions: Mutex::new(permissions::PermissionsState::new()),
                 exit_in_progress: Mutex::new(false),
             });
 
@@ -625,7 +652,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .unwrap_or_else(|err| {
-            let msg = format!("Trapezohe Companion tray failed to start:\n\n{err}");
+            let msg = format!("GhastAI Companion tray failed to start:\n\n{err}");
             eprintln!("{msg}");
             // Write to shared log directory for diagnostics
             if let Some(log_dir) = dirs::data_dir().or_else(|| {
@@ -643,7 +670,7 @@ pub fn run() {
                     .encode_wide()
                     .chain(std::iter::once(0))
                     .collect();
-                let wide_title: Vec<u16> = OsStr::new("Trapezohe Companion")
+                let wide_title: Vec<u16> = OsStr::new("GhastAI Companion")
                     .encode_wide()
                     .chain(std::iter::once(0))
                     .collect();

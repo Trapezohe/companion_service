@@ -1,18 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Trapezohe Companion",
+  "productName": "GhastAI Companion",
   "version": "0.1.18",
   "identifier": "ai.trapezohe.companion.tray",
   "build": {
+    "beforeDevCommand": "cd ui-react && npm run dev",
+    "beforeBuildCommand": "cd ui-react && npm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "ui-react/dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "status",
-        "title": "Trapezohe Companion",
+        "title": "GhastAI Companion",
         "width": 344,
         "height": 660,
         "visible": false,

@@ -88,8 +88,8 @@ pub fn sync_status_window_title(
     ensure_status_window(app)?;
     if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
         let title = match language {
-            DisplayLanguage::En => "Trapezohe Companion",
-            DisplayLanguage::Zh => "Trapezohe Companion 控制面板",
+            DisplayLanguage::En => "GhastAI Companion",
+            DisplayLanguage::Zh => "GhastAI Companion 控制面板",
         };
         window.set_title(title)?;
     }

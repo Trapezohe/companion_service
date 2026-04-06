@@ -9,7 +9,8 @@ MODE="${2:---stage-only}"
 STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray}"
 ARCHIVE_ROOT="${ROOT_DIR}/dist/debug-artifacts"
 BUILD_DIR="${ROOT_DIR}/tray/target/release"
-APP_NAME="Trapezohe Companion.app"
+UI_DIR="${ROOT_DIR}/tray/ui-react"
+APP_NAME="GhastAI Companion.app"
 APP_DIR="${STAGE_ROOT}/${APP_NAME}"
 MACOS_DIR="${APP_DIR}/Contents/MacOS"
 RESOURCES_DIR="${APP_DIR}/Contents/Resources"
@@ -18,6 +19,7 @@ RUNTIME_NODE_DIR="${RESOURCES_DIR}/runtime/node"
 BIN_NAME="trapezohe-companion-tray"
 ZIP_PATH="${ARCHIVE_ROOT}/trapezohe-companion-tray-macos.zip"
 NODE_BIN="${TRAPEZOHE_MACOS_NODE_BIN:-$(command -v node || true)}"
+NPM_BIN="${TRAPEZOHE_MACOS_NPM_BIN:-$(command -v npm || true)}"
 
 rm -rf "${APP_DIR}" "${ZIP_PATH}"
 mkdir -p "${STAGE_ROOT}"
@@ -28,7 +30,14 @@ if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
   exit 1
 fi
 
-cargo build --manifest-path "${ROOT_DIR}/tray/Cargo.toml" --release
+if [[ -z "${NPM_BIN}" || ! -x "${NPM_BIN}" ]]; then
+  echo "npm executable not found for macOS app bundling." >&2
+  exit 1
+fi
+
+"${NPM_BIN}" --prefix "${UI_DIR}" run build
+
+cargo build --manifest-path "${ROOT_DIR}/tray/Cargo.toml" --release --features custom-protocol
 
 cp "${BUILD_DIR}/${BIN_NAME}" "${MACOS_DIR}/${BIN_NAME}"
 cp "${ROOT_DIR}/tray/icons/icon.png" "${RESOURCES_DIR}/icon.png"
@@ -49,7 +58,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>Trapezohe Companion</string>
+  <string>GhastAI Companion</string>
   <key>CFBundleExecutable</key>
   <string>${BIN_NAME}</string>
   <key>CFBundleIdentifier</key>
@@ -57,7 +66,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key>
   <string>icon.png</string>
   <key>CFBundleName</key>
-  <string>Trapezohe Companion</string>
+  <string>GhastAI Companion</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
