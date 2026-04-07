@@ -17,6 +17,7 @@ fn suppress_console_window(command: &mut Command) {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg_attr(not(test), allow(dead_code))]
 fn suppress_console_window(_command: &mut Command) {}
 
 const LEGACY_PREFS_FILE_NAME: &str = "companion-tray.json";
@@ -132,23 +133,38 @@ pub fn save_startup_policy(policy: &StartupPolicy) -> Result<()> {
 pub fn sync_autostart_on_launch() -> Result<AutoStartStatus> {
     let executable = current_executable_string()?;
     let home = home_dir_string()?;
-    let target = registration_for_platform(std::env::consts::OS, &executable, &home);
+    let current_target = registration_for_platform(std::env::consts::OS, &executable, &home);
+    let resolved_target =
+        resolve_registration_target_for_platform(std::env::consts::OS, &executable, &home);
 
     cleanup_legacy_daemon_autostart(std::env::consts::OS, &home)?;
 
     match load_startup_policy()? {
         Some(policy) => {
-            apply_startup_policy(&policy, &target)?;
-            build_status(&target, is_login_item_enabled(&policy))
+            if is_login_item_enabled(&policy) {
+                if let Some(target) = resolved_target.as_ref() {
+                    apply_startup_policy(&policy, target)?;
+                    build_status(target, true)
+                } else {
+                    build_status(&current_target, false)
+                }
+            } else {
+                apply_startup_policy(&policy, &current_target)?;
+                build_status(&current_target, false)
+            }
         }
         None => {
             if should_enable_by_default(&executable) {
-                let policy = enabled_startup_policy();
-                apply_startup_policy(&policy, &target)?;
-                save_startup_policy(&policy)?;
-                build_status(&target, true)
+                if let Some(target) = resolved_target.as_ref() {
+                    let policy = enabled_startup_policy();
+                    apply_startup_policy(&policy, target)?;
+                    save_startup_policy(&policy)?;
+                    build_status(target, true)
+                } else {
+                    build_status(&current_target, registration_exists(&current_target)?)
+                }
             } else {
-                build_status(&target, registration_exists(&target)?)
+                build_status(&current_target, registration_exists(&current_target)?)
             }
         }
     }
@@ -157,28 +173,45 @@ pub fn sync_autostart_on_launch() -> Result<AutoStartStatus> {
 pub fn current_autostart_status() -> Result<AutoStartStatus> {
     let executable = current_executable_string()?;
     let home = home_dir_string()?;
-    let target = registration_for_platform(std::env::consts::OS, &executable, &home);
+    let current_target = registration_for_platform(std::env::consts::OS, &executable, &home);
+    let resolved_target =
+        resolve_registration_target_for_platform(std::env::consts::OS, &executable, &home);
     let enabled = match load_startup_policy()? {
-        Some(policy) => is_login_item_enabled(&policy),
-        None => registration_exists(&target)?,
+        Some(policy) if is_login_item_enabled(&policy) => match resolved_target.as_ref() {
+            Some(target) => registration_exists(target)?,
+            None => false,
+        },
+        Some(_) => false,
+        None => registration_exists(&current_target)?,
     };
-    build_status(&target, enabled)
+    let target = resolved_target.as_ref().unwrap_or(&current_target);
+    build_status(target, enabled)
 }
 
 pub fn set_autostart_enabled(enabled: bool) -> Result<AutoStartStatus> {
     let executable = current_executable_string()?;
     let home = home_dir_string()?;
-    let target = registration_for_platform(std::env::consts::OS, &executable, &home);
+    let current_target = registration_for_platform(std::env::consts::OS, &executable, &home);
+    let resolved_target =
+        resolve_registration_target_for_platform(std::env::consts::OS, &executable, &home);
     let policy = if enabled {
         enabled_startup_policy()
     } else {
         StartupPolicy::default()
     };
 
-    apply_startup_policy(&policy, &target)?;
+    if enabled {
+        let target = resolved_target.as_ref().context(
+            "macOS auto-start requires the packaged app in /Applications or ~/Applications",
+        )?;
+        apply_startup_policy(&policy, target)?;
+    } else {
+        apply_startup_policy(&policy, &current_target)?;
+    }
     cleanup_legacy_daemon_autostart(std::env::consts::OS, &home)?;
     save_startup_policy(&policy)?;
-    build_status(&target, enabled)
+    let target = resolved_target.as_ref().unwrap_or(&current_target);
+    build_status(target, enabled)
 }
 
 pub fn registration_for_platform(
@@ -398,6 +431,99 @@ fn build_status(target: &RegistrationTarget, enabled: bool) -> Result<AutoStartS
     })
 }
 
+fn resolve_registration_target_for_platform(
+    platform: &str,
+    executable: &str,
+    home: &str,
+) -> Option<RegistrationTarget> {
+    let resolved_executable =
+        resolve_registration_executable_for_platform(platform, executable, home)?;
+    Some(registration_for_platform(
+        platform,
+        &resolved_executable,
+        home,
+    ))
+}
+
+fn resolve_registration_executable_for_platform(
+    platform: &str,
+    executable: &str,
+    home: &str,
+) -> Option<String> {
+    match platform {
+        "macos" | "darwin" => {
+            let resolved = resolve_macos_registration_executable(
+                Path::new(executable),
+                Path::new(home),
+                Path::new("/Applications"),
+            )?;
+            Some(resolved.display().to_string())
+        }
+        _ => Some(executable.to_string()),
+    }
+}
+
+fn resolve_macos_registration_executable(
+    current_executable: &Path,
+    home: &Path,
+    system_applications_dir: &Path,
+) -> Option<PathBuf> {
+    if macos_executable_is_in_installed_bundle(current_executable, home, system_applications_dir) {
+        return Some(current_executable.to_path_buf());
+    }
+
+    macos_installed_tray_executable_candidates(home, system_applications_dir)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+}
+
+fn macos_installed_tray_executable_candidates(
+    home: &Path,
+    system_applications_dir: &Path,
+) -> Vec<PathBuf> {
+    vec![
+        system_applications_dir
+            .join("GhastAI Companion.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("trapezohe-companion-tray"),
+        home.join("Applications")
+            .join("GhastAI Companion.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("trapezohe-companion-tray"),
+    ]
+}
+
+fn macos_executable_is_in_installed_bundle(
+    executable: &Path,
+    home: &Path,
+    system_applications_dir: &Path,
+) -> bool {
+    let Some(bundle_path) = macos_bundle_path_from_executable(executable) else {
+        return false;
+    };
+    let Some(parent_dir) = bundle_path.parent() else {
+        return false;
+    };
+
+    parent_dir == system_applications_dir || parent_dir == home.join("Applications")
+}
+
+fn macos_bundle_path_from_executable(executable: &Path) -> Option<PathBuf> {
+    let macos_dir = executable.parent()?;
+    if macos_dir.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+
+    Some(contents_dir.parent()?.to_path_buf())
+}
+
 fn current_executable_string() -> Result<String> {
     Ok(std::env::current_exe()
         .context("Failed to resolve current tray executable")?
@@ -414,7 +540,9 @@ fn home_dir_string() -> Result<String> {
 
 fn should_enable_by_default(executable: &str) -> bool {
     let normalized = executable.replace('\\', "/").to_ascii_lowercase();
-    !(normalized.contains("/target/debug/") || normalized.contains("/target/release/"))
+    !(normalized.contains("/target/debug/")
+        || normalized.contains("/target/release/")
+        || normalized.contains("/dist/stage/"))
 }
 
 fn xml_escape(value: &str) -> String {
@@ -585,7 +713,10 @@ mod tests {
                 ensure_daemon_on_tray_launch: true,
             }
         );
-        assert!(policy_path.exists(), "migration should persist unified policy");
+        assert!(
+            policy_path.exists(),
+            "migration should persist unified policy"
+        );
         assert!(!legacy_path.exists(), "legacy tray prefs should be retired");
     }
 
@@ -655,8 +786,57 @@ mod tests {
         assert!(!should_enable_by_default(
             "/Users/test/trapezohe-companion/tray/target/debug/trapezohe-companion-tray"
         ));
+        assert!(!should_enable_by_default(
+            "/Users/test/trapezohe-companion/dist/stage/macos-tray/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray"
+        ));
         assert!(should_enable_by_default(
             "/Applications/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray"
         ));
+    }
+
+    #[test]
+    fn prefers_installed_macos_app_for_registration_when_running_stage_bundle() {
+        let temp = tempdir().expect("temp dir");
+        let home = temp.path().join("tester");
+        let system_applications_dir = temp.path().join("Applications");
+        let installed = home
+            .join("Applications")
+            .join("GhastAI Companion.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("trapezohe-companion-tray");
+        fs::create_dir_all(installed.parent().expect("installed parent")).expect("create app dir");
+        fs::write(&installed, b"#!/bin/sh\n").expect("write installed binary");
+
+        let resolved = resolve_macos_registration_executable(
+            Path::new(
+            "/Users/test/Desktop/trapezohe-companion/dist/stage/macos-tray/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray",
+            ),
+            &home,
+            &system_applications_dir,
+        )
+        .expect("resolved executable");
+
+        assert_eq!(
+            normalize_test_path(&resolved.display().to_string()),
+            normalize_test_path(&installed.display().to_string())
+        );
+    }
+
+    #[test]
+    fn refuses_stage_macos_registration_without_installed_app() {
+        let temp = tempdir().expect("temp dir");
+        let home = temp.path().join("tester");
+        let system_applications_dir = temp.path().join("Applications");
+
+        let resolved = resolve_macos_registration_executable(
+            Path::new(
+            "/Users/test/Desktop/trapezohe-companion/dist/stage/macos-tray/GhastAI Companion.app/Contents/MacOS/trapezohe-companion-tray",
+            ),
+            &home,
+            &system_applications_dir,
+        );
+
+        assert!(resolved.is_none());
     }
 }

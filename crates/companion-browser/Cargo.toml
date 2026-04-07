@@ -1,25 +1,14 @@
 [package]
-name = "companion-cli"
+name = "companion-browser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "trapezohe-companion"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
 companion-config = { path = "../companion-config" }
-companion-daemon = { path = "../companion-daemon" }
 companion-shared = { path = "../companion-shared" }
-reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true

@@ -65,10 +65,11 @@ fn load_permission_flags() -> Result<permissions::CompanionCapabilityFlags, Stri
     Ok(permissions::normalize_companion_capability_flags(&raw))
 }
 
-fn persist_permission_flags(
-    flags: &permissions::CompanionCapabilityFlags,
-) -> Result<(), String> {
-    let raw: HashMap<String, bool> = flags.iter().map(|(key, value)| (key.clone(), *value)).collect();
+fn persist_permission_flags(flags: &permissions::CompanionCapabilityFlags) -> Result<(), String> {
+    let raw: HashMap<String, bool> = flags
+        .iter()
+        .map(|(key, value)| (key.clone(), *value))
+        .collect();
     config::save_companion_capabilities(&raw).map_err(|error| error.to_string())
 }
 
@@ -110,7 +111,11 @@ fn replace_startup_context(app: &AppHandle<Wry>, context: Option<StartupContextV
 
 fn current_update_info(app: &AppHandle<Wry>) -> Option<UpdateInfo> {
     let state = app.state::<ShellResources>();
-    state.update_info.lock().ok().and_then(|guard| guard.clone())
+    state
+        .update_info
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
 }
 
 fn current_preferences(app: &AppHandle<Wry>) -> TrayPreferences {
@@ -277,15 +282,19 @@ async fn run_startup_reconciliation(app: AppHandle<Wry>) {
     );
     let snapshot = refresh_snapshot(&app, true).await;
     let policy = autostart::load_startup_policy().ok().flatten();
-    let decision = decide_startup_action(policy.as_ref(), current_config(&app).is_some(), &snapshot);
+    let decision =
+        decide_startup_action(policy.as_ref(), current_config(&app).is_some(), &snapshot);
     set_startup_context(&app, Some(context_from_decision("tray_boot", &decision)));
 
     match decision.action {
         StartupAction::Noop => {}
         StartupAction::EnsureDaemon => {
-            let _ =
-                start_daemon_flow(&app, "tray_boot", window::StatusWindowTrigger::StartupAttention)
-                    .await;
+            let _ = start_daemon_flow(
+                &app,
+                "tray_boot",
+                window::StatusWindowTrigger::StartupAttention,
+            )
+            .await;
         }
         StartupAction::RevealPanel => {
             let _ = window::apply_status_window_intent(
@@ -438,7 +447,10 @@ async fn install_update(app: AppHandle<Wry>) -> Result<StatusViewModel, String> 
 }
 
 #[tauri::command]
-async fn set_display_language(app: AppHandle<Wry>, language: String) -> Result<StatusViewModel, String> {
+async fn set_display_language(
+    app: AppHandle<Wry>,
+    language: String,
+) -> Result<StatusViewModel, String> {
     let next_language = DisplayLanguage::from_code(&language)
         .ok_or_else(|| format!("Unsupported language: {language}"))?;
     let mut preferences = current_preferences(&app);
@@ -490,7 +502,9 @@ fn quit_tray(app: AppHandle<Wry>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_permissions_snapshot(_app: AppHandle<Wry>) -> Result<permissions::PermissionsSnapshot, String> {
+fn get_permissions_snapshot(
+    _app: AppHandle<Wry>,
+) -> Result<permissions::PermissionsSnapshot, String> {
     let flags = load_permission_flags()?;
     Ok(permissions::build_permissions_snapshot(&flags))
 }
@@ -624,7 +638,11 @@ pub fn run() {
                 button_state: MouseButtonState::Up,
                 ..
             } if id == tray::TRAY_ID
-                && should_open_status_panel_for_tray_event(button, Some(MouseButtonState::Up), false) =>
+                && should_open_status_panel_for_tray_event(
+                    button,
+                    Some(MouseButtonState::Up),
+                    false,
+                ) =>
             {
                 let anchor = window::StatusWindowAnchor::from_tray_rect(rect);
                 let _ = window::apply_status_window_intent_with_anchor(
@@ -634,10 +652,7 @@ pub fn run() {
                 );
             }
             TrayIconEvent::DoubleClick {
-                id,
-                rect,
-                button,
-                ..
+                id, rect, button, ..
             } if id == tray::TRAY_ID
                 && should_open_status_panel_for_tray_event(button, None, true) =>
             {
@@ -656,7 +671,9 @@ pub fn run() {
             eprintln!("{msg}");
             // Write to shared log directory for diagnostics
             if let Some(log_dir) = dirs::data_dir().or_else(|| {
-                std::env::var("ProgramData").ok().map(std::path::PathBuf::from)
+                std::env::var("ProgramData")
+                    .ok()
+                    .map(std::path::PathBuf::from)
             }) {
                 let log_path = log_dir.join("TrapezoheCompanion").join("tray-crash.log");
                 let _ = std::fs::create_dir_all(log_path.parent().unwrap());
@@ -725,11 +742,8 @@ mod tests {
             ..StatusViewModel::default()
         };
 
-        let decision = decide_startup_action(
-            Some(&startup_policy_enabled()),
-            true,
-            &stopped_snapshot,
-        );
+        let decision =
+            decide_startup_action(Some(&startup_policy_enabled()), true, &stopped_snapshot);
         assert_eq!(decision.action, StartupAction::EnsureDaemon);
     }
 
@@ -744,7 +758,10 @@ mod tests {
             ensure_daemon_on_tray_launch: false,
         };
 
-        assert_eq!(decide_startup_action(None, true, &snapshot).action, StartupAction::Noop);
+        assert_eq!(
+            decide_startup_action(None, true, &snapshot).action,
+            StartupAction::Noop
+        );
         assert_eq!(
             decide_startup_action(Some(&disabled), true, &snapshot).action,
             StartupAction::Noop

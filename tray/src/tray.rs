@@ -129,7 +129,9 @@ pub fn build_tray(app: &AppHandle<Wry>, snapshot: &StatusViewModel) -> tauri::Re
 
 pub fn apply_snapshot(app: &AppHandle<Wry>, snapshot: &StatusViewModel) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        tray.set_icon(Some(Image::from_bytes(icon_bytes_for_state(&snapshot.state))?))?;
+        tray.set_icon(Some(Image::from_bytes(icon_bytes_for_state(
+            &snapshot.state,
+        ))?))?;
         tray.set_tooltip(Some(tooltip_for_state(snapshot)))?;
     }
     Ok(())

@@ -28,6 +28,19 @@ pub fn resolve_cli_entry() -> Result<PathBuf> {
     Ok(resolve_repo_root()?.join("bin").join("cli.mjs"))
 }
 
+fn resolve_repo_cli_binary_candidates_from(repo_root: &Path) -> Vec<PathBuf> {
+    vec![
+        repo_root
+            .join("target")
+            .join("debug")
+            .join("trapezohe-companion"),
+        repo_root
+            .join("target")
+            .join("release")
+            .join("trapezohe-companion"),
+    ]
+}
+
 pub fn start_daemon() -> Result<()> {
     let cli = resolve_cli_invocation()?;
     let status = build_cli_command(&cli, &["start", "-d"])
@@ -95,18 +108,15 @@ pub async fn stop_daemon(config: &CompanionConfig) -> Result<()> {
 }
 
 pub async fn restart_daemon(config: &CompanionConfig) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()?;
-    client
-        .post(format!(
-            "http://127.0.0.1:{}/api/system/restart",
-            config.port
-        ))
-        .bearer_auth(&config.token)
-        .send()
-        .await?
-        .error_for_status()?;
+    match stop_daemon(config).await {
+        Ok(()) => {}
+        Err(error) => {
+            let _ = stop_daemon_via_cli(true);
+            eprintln!("daemon HTTP restart fallback stop failed: {error}");
+        }
+    }
+    wait_for_daemon_exit(config, Duration::from_secs(10)).await?;
+    start_daemon_and_wait(Some(config)).await?;
     Ok(())
 }
 
@@ -135,6 +145,34 @@ async fn wait_for_daemon_ready(config: &CompanionConfig, timeout: Duration) -> R
         }
 
         sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_daemon_exit(config: &CompanionConfig, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .timeout(Duration::from_secs(2))
+        .build()?;
+
+    loop {
+        let running = client
+            .get(format!("http://127.0.0.1:{}/healthz", config.port))
+            .bearer_auth(&config.token)
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false);
+
+        if !running {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            anyhow::bail!("Timed out waiting for companion daemon to stop");
+        }
+
+        sleep(Duration::from_millis(200)).await;
     }
 }
 
@@ -196,6 +234,7 @@ fn run_cli_json<T: DeserializeOwned>(args: &[&str]) -> Result<T> {
 
 fn resolve_cli_invocation() -> Result<CliInvocation> {
     let repo_cli = resolve_cli_entry().ok();
+    let repo_root = resolve_repo_root().ok();
     let home = dirs::home_dir();
     #[cfg(target_os = "macos")]
     if let Ok(current_exe) = std::env::current_exe() {
@@ -203,10 +242,18 @@ fn resolve_cli_invocation() -> Result<CliInvocation> {
             return Ok(invocation);
         }
     }
-    resolve_cli_invocation_from(home.as_deref(), repo_cli.as_deref())
+    resolve_cli_invocation_with_repo_root(
+        home.as_deref(),
+        repo_cli.as_deref(),
+        repo_root.as_deref(),
+    )
 }
 
-fn resolve_cli_invocation_from(home: Option<&Path>, repo_cli: Option<&Path>) -> Result<CliInvocation> {
+fn resolve_cli_invocation_with_repo_root(
+    home: Option<&Path>,
+    repo_cli: Option<&Path>,
+    repo_root: Option<&Path>,
+) -> Result<CliInvocation> {
     if let Ok(override_path) = std::env::var("TRAPEZOHE_COMPANION_CLI") {
         let trimmed = override_path.trim();
         if !trimmed.is_empty() {
@@ -225,6 +272,18 @@ fn resolve_cli_invocation_from(home: Option<&Path>, repo_cli: Option<&Path>) -> 
                     prefix_args: Vec::new(),
                 });
             }
+        }
+    }
+
+    if let Some(repo_root) = repo_root {
+        if let Some(repo_binary) = resolve_repo_cli_binary_candidates_from(repo_root)
+            .into_iter()
+            .find(|path| path.exists())
+        {
+            return Ok(CliInvocation {
+                program: repo_binary,
+                prefix_args: Vec::new(),
+            });
         }
     }
 
@@ -258,6 +317,18 @@ fn resolve_bundled_cli_invocation_from(exe_path: &Path) -> Option<CliInvocation>
     let contents_dir = macos_dir.parent()?;
     if contents_dir.file_name()?.to_str()? != "Contents" {
         return None;
+    }
+
+    let bundled_cli_path = contents_dir
+        .join("Resources")
+        .join("companion")
+        .join("bin")
+        .join("trapezohe-companion");
+    if bundled_cli_path.exists() {
+        return Some(CliInvocation {
+            program: bundled_cli_path,
+            prefix_args: Vec::new(),
+        });
     }
 
     let node_path = contents_dir
@@ -402,13 +473,42 @@ mod tests {
     #[test]
     fn prefers_bundled_app_cli_when_running_from_installed_macos_app() {
         let temp = tempdir().expect("temp dir");
-        let app_root = temp
-            .path()
-            .join("GhastAI Companion.app")
-            .join("Contents");
+        let app_root = temp.path().join("GhastAI Companion.app").join("Contents");
         let exe_path = app_root.join("MacOS").join("trapezohe-companion-tray");
-        let node_path = app_root.join("Resources").join("runtime").join("node").join("bin").join("node");
-        let cli_path = app_root.join("Resources").join("companion").join("bin").join("cli.mjs");
+        let bundled_cli_path = app_root
+            .join("Resources")
+            .join("companion")
+            .join("bin")
+            .join("trapezohe-companion");
+
+        std::fs::create_dir_all(exe_path.parent().expect("exe dir")).expect("create exe dir");
+        std::fs::create_dir_all(bundled_cli_path.parent().expect("cli dir"))
+            .expect("create cli dir");
+        std::fs::write(&exe_path, "").expect("write exe");
+        std::fs::write(&bundled_cli_path, "").expect("write cli");
+
+        let invocation = resolve_bundled_cli_invocation_from(&exe_path).expect("bundled cli");
+        assert_eq!(invocation.program, bundled_cli_path);
+        assert!(invocation.prefix_args.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn falls_back_to_bundled_node_cli_when_bundled_rust_cli_is_missing() {
+        let temp = tempdir().expect("temp dir");
+        let app_root = temp.path().join("GhastAI Companion.app").join("Contents");
+        let exe_path = app_root.join("MacOS").join("trapezohe-companion-tray");
+        let node_path = app_root
+            .join("Resources")
+            .join("runtime")
+            .join("node")
+            .join("bin")
+            .join("node");
+        let cli_path = app_root
+            .join("Resources")
+            .join("companion")
+            .join("bin")
+            .join("cli.mjs");
 
         std::fs::create_dir_all(exe_path.parent().expect("exe dir")).expect("create exe dir");
         std::fs::create_dir_all(node_path.parent().expect("node dir")).expect("create node dir");
@@ -417,7 +517,7 @@ mod tests {
         std::fs::write(&node_path, "").expect("write node");
         std::fs::write(&cli_path, "").expect("write cli");
 
-        let invocation = resolve_bundled_cli_invocation_from(&exe_path).expect("bundled cli");
+        let invocation = resolve_bundled_cli_invocation_from(&exe_path).expect("bundled node cli");
         assert_eq!(invocation.program, node_path);
         assert_eq!(invocation.prefix_args, vec![cli_path.display().to_string()]);
     }
@@ -437,7 +537,8 @@ mod tests {
         std::fs::write(&installed_cli, "#!/bin/sh\n").expect("write installed cli");
 
         let invocation =
-            resolve_cli_invocation_from(Some(temp.path()), Some(&repo_cli)).expect("installed cli");
+            resolve_cli_invocation_with_repo_root(Some(temp.path()), Some(&repo_cli), None)
+                .expect("installed cli");
         assert_eq!(invocation.program, installed_cli);
         assert!(invocation.prefix_args.is_empty());
     }
@@ -449,9 +550,31 @@ mod tests {
         std::fs::create_dir_all(repo_cli.parent().expect("bin dir")).expect("create bin dir");
         std::fs::write(&repo_cli, "#!/usr/bin/env node\n").expect("write repo cli");
 
-        let invocation = resolve_cli_invocation_from(None, Some(&repo_cli)).expect("repo cli");
+        let invocation =
+            resolve_cli_invocation_with_repo_root(None, Some(&repo_cli), None).expect("repo cli");
         assert_eq!(invocation.program, PathBuf::from("node"));
         assert_eq!(invocation.prefix_args, vec![repo_cli.display().to_string()]);
+    }
+
+    #[test]
+    fn prefers_repo_rust_cli_binary_over_repo_node_cli_when_available() {
+        let temp = tempdir().expect("temp dir");
+        let repo_cli = temp.path().join("bin").join("cli.mjs");
+        let repo_binary = resolve_repo_cli_binary_candidates_from(temp.path())
+            .into_iter()
+            .next()
+            .expect("repo binary candidate");
+        std::fs::create_dir_all(repo_cli.parent().expect("bin dir")).expect("create bin dir");
+        std::fs::create_dir_all(repo_binary.parent().expect("target dir"))
+            .expect("create target dir");
+        std::fs::write(&repo_cli, "#!/usr/bin/env node\n").expect("write repo cli");
+        std::fs::write(&repo_binary, "#!/bin/sh\n").expect("write repo binary");
+
+        let invocation =
+            resolve_cli_invocation_with_repo_root(None, Some(&repo_cli), Some(temp.path()))
+                .expect("repo binary");
+        assert_eq!(invocation.program, repo_binary);
+        assert!(invocation.prefix_args.is_empty());
     }
 
     #[test]
@@ -464,9 +587,12 @@ mod tests {
         std::fs::create_dir_all(candidate.parent().expect("bin dir")).expect("create bin dir");
         std::fs::write(&candidate, "#!/bin/sh\n").expect("write candidate");
 
-        let invocation =
-            resolve_cli_invocation_from(Some(temp.path()), Some(Path::new("/missing/repo-cli")))
-                .expect("fallback cli");
+        let invocation = resolve_cli_invocation_with_repo_root(
+            Some(temp.path()),
+            Some(Path::new("/missing/repo-cli")),
+            None,
+        )
+        .expect("fallback cli");
         assert_eq!(invocation.program, candidate);
         assert!(invocation.prefix_args.is_empty());
     }

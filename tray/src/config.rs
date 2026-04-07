@@ -2,8 +2,8 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::{
-    env, fs,
     collections::HashMap,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -168,7 +168,7 @@ pub fn save_companion_capabilities_to_path(
 mod tests {
     use super::*;
     use std::io::Write;
-    use tempfile::{NamedTempFile, tempdir};
+    use tempfile::{tempdir, NamedTempFile};
 
     #[test]
     fn loads_valid_companion_config() {

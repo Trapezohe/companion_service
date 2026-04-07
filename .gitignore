@@ -10,3 +10,4 @@ docs/
 tray/ui-react/vite.config.js
 tray/ui-react/vite.config.d.ts
 tray/ui-react/vite.config.d.ts.map
+target/

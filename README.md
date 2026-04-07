@@ -195,9 +195,10 @@ All HTTP endpoints are local-only and require `Authorization: Bearer <token>`.
 | `/api/browser/*` | Browser sessions, actions, artifacts, events, and drill-down routes |
 | `/api/acp/*` | ACP session ingress and event transport |
 | `/api/cron/*` | Pending occurrence replay and cron bookkeeping |
-| `/api/memory-shadow/*` | Mirrored checkpoint shadow status and refresh hooks |
+| `/api/media/normalize` | HEIC / HEIF image normalization for local uploads |
+| `/api/memory/checkpoints/shadow*` | Mirrored checkpoint shadow ingest, status, and refresh state |
 
-If you need the exact contract, read the source of `src/server.mjs`, `src/browser-routes.mjs`, and `src/acp-routes.mjs`.
+If you need the exact contract, read `crates/companion-daemon/src/lib.rs`, `crates/companion-browser/src/lib.rs`, `crates/companion-media/src/lib.rs`, `crates/companion-memory/src/lib.rs`, and the remaining compatibility routes in `src/server.mjs`.
 
 ## Diagnostics and repair
 
@@ -234,7 +235,14 @@ The repo root now also contains the first Rust rewrite scaffold for the daemon s
 
 - `crates/companion-shared`
 - `crates/companion-config`
+- `crates/companion-acp`
+- `crates/companion-automation`
+- `crates/companion-browser`
+- `crates/companion-control`
+- `crates/companion-cron`
 - `crates/companion-runtime`
+- `crates/companion-media`
+- `crates/companion-memory`
 - `crates/companion-mcp`
 - `crates/companion-daemon`
 - `crates/companion-cli`
@@ -243,7 +251,7 @@ Useful Rust commands during the migration:
 
 ```bash
 cargo check --workspace
-cargo test -p companion-runtime -p companion-mcp -p companion-daemon
+cargo test -p companion-runtime -p companion-mcp -p companion-control -p companion-cron -p companion-automation -p companion-media -p companion-memory -p companion-daemon
 cargo run -p companion-cli -- --help
 cargo run -p companion-cli -- status
 ```

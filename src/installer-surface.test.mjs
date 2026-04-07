@@ -98,6 +98,7 @@ test('macOS installer registers the fixed production extension origin for native
 
   assert.match(postinstall, /local ext_id="nnhdkkgpoeojjddikcjadgpkbfbjhcal"/)
   assert.match(postinstall, /local origin="chrome-extension:\/\/\$\{ext_id\}\/"/)
+  assert.match(postinstall, /exec "\$\{APP_CLI_PATH\}" native-host "\\\$@"/)
   assert.doesNotMatch(postinstall, /olngglipkifpkolknipcbdcifbkcfhkk/)
 })
 
@@ -108,6 +109,8 @@ test('macOS installer keeps the runtime inside the installed app bundle instead 
 
   assert.match(trayScript, /COMPANION_DIR="\$\{RESOURCES_DIR\}\/companion"/)
   assert.match(trayScript, /RUNTIME_NODE_DIR="\$\{RESOURCES_DIR\}\/runtime\/node"/)
+  assert.match(trayScript, /cargo build --manifest-path "\$\{ROOT_DIR\}\/Cargo\.toml" -p companion-cli --release/)
+  assert.match(trayScript, /cp "\$\{CLI_BUILD_DIR\}\/trapezohe-companion" "\$\{COMPANION_DIR\}\/bin\/trapezohe-companion"/)
   assert.match(trayScript, /cp "\$\{ROOT_DIR\}\/bin\/cli\.mjs" "\$\{COMPANION_DIR\}\/bin\/cli\.mjs"/)
   assert.match(trayScript, /cp "\$\{ROOT_DIR\}\/bin\/native-host\.mjs" "\$\{COMPANION_DIR\}\/bin\/native-host\.mjs"/)
   assert.match(trayScript, /cp "\$\{ROOT_DIR\}\/package\.json" "\$\{COMPANION_DIR\}\/package\.json"/)
@@ -120,8 +123,12 @@ test('macOS installer keeps the runtime inside the installed app bundle instead 
   assert.doesNotMatch(pkgScript, /mkdir -p "\$\{PAYLOAD_DIR\}\/src"/)
 
   assert.match(postinstall, /APP_RUNTIME_DIR="\$\{TRAY_APP_PATH\}\/Contents\/Resources\/companion"/)
+  assert.match(postinstall, /APP_CLI_PATH="\$\{APP_RUNTIME_DIR\}\/bin\/trapezohe-companion"/)
   assert.match(postinstall, /APP_NODE_DIR="\$\{TRAY_APP_PATH\}\/Contents\/Resources\/runtime\/node"/)
   assert.match(postinstall, /restart_companion_daemon\(\)/)
+  assert.match(postinstall, /if \[\[ -x "\$\{APP_CLI_PATH\}" \]\]; then/)
+  assert.match(postinstall, /"\$\{APP_CLI_PATH\}" stop --force/)
+  assert.match(postinstall, /"\$\{APP_CLI_PATH\}" start -d/)
   assert.match(postinstall, /"\$\{node_bin\}" "\$\{APP_RUNTIME_DIR\}\/bin\/cli\.mjs" stop --force/)
   assert.match(postinstall, /"\$\{node_bin\}" "\$\{APP_RUNTIME_DIR\}\/bin\/cli\.mjs" start -d/)
   assert.doesNotMatch(postinstall, /deploy_companion_service/)
@@ -179,13 +186,17 @@ test('macOS tray control and native host registration prefer the bundled app run
   const cli = read('bin/cli.mjs')
 
   assert.match(daemonRs, /resolve_bundled_cli_invocation_from/)
+  assert.match(daemonRs, /Resources"\)\s*\.join\("companion"\)\s*\.join\("bin"\)\s*\.join\("trapezohe-companion"/)
   assert.match(daemonRs, /Resources"\)\s*\.join\("runtime"\)\s*\.join\("node"\)\s*\.join\("bin"\)\s*\.join\("node"/)
   assert.match(daemonRs, /Resources"\)\s*\.join\("companion"\)\s*\.join\("bin"\)\s*\.join\("cli\.mjs"/)
 
   assert.match(cli, /function resolveBundledMacosRuntime/)
   assert.match(cli, /async function resolveCliLaunchSpec/)
   assert.match(cli, /process\.platform === 'darwin'/)
+  assert.match(cli, /cliBinaryPath: path\.join\(companionDir, 'bin', 'trapezohe-companion'\)/)
+  assert.match(cli, /if \(runtime\.hasBundledCliBinary\)/)
   assert.match(cli, /native-host-launcher\.sh/)
+  assert.match(cli, /exec "\$\{bundledMacosRuntime\.cliBinaryPath\}" native-host "\$@"/)
   assert.match(cli, /const runtime = await resolveBundledMacosRuntime\(entryScript\)/)
   assert.match(cli, /const launchSpec = await resolveCliLaunchSpec\(\)/)
   assert.match(cli, /<string>\$\{launchSpec\.program\}<\/string>/)

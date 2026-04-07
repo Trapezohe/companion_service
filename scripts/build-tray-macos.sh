@@ -6,9 +6,10 @@ source "${ROOT_DIR}/scripts/lib/macos-signing.sh"
 
 VERSION="${1:-$(node -p "require('${ROOT_DIR}/package.json').version")}"
 MODE="${2:---stage-only}"
-STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray}"
+STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray/${VERSION}}"
 ARCHIVE_ROOT="${ROOT_DIR}/dist/debug-artifacts"
-BUILD_DIR="${ROOT_DIR}/tray/target/release"
+BUILD_DIR="${ROOT_DIR}/target/release"
+CLI_BUILD_DIR="${ROOT_DIR}/target/release"
 UI_DIR="${ROOT_DIR}/tray/ui-react"
 APP_NAME="GhastAI Companion.app"
 APP_DIR="${STAGE_ROOT}/${APP_NAME}"
@@ -38,9 +39,11 @@ fi
 "${NPM_BIN}" --prefix "${UI_DIR}" run build
 
 cargo build --manifest-path "${ROOT_DIR}/tray/Cargo.toml" --release --features custom-protocol
+cargo build --manifest-path "${ROOT_DIR}/Cargo.toml" -p companion-cli --release
 
 cp "${BUILD_DIR}/${BIN_NAME}" "${MACOS_DIR}/${BIN_NAME}"
 cp "${ROOT_DIR}/tray/icons/icon.png" "${RESOURCES_DIR}/icon.png"
+cp "${CLI_BUILD_DIR}/trapezohe-companion" "${COMPANION_DIR}/bin/trapezohe-companion"
 cp "${ROOT_DIR}/bin/cli.mjs" "${COMPANION_DIR}/bin/cli.mjs"
 cp "${ROOT_DIR}/bin/native-host.mjs" "${COMPANION_DIR}/bin/native-host.mjs"
 cp "${ROOT_DIR}/package.json" "${COMPANION_DIR}/package.json"
@@ -50,7 +53,11 @@ done < <(
   find "${ROOT_DIR}/src" -maxdepth 1 -type f -name '*.mjs' ! -name '*.test.mjs' -print0 | sort -z
 )
 cp "${NODE_BIN}" "${RUNTIME_NODE_DIR}/bin/node"
-chmod 755 "${COMPANION_DIR}/bin/cli.mjs" "${COMPANION_DIR}/bin/native-host.mjs" "${RUNTIME_NODE_DIR}/bin/node"
+chmod 755 \
+  "${COMPANION_DIR}/bin/trapezohe-companion" \
+  "${COMPANION_DIR}/bin/cli.mjs" \
+  "${COMPANION_DIR}/bin/native-host.mjs" \
+  "${RUNTIME_NODE_DIR}/bin/node"
 
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -224,9 +224,7 @@ pub fn open_system_settings_for_permission(id: &str) -> Result<(), String> {
             "automation" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
             }
-            "camera" => {
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
-            }
+            "camera" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
             "microphone" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
             }
@@ -297,7 +295,9 @@ pub async fn sync_companion_capabilities(
     let response = client
         .post(format!("{}/api/security/capabilities", config.endpoint()))
         .bearer_auth(&config.token)
-        .json(&CapabilityUpdateRequest { capabilities: flags })
+        .json(&CapabilityUpdateRequest {
+            capabilities: flags,
+        })
         .send()
         .await
         .map_err(|error| error.to_string())?
@@ -320,7 +320,11 @@ mod tests {
         let snapshot = build_permissions_snapshot(&flags);
         // All system permissions should default to companion_enabled = false
         for item in &snapshot.items {
-            assert!(!item.companion_enabled, "Permission {} should default to disabled", item.id);
+            assert!(
+                !item.companion_enabled,
+                "Permission {} should default to disabled",
+                item.id
+            );
         }
     }
 
@@ -329,7 +333,11 @@ mod tests {
         let mut flags = default_companion_capability_flags();
         set_companion_capability_flag(&mut flags, "local_command", true).expect("valid flag");
         let snapshot = build_permissions_snapshot(&flags);
-        let local_cmd = snapshot.items.iter().find(|p| p.id == "local_command").unwrap();
+        let local_cmd = snapshot
+            .items
+            .iter()
+            .find(|p| p.id == "local_command")
+            .unwrap();
         assert!(local_cmd.companion_enabled);
         assert!(local_cmd.is_high_risk);
     }
@@ -340,14 +348,20 @@ mod tests {
         let snapshot = build_permissions_snapshot(&flags);
         let high_risk: Vec<_> = snapshot.items.iter().filter(|p| p.is_high_risk).collect();
         assert_eq!(high_risk.len(), 3);
-        assert!(high_risk.iter().all(|p| p.group == PermissionGroup::HighRisk));
+        assert!(high_risk
+            .iter()
+            .all(|p| p.group == PermissionGroup::HighRisk));
     }
 
     #[test]
     fn test_admin_action_requires_per_action_confirm() {
         let flags = default_companion_capability_flags();
         let snapshot = build_permissions_snapshot(&flags);
-        let admin = snapshot.items.iter().find(|p| p.id == "admin_action").unwrap();
+        let admin = snapshot
+            .items
+            .iter()
+            .find(|p| p.id == "admin_action")
+            .unwrap();
         assert!(admin.requires_per_action_confirm);
         assert!(admin.is_high_risk);
     }
@@ -361,9 +375,14 @@ mod tests {
         let snapshot = build_permissions_snapshot(&flags);
 
         for item in &snapshot.items {
-            if item.system_auth == SystemAuthStatus::NotAuthorized && item.group == PermissionGroup::System {
-                assert!(!item.companion_enabled,
-                    "System permission '{}' should not be enabled when not authorized", item.id);
+            if item.system_auth == SystemAuthStatus::NotAuthorized
+                && item.group == PermissionGroup::System
+            {
+                assert!(
+                    !item.companion_enabled,
+                    "System permission '{}' should not be enabled when not authorized",
+                    item.id
+                );
             }
         }
     }

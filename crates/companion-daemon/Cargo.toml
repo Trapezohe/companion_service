@@ -8,7 +8,15 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+companion-acp = { path = "../companion-acp" }
+companion-automation = { path = "../companion-automation" }
+companion-browser = { path = "../companion-browser" }
+companion-checkpoint = { path = "../companion-checkpoint" }
 companion-config = { path = "../companion-config" }
+companion-control = { path = "../companion-control" }
+companion-cron = { path = "../companion-cron" }
+companion-media = { path = "../companion-media" }
+companion-memory = { path = "../companion-memory" }
 companion-mcp = { path = "../companion-mcp" }
 companion-runtime = { path = "../companion-runtime" }
 companion-shared = { path = "../companion-shared" }
@@ -21,4 +29,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+tempfile.workspace = true
 tower.workspace = true

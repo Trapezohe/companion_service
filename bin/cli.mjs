@@ -5,7 +5,9 @@
  *
  * Usage:
  *   trapezohe-companion start [-d]          Start the companion daemon
+ *   trapezohe-companion restart [--force]   Restart the daemon
  *   trapezohe-companion stop [--force]      Stop the daemon
+ *   trapezohe-companion cleanup [--json]    Remove native host and auto-start registration
  *   trapezohe-companion status              Show daemon status
  *   trapezohe-companion doctor              Show a compact diagnostics summary
  *   trapezohe-companion init                Create default config
@@ -121,23 +123,40 @@ async function resolveBundledMacosRuntime(entryScript = __filename) {
   const runtime = {
     appPath,
     nodePath: path.join(resourcesDir, 'runtime', 'node', 'bin', 'node'),
+    cliBinaryPath: path.join(companionDir, 'bin', 'trapezohe-companion'),
     cliPath: path.join(companionDir, 'bin', 'cli.mjs'),
     nativeHostPath: path.join(companionDir, 'bin', 'native-host.mjs'),
   }
 
   try {
     await fs.access(runtime.nodePath)
-    await fs.access(runtime.cliPath)
     await fs.access(runtime.nativeHostPath)
-    return runtime
   } catch {
     return null
+  }
+
+  const hasBundledCliBinary = await fs.access(runtime.cliBinaryPath).then(() => true).catch(() => false)
+  const hasBundledNodeCli = await fs.access(runtime.cliPath).then(() => true).catch(() => false)
+  if (!hasBundledCliBinary && !hasBundledNodeCli) {
+    return null
+  }
+
+  return {
+    ...runtime,
+    hasBundledCliBinary,
+    hasBundledNodeCli,
   }
 }
 
 async function resolveCliLaunchSpec(entryScript = __filename) {
   const runtime = await resolveBundledMacosRuntime(entryScript)
   if (runtime) {
+    if (runtime.hasBundledCliBinary) {
+      return {
+        program: runtime.cliBinaryPath,
+        args: ['start'],
+      }
+    }
     return {
       program: runtime.nodePath,
       args: [runtime.cliPath, 'start'],
@@ -150,12 +169,53 @@ async function resolveCliLaunchSpec(entryScript = __filename) {
   }
 }
 
+async function resolveAdjacentRustCli(entryScript = __filename) {
+  const binDir = path.dirname(path.resolve(entryScript))
+  const binaryName = process.platform === 'win32'
+    ? 'trapezohe-companion.exe'
+    : 'trapezohe-companion'
+  const candidate = path.join(binDir, binaryName)
+  try {
+    await fs.access(candidate)
+    return candidate
+  } catch {
+    return null
+  }
+}
+
+async function maybeRunAdjacentRustCli(args) {
+  const rustCli = await resolveAdjacentRustCli()
+  if (!rustCli) return false
+
+  try {
+    const { stdout, stderr } = await execFileAsync(rustCli, args, {
+      cwd: process.cwd(),
+      env: process.env,
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+    })
+    if (stdout) process.stdout.write(stdout)
+    if (stderr) process.stderr.write(stderr)
+  } catch (err) {
+    if (err?.stdout) process.stdout.write(String(err.stdout))
+    if (err?.stderr) process.stderr.write(String(err.stderr))
+    process.exit(typeof err?.code === 'number' ? err.code : 1)
+  }
+
+  return true
+}
+
 async function main() {
   switch (command) {
     case 'start':
       return handleStart()
+    case 'restart':
+      return handleRestart()
     case 'stop':
       return handleStop()
+    case 'cleanup':
+      return handleCleanup()
     case 'status':
       return handleStatus()
     case 'doctor':
@@ -297,6 +357,10 @@ async function waitForExit(pid, timeoutMs) {
 }
 
 async function handleStart() {
+  if (await maybeRunAdjacentRustCli(['start', ...flags])) {
+    return
+  }
+
   const daemon = flags.includes('-d') || flags.includes('--daemon')
   const config = await loadConfig()
   const token = resolveToken(config)
@@ -507,7 +571,55 @@ async function handleStart() {
   })
 }
 
+async function handleRestart() {
+  if (await maybeRunAdjacentRustCli(['restart', ...flags])) {
+    return
+  }
+
+  const force = flags.includes('--force')
+  const config = await loadConfig()
+  const token = resolveToken(config)
+  const state = await inspectDaemonState(config, token)
+
+  if (state.state === 'running') {
+    try {
+      process.kill(state.pid, 'SIGTERM')
+      let exited = await waitForExit(state.pid, STOP_GRACE_MS)
+      if (!exited && force) {
+        try {
+          process.kill(state.pid, 'SIGKILL')
+        } catch (err) {
+          if (err.code !== 'ESRCH') throw err
+        }
+        exited = await waitForExit(state.pid, 2000)
+      }
+      if (!exited) {
+        throw new Error('Daemon is still shutting down.')
+      }
+      await removePid()
+    } catch (err) {
+      console.error(`[trapezohe-companion] Failed to restart: ${err.message}`)
+      process.exit(1)
+      return
+    }
+  } else if (state.state === 'unknown') {
+    await removePid().catch(() => undefined)
+  }
+
+  try {
+    await startDaemonDetached()
+    console.log('[trapezohe-companion] Daemon restarted.')
+  } catch (err) {
+    console.error(`[trapezohe-companion] Failed to restart: ${err.message}`)
+    process.exit(1)
+  }
+}
+
 async function handleStop() {
+  if (await maybeRunAdjacentRustCli(['stop', ...flags])) {
+    return
+  }
+
   const force = flags.includes('-f') || flags.includes('--force')
   const config = await loadConfig()
   const token = resolveToken(config)
@@ -562,6 +674,10 @@ async function handleStop() {
 }
 
 async function handleStatus() {
+  if (await maybeRunAdjacentRustCli(['status', ...flags])) {
+    return
+  }
+
   const config = await loadConfig()
   const token = resolveToken(config)
   const policy = normalizePermissionPolicy(config.permissionPolicy)
@@ -595,7 +711,36 @@ async function handleStatus() {
   }
 }
 
+async function handleCleanup() {
+  if (await maybeRunAdjacentRustCli(['cleanup', ...flags])) {
+    return
+  }
+
+  const jsonMode = hasFlag('--json')
+  const { removed } = await unregisterNativeHost({ quiet: true })
+  await removeAutostart()
+
+  const payload = {
+    ok: true,
+    nativeHost: { removed },
+    autostart: { status: 'removed_or_missing' },
+  }
+
+  if (jsonMode) {
+    console.log(JSON.stringify(payload))
+    return
+  }
+
+  console.log('[trapezohe-companion] Local cleanup completed.')
+  console.log(`  Native host: ${removed.length > 0 ? 'registration removed' : 'nothing to remove'}`)
+  console.log('  Auto-start:  removed or missing')
+}
+
 async function handleDoctor() {
+  if (await maybeRunAdjacentRustCli(['doctor', ...flags])) {
+    return
+  }
+
   const jsonMode = hasFlag('--json')
   const config = await loadConfig()
   const token = resolveToken(config)
@@ -660,6 +805,10 @@ async function handleDoctor() {
 }
 
 async function handleInit() {
+  if (await maybeRunAdjacentRustCli(['init', ...flags])) {
+    return
+  }
+
   const result = await initConfig()
   if (result.created) {
     console.log('[trapezohe-companion] Config created:')
@@ -674,10 +823,18 @@ async function handleInit() {
 }
 
 async function handleConfig() {
+  if (await maybeRunAdjacentRustCli(['config', ...flags])) {
+    return
+  }
+
   console.log(getConfigPath())
 }
 
 async function handleToken() {
+  if (await maybeRunAdjacentRustCli(['token', ...flags])) {
+    return
+  }
+
   const config = await loadConfig()
   if (config.token) {
     console.log(config.token)
@@ -725,6 +882,10 @@ async function handlePolicy() {
 }
 
 async function handleSelfCheck() {
+  if (await maybeRunAdjacentRustCli(['self-check', ...flags])) {
+    return
+  }
+
   const jsonMode = hasFlag('--json')
   const config = await loadConfig()
   const payload = await runCompanionSelfCheck({
@@ -750,6 +911,10 @@ async function handleSelfCheck() {
 }
 
 async function handleRepair() {
+  if (await maybeRunAdjacentRustCli(['repair', ...flags])) {
+    return
+  }
+
   const jsonMode = hasFlag('--json')
   const action = String(flags.find((item) => !item.startsWith('--')) || 'repair_config').trim()
 
@@ -809,7 +974,11 @@ async function resolveNativeHostExecutable(nativeHostScript) {
     const deployDir = path.join(os.homedir(), '.trapezohe')
     const launcherPath = path.join(deployDir, 'native-host-launcher.sh')
     await fs.mkdir(deployDir, { recursive: true })
-    const launcher = `#!/bin/sh
+    const launcher = bundledMacosRuntime.hasBundledCliBinary
+      ? `#!/bin/sh
+exec "${bundledMacosRuntime.cliBinaryPath}" native-host "$@"
+`
+      : `#!/bin/sh
 exec "${bundledMacosRuntime.nodePath}" "${bundledMacosRuntime.nativeHostPath}" "$@"
 `
     await fs.writeFile(launcherPath, launcher, 'utf8')
@@ -1106,6 +1275,10 @@ async function startDaemonDetached() {
 }
 
 async function handleRegister() {
+  if (await maybeRunAdjacentRustCli(['register', ...flags])) {
+    return
+  }
+
   try {
     const cliIds = flags.filter((f) => !f.startsWith('-'))
     await registerNativeHost(cliIds, { allowConfigIds: true, failIfMissing: true, quiet: false })
@@ -1116,6 +1289,10 @@ async function handleRegister() {
 }
 
 async function handleBootstrap() {
+  if (await maybeRunAdjacentRustCli(['bootstrap', ...flags])) {
+    return
+  }
+
   const jsonMode = hasFlag('--json')
   const disableAutostart = hasFlag('--no-autostart')
   const disableStart = hasFlag('--no-start')
@@ -1229,6 +1406,10 @@ async function handleBootstrap() {
 }
 
 async function handleUnregister() {
+  if (await maybeRunAdjacentRustCli(['unregister', ...flags])) {
+    return
+  }
+
   const { removed } = await unregisterNativeHost()
 
   if (removed.length === 0) {
@@ -1251,7 +1432,9 @@ Usage:
 
 Commands:
   start [-d]            Start the companion service (-d for daemon mode)
+  restart [--force]     Restart the daemon
   stop [--force]        Stop the daemon (--force sends SIGKILL if needed)
+  cleanup [--json]      Remove native host and auto-start registration
   status                Show current status
   doctor [--json]       Show compact diagnostics summary
   init                  Create default config at ~/.trapezohe/companion.json
@@ -1268,8 +1451,10 @@ Examples:
   trapezohe-companion init          # Create config
   trapezohe-companion start         # Start in foreground
   trapezohe-companion start -d      # Start as background daemon
+  trapezohe-companion restart       # Restart the daemon
   trapezohe-companion status        # Check if running
   trapezohe-companion doctor        # Show compact diagnostics
+  trapezohe-companion cleanup       # Remove native host and auto-start registration
   trapezohe-companion stop --force  # Force-stop if graceful stop hangs
   trapezohe-companion policy        # Print current policy JSON
   trapezohe-companion policy full

@@ -172,7 +172,10 @@ fn macos_bundle_path_from_executable(exe_path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_installability_reason_for_bundle(bundle_path: &Path, home_dir: Option<&Path>) -> Option<String> {
+fn macos_installability_reason_for_bundle(
+    bundle_path: &Path,
+    home_dir: Option<&Path>,
+) -> Option<String> {
     let parent_dir = bundle_path.parent()?;
     let system_applications_dir = Path::new("/Applications");
     let user_applications_dir = home_dir.map(|home| home.join("Applications"));
@@ -381,7 +384,11 @@ pub async fn install_update(
     }
 }
 
-pub fn install_failure_info(previous: Option<UpdateInfo>, current_version: &str, error: &str) -> UpdateInfo {
+pub fn install_failure_info(
+    previous: Option<UpdateInfo>,
+    current_version: &str,
+    error: &str,
+) -> UpdateInfo {
     match previous {
         Some(info) => with_error(info, error),
         None => with_error(checking_update_info(current_version), error),

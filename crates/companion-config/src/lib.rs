@@ -28,6 +28,15 @@ pub struct McpServerConfig {
     pub write_capable: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointSyncConfig {
+    pub stream_id: String,
+    pub private_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_rpc: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanionConfig {
@@ -39,6 +48,8 @@ pub struct CompanionConfig {
     pub permission_policy: PermissionPolicy,
     #[serde(default)]
     pub companion_capabilities: BTreeMap<String, bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_sync: Option<CheckpointSyncConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extension_ids: Vec<String>,
 }
@@ -51,6 +62,7 @@ impl Default for CompanionConfig {
             mcp_servers: BTreeMap::new(),
             permission_policy: PermissionPolicy::default(),
             companion_capabilities: default_companion_capabilities(),
+            checkpoint_sync: None,
             extension_ids: Vec::new(),
         }
     }
@@ -128,6 +140,56 @@ pub fn normalize_extension_ids(ids: &[String]) -> Vec<String> {
         }
     }
     normalized
+}
+
+pub fn normalize_checkpoint_sync_config(
+    input: &Option<CheckpointSyncConfig>,
+) -> Option<CheckpointSyncConfig> {
+    let Some(raw) = input.as_ref() else {
+        return None;
+    };
+
+    let stream_id = raw.stream_id.trim().to_string();
+    let private_key = raw.private_key.trim().to_string();
+    let kv_rpc = raw
+        .kv_rpc
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if stream_id.is_empty() || private_key.is_empty() {
+        return None;
+    }
+
+    Some(CheckpointSyncConfig {
+        stream_id,
+        private_key,
+        kv_rpc,
+    })
+}
+
+fn checkpoint_sync_from_env() -> Option<CheckpointSyncConfig> {
+    let stream_id = std::env::var("TRAPEZOHE_MEMORY_STREAM_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let private_key = std::env::var("TRAPEZOHE_MEMORY_PRIVATE_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let kv_rpc = std::env::var("TRAPEZOHE_MEMORY_KV_RPC")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match (stream_id, private_key) {
+        (Some(stream_id), Some(private_key)) => Some(CheckpointSyncConfig {
+            stream_id,
+            private_key,
+            kv_rpc,
+        }),
+        _ => None,
+    }
 }
 
 pub fn is_path_within_roots(target: &Path, roots: &[String]) -> bool {
@@ -260,6 +322,8 @@ pub fn load_config() -> Result<CompanionConfig> {
     config.permission_policy = normalize_permission_policy(&config.permission_policy);
     config.companion_capabilities =
         normalize_companion_capabilities(&config.companion_capabilities);
+    config.checkpoint_sync = checkpoint_sync_from_env()
+        .or_else(|| normalize_checkpoint_sync_config(&config.checkpoint_sync));
     config.extension_ids = normalize_extension_ids(&config.extension_ids);
     Ok(config)
 }
@@ -280,6 +344,7 @@ pub fn save_config(config: &CompanionConfig) -> Result<()> {
         mcp_servers: config.mcp_servers.clone(),
         permission_policy: normalize_permission_policy(&config.permission_policy),
         companion_capabilities: normalize_companion_capabilities(&config.companion_capabilities),
+        checkpoint_sync: normalize_checkpoint_sync_config(&config.checkpoint_sync),
         extension_ids: normalize_extension_ids(&config.extension_ids),
     };
     let json = serde_json::to_string_pretty(&normalized)? + "\n";
@@ -442,5 +507,30 @@ mod tests {
         assert_eq!(normalized.mode, PERMISSION_MODE_WORKSPACE);
         assert_eq!(normalized.policy_reason, "policy_mode:workspace");
         assert_eq!(normalized.workspace_roots.len(), 1);
+    }
+
+    #[test]
+    fn normalize_checkpoint_sync_config_discards_incomplete_values() {
+        assert_eq!(
+            normalize_checkpoint_sync_config(&Some(CheckpointSyncConfig {
+                stream_id: "stream-1".to_string(),
+                private_key: String::new(),
+                kv_rpc: Some("  ".to_string()),
+            })),
+            None
+        );
+
+        assert_eq!(
+            normalize_checkpoint_sync_config(&Some(CheckpointSyncConfig {
+                stream_id: " stream-1 ".to_string(),
+                private_key: " 0xabc ".to_string(),
+                kv_rpc: Some(" https://rpc.test ".to_string()),
+            })),
+            Some(CheckpointSyncConfig {
+                stream_id: "stream-1".to_string(),
+                private_key: "0xabc".to_string(),
+                kv_rpc: Some("https://rpc.test".to_string()),
+            })
+        );
     }
 }

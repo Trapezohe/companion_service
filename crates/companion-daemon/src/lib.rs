@@ -1,47 +1,125 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{serve, Json, Router};
-use companion_config::{
-    ensure_token, normalize_mcp_server_config, remove_mcp_server_config, remove_pid, save_config,
-    update_mcp_server_config, write_pid, CompanionConfig, McpServerConfig,
+use companion_acp::{
+    AcpManager, CommandSpec, CreateSessionInput as AcpCreateSessionInput,
+    PromptInput as AcpPromptInput, SessionEventsQuery as AcpEventsQuery,
+    SessionListQuery as AcpListQuery, SteerInput as AcpSteerInput,
 };
+use companion_automation::AutomationOutboxStore;
+use companion_browser::{
+    BrowserActionListQuery, BrowserArtifactListQuery, BrowserDrilldownQuery, BrowserEventsQuery,
+    BrowserLedger, BrowserSessionListQuery,
+};
+use companion_checkpoint::{
+    execute_zero_g_checkpoint_job, zero_g_executor_support_reason, zero_g_executor_supported,
+    CheckpointJobRunner, CheckpointJobStatus, CheckpointJobSubmitInput, CheckpointJobSubmitResult,
+};
+use companion_config::{
+    ensure_token, get_config_dir, get_config_path, get_pid_path, normalize_mcp_server_config,
+    remove_mcp_server_config, remove_pid, save_config, update_mcp_server_config, write_pid,
+    CheckpointSyncConfig, CompanionConfig, McpServerConfig,
+};
+use companion_control::{
+    ApprovalStore, CreateApprovalInput, CreateRunInput, RunLinkInput, RunListQuery, RunRecord,
+    RunStore,
+};
+use companion_cron::CronStore;
 use companion_mcp::McpManager;
+use companion_media::{
+    normalize_image_payload, probe_media_normalization_support, NormalizeImageRequest,
+};
+use companion_memory::{ShadowRefreshManager, ShadowStore};
 use companion_runtime::{
     ExecRequest, LogStream, RuntimeError, RuntimeManager, SessionEventsQuery, SessionListQuery,
     SessionLogQuery, SessionStartRequest, SessionStatusFilter,
 };
 use companion_shared::{
-    capabilities_payload, version_string, PermissionPolicy, SupportedFeatures,
+    capabilities_payload, version_string, CapabilitiesPayload, PermissionPolicy, SupportedFeatures,
     FIXED_EXTENSION_ORIGIN,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{watch, RwLock};
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<RwLock<CompanionConfig>>,
+    store_dir: PathBuf,
     mcp: McpManager,
     runtime: RuntimeManager,
+    browser: BrowserLedger,
+    cron: CronStore,
+    automation_outbox: AutomationOutboxStore,
+    memory_shadow: ShadowStore,
+    memory_shadow_refresh: ShadowRefreshManager,
+    acp: AcpManager,
+    runs: RunStore,
+    approvals: ApprovalStore,
+    checkpoint_jobs: Arc<RwLock<CheckpointJobRunner>>,
     shutdown_tx: watch::Sender<bool>,
 }
 
 impl AppState {
     pub fn new(config: CompanionConfig) -> Self {
+        Self::new_in(config, None::<PathBuf>)
+    }
+
+    pub fn new_in<P>(config: CompanionConfig, config_dir: Option<P>) -> Self
+    where
+        P: Into<PathBuf>,
+    {
         let (shutdown_tx, _) = watch::channel(false);
+        let store_dir = config_dir.map(Into::into);
+        let checkpoint_store_dir = store_dir.clone().unwrap_or_else(get_config_dir);
+        let checkpoint_jobs = build_checkpoint_job_runner(&config, Some(&checkpoint_store_dir));
         Self {
             config: Arc::new(RwLock::new(config.clone())),
+            store_dir: checkpoint_store_dir,
             mcp: McpManager::from_config(&config),
             runtime: RuntimeManager::new(),
+            browser: store_dir
+                .as_ref()
+                .map(|value| BrowserLedger::new_in(value.clone()))
+                .unwrap_or_else(BrowserLedger::new),
+            cron: store_dir
+                .as_ref()
+                .map(|value| CronStore::new_in(value.clone()))
+                .unwrap_or_else(CronStore::new),
+            automation_outbox: store_dir
+                .as_ref()
+                .map(|value| AutomationOutboxStore::new_in(value.clone()))
+                .unwrap_or_else(AutomationOutboxStore::new),
+            memory_shadow: store_dir
+                .as_ref()
+                .map(|value| ShadowStore::new_in(value.clone()))
+                .unwrap_or_else(ShadowStore::new),
+            memory_shadow_refresh: store_dir
+                .as_ref()
+                .map(|value| ShadowRefreshManager::new_in(value.clone()))
+                .unwrap_or_else(ShadowRefreshManager::new),
+            checkpoint_jobs: Arc::new(RwLock::new(checkpoint_jobs)),
+            acp: AcpManager::new(),
+            runs: store_dir
+                .as_ref()
+                .map(|value| RunStore::new_in(value.clone()))
+                .unwrap_or_else(RunStore::new),
+            approvals: store_dir
+                .as_ref()
+                .map(|value| ApprovalStore::new_in(value.clone()))
+                .unwrap_or_else(ApprovalStore::new),
             shutdown_tx,
         }
     }
@@ -64,9 +142,121 @@ impl AppState {
         Ok(result)
     }
 
+    async fn checkpoint_jobs_runner(&self) -> CheckpointJobRunner {
+        self.checkpoint_jobs.read().await.clone()
+    }
+
+    async fn update_checkpoint_sync(
+        &self,
+        checkpoint_sync: Option<CheckpointSyncConfig>,
+    ) -> Result<CheckpointJobRunner> {
+        let previous_runner = self.checkpoint_jobs_runner().await;
+        let next_config = {
+            let mut guard = self.config.write().await;
+            guard.checkpoint_sync = checkpoint_sync;
+            save_config(&guard)?;
+            guard.clone()
+        };
+        let next_runner = build_checkpoint_job_runner(&next_config, Some(&self.store_dir));
+        {
+            let mut guard = self.checkpoint_jobs.write().await;
+            *guard = next_runner.clone();
+        }
+        if !previous_runner.is_available() && next_runner.is_available() {
+            let _ = next_runner.resume_pending_jobs().await?;
+        }
+        Ok(next_runner)
+    }
+
     fn request_shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
     }
+
+    async fn supported_features(&self) -> SupportedFeatures {
+        let checkpoint_jobs = self.checkpoint_jobs_runner().await;
+        SupportedFeatures {
+            memory_checkpoint_jobs: checkpoint_jobs.is_available(),
+            ..SupportedFeatures::default()
+        }
+    }
+
+    async fn capabilities_payload(&self) -> CapabilitiesPayload {
+        let mut payload = capabilities_payload();
+        payload.supported_features = self.supported_features().await;
+        payload
+    }
+
+    async fn resume_pending_checkpoint_jobs(&self) -> Result<Vec<Option<CheckpointJobStatus>>> {
+        let checkpoint_jobs = self.checkpoint_jobs_runner().await;
+        if !checkpoint_jobs.is_available() {
+            return Ok(Vec::new());
+        }
+        checkpoint_jobs.resume_pending_jobs().await
+    }
+
+    #[cfg(test)]
+    async fn set_checkpoint_jobs_for_tests(&self, checkpoint_jobs: CheckpointJobRunner) {
+        *self.checkpoint_jobs.write().await = checkpoint_jobs;
+    }
+}
+
+fn build_checkpoint_job_runner(
+    config: &CompanionConfig,
+    store_dir: Option<&PathBuf>,
+) -> CheckpointJobRunner {
+    let Some(sync_config) = config
+        .checkpoint_sync
+        .clone()
+        .filter(zero_g_executor_supported)
+    else {
+        return store_dir
+            .map(|value| CheckpointJobRunner::new_in(value.clone()))
+            .unwrap_or_else(CheckpointJobRunner::new);
+    };
+
+    let executor = move |job| {
+        let sync_config = sync_config.clone();
+        async move { execute_zero_g_checkpoint_job(sync_config, job).await }
+    };
+
+    if let Some(value) = store_dir {
+        CheckpointJobRunner::with_executor_in(value.clone(), executor)
+    } else {
+        CheckpointJobRunner::with_executor_in(get_config_dir(), executor)
+    }
+}
+
+fn checkpoint_job_support_reason(config: &CompanionConfig) -> &'static str {
+    match config.checkpoint_sync.as_ref() {
+        None => "not_configured",
+        Some(sync_config) => zero_g_executor_support_reason(sync_config),
+    }
+}
+
+fn checkpoint_sync_payload(config: &CompanionConfig, checkpoint_jobs_available: bool) -> Value {
+    json!({
+        "configured": config.checkpoint_sync.is_some(),
+        "hasKvRpc": config
+            .checkpoint_sync
+            .as_ref()
+            .and_then(|value| value.kv_rpc.as_ref())
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+        "streamId": config
+            .checkpoint_sync
+            .as_ref()
+            .map(|value| mask_sensitive_tail(&value.stream_id, 8))
+            .unwrap_or_default(),
+        "jobsAvailable": checkpoint_jobs_available,
+        "jobSupportStatus": if checkpoint_jobs_available {
+            "ready"
+        } else if config.checkpoint_sync.is_some() {
+            "unavailable"
+        } else {
+            "disabled"
+        },
+        "jobSupportReason": checkpoint_job_support_reason(config),
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -133,6 +323,20 @@ struct SessionEventsParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct RunListParams {
+    #[serde(rename = "type")]
+    run_type: Option<String>,
+    state: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunDiagnosticsParams {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpToolCallBody {
     server: Option<String>,
@@ -145,6 +349,186 @@ struct McpToolCallBody {
 struct McpUpsertBody {
     name: Option<String>,
     config: Option<McpServerConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalCreateBody {
+    request_id: Option<String>,
+    conversation_id: Option<String>,
+    tool_name: Option<String>,
+    tool_preview: Option<String>,
+    risk_level: Option<String>,
+    channels: Option<Vec<String>>,
+    expires_at: Option<u64>,
+    meta: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalResolveBody {
+    resolution: Option<String>,
+    resolved_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpCreateSessionBody {
+    agent_type: Option<String>,
+    cwd: Option<String>,
+    command: Option<Value>,
+    env: Option<BTreeMap<String, String>>,
+    timeout_ms: Option<u64>,
+    origin: Option<String>,
+    input_provenance: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpPromptBody {
+    prompt: Option<String>,
+    turn_id: Option<String>,
+    timeout_ms: Option<u64>,
+    command: Option<Value>,
+    cwd: Option<String>,
+    env: Option<BTreeMap<String, String>>,
+    origin: Option<String>,
+    input_provenance: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpSteerBody {
+    text: Option<String>,
+    submit: Option<bool>,
+    turn_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcpEventsParams {
+    after: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcpSessionsParams {
+    state: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserSessionsParams {
+    session_id: Option<String>,
+    state: Option<String>,
+    owner_conversation_id: Option<String>,
+    run_id: Option<String>,
+    conversation_id: Option<String>,
+    source_tool_name: Option<String>,
+    source_tool_call_id: Option<String>,
+    approval_request_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserActionsParams {
+    action_id: Option<String>,
+    session_id: Option<String>,
+    target_id: Option<String>,
+    kind: Option<String>,
+    status: Option<String>,
+    run_id: Option<String>,
+    conversation_id: Option<String>,
+    source_tool_name: Option<String>,
+    source_tool_call_id: Option<String>,
+    approval_request_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserArtifactsParams {
+    artifact_id: Option<String>,
+    session_id: Option<String>,
+    target_id: Option<String>,
+    action_id: Option<String>,
+    kind: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserEventsParams {
+    after: Option<u64>,
+    window: Option<String>,
+    limit: Option<usize>,
+    session_id: Option<String>,
+    action_id: Option<String>,
+    artifact_id: Option<String>,
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    run_id: Option<String>,
+    conversation_id: Option<String>,
+    source_tool_name: Option<String>,
+    source_tool_call_id: Option<String>,
+    approval_request_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserDrilldownParams {
+    run_id: Option<String>,
+    conversation_id: Option<String>,
+    source_tool_name: Option<String>,
+    source_tool_call_id: Option<String>,
+    approval_request_id: Option<String>,
+    session_id: Option<String>,
+    action_id: Option<String>,
+    artifact_id: Option<String>,
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    session_limit: Option<usize>,
+    action_limit: Option<usize>,
+    artifact_limit: Option<usize>,
+    event_limit: Option<usize>,
+    event_after: Option<u64>,
+    event_window: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomationOutboxParams {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomationOutboxAckBody {
+    ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowStatusParams {
+    run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryShadowRefreshBody {
+    force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemRepairBody {
+    action: Option<String>,
 }
 
 pub async fn serve_with_signals(mut config: CompanionConfig) -> Result<()> {
@@ -164,6 +548,9 @@ pub async fn serve_with_signals(mut config: CompanionConfig) -> Result<()> {
     let _pid_guard = PidFileGuard::new(std::process::id())?;
     let mut shutdown_rx = state.shutdown_receiver();
     let app = build_router(state.clone());
+    spawn_runtime_run_sync(state.clone());
+    spawn_acp_run_sync(state.clone());
+    spawn_checkpoint_job_resume(state.clone());
 
     serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -229,7 +616,31 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/system/capabilities", get(system_capabilities))
+        .route("/api/system/diagnostics", get(system_diagnostics))
+        .route("/api/system/self-check", get(system_self_check))
+        .route("/api/system/repair", post(system_repair))
+        .route("/api/system/restart", post(system_restart))
+        .route("/api/system/cleanup", post(system_cleanup))
         .route("/api/system/shutdown", post(system_shutdown))
+        .route("/api/media/normalize", post(media_normalize))
+        .route(
+            "/api/checkpoint-sync/config",
+            get(get_checkpoint_sync_config).post(update_checkpoint_sync_config),
+        )
+        .route("/api/checkpoint-jobs", post(checkpoint_jobs_submit))
+        .route(
+            "/api/checkpoint-jobs/{job_id}/status",
+            get(checkpoint_job_status),
+        )
+        .route("/api/memory/checkpoints/shadow", post(memory_shadow_ingest))
+        .route(
+            "/api/memory/checkpoints/shadow/status",
+            get(memory_shadow_status),
+        )
+        .route(
+            "/api/memory/checkpoints/shadow/refresh",
+            post(memory_shadow_refresh),
+        )
         .route("/api/mcp/servers", get(mcp_servers))
         .route("/api/mcp/tools", get(mcp_tools))
         .route("/api/mcp/tools/call", post(mcp_call_tool))
@@ -239,6 +650,29 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::delete(mcp_delete_server),
         )
         .route("/api/mcp/servers/{name}/restart", post(mcp_restart_server))
+        .route("/api/browser/sessions/sync", post(browser_sync_session))
+        .route("/api/browser/actions/sync", post(browser_sync_action))
+        .route("/api/browser/artifacts/sync", post(browser_sync_artifact))
+        .route("/api/browser/sessions", get(browser_sessions))
+        .route(
+            "/api/browser/sessions/{session_id}",
+            get(browser_session_by_id),
+        )
+        .route("/api/browser/actions", get(browser_actions))
+        .route("/api/browser/artifacts", get(browser_artifacts))
+        .route("/api/browser/events", get(browser_events))
+        .route("/api/browser/drilldown", get(browser_drilldown))
+        .route("/api/browser/diagnostics", get(browser_diagnostics))
+        .route("/api/cron/jobs", get(cron_jobs).post(cron_upsert_job))
+        .route(
+            "/api/cron/jobs/{task_id}",
+            axum::routing::delete(cron_delete_job),
+        )
+        .route("/api/cron/pending", get(cron_pending))
+        .route("/api/cron/pending/ack", post(cron_ack_pending))
+        .route("/api/automation/outbox", get(automation_outbox))
+        .route("/api/automation/outbox/ack", post(automation_outbox_ack))
+        .route("/api/workflow/status", get(workflow_status))
         .route("/api/runtime/exec", post(runtime_exec))
         .route("/api/local-runtime/exec", post(runtime_exec))
         .route("/api/runtime/session/start", post(runtime_session_start))
@@ -246,8 +680,41 @@ pub fn build_router(state: AppState) -> Router {
             "/api/local-runtime/session/start",
             post(runtime_session_start),
         )
+        .route(
+            "/api/runtime/runs/diagnostics",
+            get(runtime_runs_diagnostics),
+        )
+        .route(
+            "/api/local-runtime/runs/diagnostics",
+            get(runtime_runs_diagnostics),
+        )
+        .route("/api/runtime/runs", get(runtime_runs))
+        .route("/api/local-runtime/runs", get(runtime_runs))
+        .route("/api/runtime/runs/{run_id}", get(runtime_run_by_id))
+        .route("/api/local-runtime/runs/{run_id}", get(runtime_run_by_id))
         .route("/api/runtime/sessions", get(runtime_sessions))
         .route("/api/local-runtime/sessions", get(runtime_sessions))
+        .route(
+            "/api/acp/sessions",
+            post(acp_create_session).get(acp_sessions),
+        )
+        .route("/api/acp/sessions/{session_id}", get(acp_session_by_id))
+        .route(
+            "/api/acp/sessions/{session_id}/prompt",
+            post(acp_prompt_session),
+        )
+        .route(
+            "/api/acp/sessions/{session_id}/steer",
+            post(acp_steer_session),
+        )
+        .route(
+            "/api/acp/sessions/{session_id}/cancel",
+            post(acp_cancel_session),
+        )
+        .route(
+            "/api/acp/sessions/{session_id}/events",
+            get(acp_session_events),
+        )
         .route(
             "/api/runtime/sessions/{session_id}/log",
             get(runtime_session_log),
@@ -301,6 +768,19 @@ pub fn build_router(state: AppState) -> Router {
             "/api/security/capabilities",
             get(get_security_capabilities).post(update_security_capabilities),
         )
+        .route("/api/runtime/approvals", post(create_approval))
+        .route(
+            "/api/runtime/approvals/pending",
+            get(list_pending_approvals),
+        )
+        .route(
+            "/api/runtime/approvals/{request_id}",
+            get(get_approval_by_id),
+        )
+        .route(
+            "/api/runtime/approvals/{request_id}/resolve",
+            post(resolve_approval),
+        )
         .route("/{*path}", axum::routing::options(preflight))
         .layer(middleware::from_fn(cors_middleware))
         .with_state(state)
@@ -310,20 +790,240 @@ async fn preflight() -> impl IntoResponse {
     Json(json!({ "ok": true }))
 }
 
+fn spawn_runtime_run_sync(state: AppState) {
+    tokio::spawn(async move {
+        let mut shutdown_rx = state.shutdown_receiver();
+        let mut after = 0_u64;
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = sleep(Duration::from_millis(200)) => {}
+            }
+
+            let events = state
+                .runtime
+                .list_session_events(SessionEventsQuery {
+                    after: Some(after),
+                    limit: Some(200),
+                })
+                .await;
+
+            for event in events.events {
+                after = after.max(event.cursor);
+                if event.r#type != "session_exited" {
+                    continue;
+                }
+                let Ok(Some(link)) = state.runs.get_session_run_link(&event.session_id) else {
+                    continue;
+                };
+                let _ = state.runs.update_run(&link.run_id, |run| {
+                    run.state = if !event.timed_out && event.exit_code == 0 {
+                        "done".to_string()
+                    } else {
+                        "failed".to_string()
+                    };
+                    run.finished_at = Some(event.finished_at);
+                    run.summary = Some(if !event.timed_out && event.exit_code == 0 {
+                        "Session completed".to_string()
+                    } else {
+                        "Session failed".to_string()
+                    });
+                    if event.timed_out || event.exit_code != 0 {
+                        run.error = Some(format!(
+                            "exitCode={}, timedOut={}",
+                            event.exit_code, event.timed_out
+                        ));
+                    } else {
+                        run.error = None;
+                    }
+                    run.meta = merge_run_meta(
+                        run.meta.clone(),
+                        json_object(vec![
+                            ("sessionId", Some(Value::String(event.session_id.clone()))),
+                            ("command", Some(Value::String(event.command.clone()))),
+                            ("cwd", Some(Value::String(event.cwd.clone()))),
+                            ("exitCode", Some(Value::Number(event.exit_code.into()))),
+                            ("timedOut", Some(Value::Bool(event.timed_out))),
+                            (
+                                "durationMs",
+                                Some(Value::Number(serde_json::Number::from(event.duration_ms))),
+                            ),
+                        ]),
+                    );
+                });
+                let _ = state.runs.clear_session_run_link(&event.session_id);
+            }
+        }
+    });
+}
+
+fn spawn_acp_run_sync(state: AppState) {
+    tokio::spawn(async move {
+        let mut shutdown_rx = state.shutdown_receiver();
+        let mut after = 0_u64;
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = sleep(Duration::from_millis(200)) => {}
+            }
+
+            let events = state.acp.list_global_events(after, 200).await;
+            for event in events {
+                after = after.max(event.cursor);
+                match event.status_code.as_deref() {
+                    Some("awaiting_approval") => {
+                        let Some(session) = state.acp.get_session(&event.session_id).await else {
+                            continue;
+                        };
+                        let Some(run_id) = session.run_id.clone() else {
+                            continue;
+                        };
+                        let current_run = state.runs.get_run_record(&run_id).ok().flatten();
+                        let approval_request_id = format!(
+                            "acp-approval-{}-{}",
+                            event.session_id,
+                            event.turn_id.clone().unwrap_or_else(|| "turn".to_string())
+                        );
+                        let conversation_id = session
+                            .input_provenance
+                            .as_ref()
+                            .and_then(|value| value.get("conversationId"))
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                            .unwrap_or_default();
+                        let mut meta = json_object(vec![
+                            ("runId", Some(Value::String(run_id.clone()))),
+                            ("sessionId", Some(Value::String(event.session_id.clone()))),
+                            (
+                                "sessionType",
+                                Some(Value::String(format!("acp/{}", event.session_id))),
+                            ),
+                            (
+                                "requestId",
+                                Some(Value::String(approval_request_id.clone())),
+                            ),
+                            (
+                                "approvalRequestId",
+                                Some(Value::String(approval_request_id.clone())),
+                            ),
+                            (
+                                "conversationId",
+                                trim_optional(conversation_id.clone()).map(Value::String),
+                            ),
+                            ("inputProvenance", session.input_provenance.clone()),
+                            ("turnId", event.turn_id.clone().map(Value::String)),
+                        ]);
+                        if let Some(object) = meta.as_mut() {
+                            if let Some(text) = event.text.clone() {
+                                object.insert("toolPreview".to_string(), Value::String(text));
+                            }
+                            object.insert(
+                                "approvalSource".to_string(),
+                                Value::String("acp".to_string()),
+                            );
+                            object.insert(
+                                "approvalSignal".to_string(),
+                                Value::String("awaiting_approval".to_string()),
+                            );
+                            if let Some(origin) = session.origin.clone().and_then(trim_optional) {
+                                object.insert("origin".to_string(), Value::String(origin));
+                            }
+                            if let Some(agent_type) = trim_optional(session.agent_type.clone()) {
+                                object.insert("agentType".to_string(), Value::String(agent_type));
+                            }
+                        }
+                        meta = merge_run_meta(
+                            current_run.as_ref().and_then(|run| run.meta.clone()),
+                            meta,
+                        );
+                        let approval_preview =
+                            event.text.as_deref().and_then(truncate_text_for_error);
+                        let approval = match state.approvals.create_approval(CreateApprovalInput {
+                            request_id: Some(approval_request_id.clone()),
+                            conversation_id: Some(conversation_id),
+                            tool_name: Some("acp_permission".to_string()),
+                            tool_preview: approval_preview,
+                            risk_level: Some("high".to_string()),
+                            channels: Some(vec!["sidepanel".to_string()]),
+                            expires_at: Some(now_millis() + 120_000),
+                            meta,
+                        }) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+                        let approval_meta = approval.meta.clone();
+                        let status = approval.status.clone();
+                        let _ = state.runs.update_run(&run_id, |run| {
+                            run.state = "waiting_approval".to_string();
+                            run.summary = Some("ACP awaiting approval".to_string());
+                            run.meta = merge_run_meta(
+                                run.meta.clone(),
+                                merge_run_meta(
+                                    approval_meta.clone(),
+                                    json_object(vec![
+                                        ("approvalStatus", Some(Value::String(status.clone()))),
+                                        ("approvalSource", Some(Value::String("acp".to_string()))),
+                                        (
+                                            "sessionId",
+                                            Some(Value::String(event.session_id.clone())),
+                                        ),
+                                        (
+                                            "sessionType",
+                                            Some(Value::String(format!(
+                                                "acp/{}",
+                                                event.session_id
+                                            ))),
+                                        ),
+                                    ]),
+                                ),
+                            );
+                        });
+                    }
+                    _ => {
+                        if event.event_type != "terminal" {
+                            continue;
+                        }
+                        let Some(session) = state.acp.get_session(&event.session_id).await else {
+                            continue;
+                        };
+                        let _ = sync_acp_terminal_run_state(
+                            &state,
+                            &session,
+                            event.turn_id.clone(),
+                            event.code.clone(),
+                            event.message.clone(),
+                            event.exit_code,
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn spawn_checkpoint_job_resume(state: AppState) {
+    tokio::spawn(async move {
+        if let Err(error) = state.resume_pending_checkpoint_jobs().await {
+            tracing::warn!("failed to resume pending checkpoint jobs: {error:#}");
+        }
+    });
+}
+
 async fn healthz(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<HealthPayload>, Response> {
     let config = state.snapshot_config().await;
     authorize(&headers, &config)?;
+    let capabilities = state.capabilities_payload().await;
     Ok(Json(HealthPayload {
         ok: true,
         ts: now_millis(),
         pid: std::process::id(),
         version: version_string(),
-        protocol_version: capabilities_payload().protocol_version,
-        run_contract_version: capabilities_payload().run_contract_version,
-        supported_features: SupportedFeatures::default(),
+        protocol_version: capabilities.protocol_version,
+        run_contract_version: capabilities.run_contract_version,
+        supported_features: capabilities.supported_features,
         mcp_servers: state.mcp.get_connected_count().await,
         mcp_tools: state.mcp.get_all_tools().await.len(),
         permission_policy: config.permission_policy,
@@ -336,7 +1036,251 @@ async fn system_capabilities(
 ) -> Result<Json<serde_json::Value>, Response> {
     let config = state.snapshot_config().await;
     authorize(&headers, &config)?;
-    Ok(Json(serde_json::to_value(capabilities_payload()).unwrap()))
+    Ok(Json(
+        serde_json::to_value(state.capabilities_payload().await).unwrap(),
+    ))
+}
+
+async fn system_diagnostics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let capabilities = state.capabilities_payload().await;
+    let mcp_servers = state.mcp.get_servers().await;
+    let browser = state
+        .browser
+        .diagnostics(&capabilities.supported_features)
+        .map_err(internal_error)?;
+    let media_support = probe_media_normalization_support();
+    let memory_shadow = state.memory_shadow.get_status().map_err(internal_error)?;
+    let memory_shadow_envelope = state.memory_shadow.get_envelope().map_err(internal_error)?;
+    let memory_shadow_refresh = state
+        .memory_shadow_refresh
+        .get_state(memory_shadow_envelope.as_ref())
+        .map_err(internal_error)?;
+    let pending_approvals = state
+        .approvals
+        .list_pending_approvals()
+        .map_err(internal_error)?;
+    let recent_runs = state
+        .runs
+        .list_runs(RunListQuery {
+            limit: Some(50),
+            ..RunListQuery::default()
+        })
+        .map_err(internal_error)?;
+    let listed_outbox = state
+        .automation_outbox
+        .list_items(Some(10), Some(0))
+        .map_err(internal_error)?;
+    let active_workflow_runs = count_active_workflow_runs(&recent_runs.runs);
+    let recent_lifecycle_phases = build_recent_workflow_lifecycle_phases(&recent_runs.runs);
+    let recent_workflow_failures = build_recent_workflow_failures(&recent_runs.runs);
+    let recent_failed = recent_runs
+        .runs
+        .iter()
+        .filter(|run| run.run.state == "failed")
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    let recent_actions = recent_runs
+        .runs
+        .iter()
+        .filter_map(|run| action_log_from_run(&run.run))
+        .take(15)
+        .collect::<Vec<_>>();
+    let recent_failed_count = recent_runs
+        .runs
+        .iter()
+        .filter(|run| run.run.state == "failed")
+        .count();
+    let checkpoint_support_reason = checkpoint_job_support_reason(&config);
+    let checkpoint_jobs_available = capabilities.supported_features.memory_checkpoint_jobs;
+    let mut first_page = true;
+    let mut acp_total_sessions = 0_usize;
+    let mut acp_running_sessions = 0_usize;
+    let mut acp_idle_sessions = 0_usize;
+    let mut offset = 0_usize;
+    loop {
+        let page = state
+            .acp
+            .list_sessions(AcpListQuery {
+                limit: Some(200),
+                offset: Some(offset),
+                ..AcpListQuery::default()
+            })
+            .await;
+        if first_page {
+            acp_total_sessions = page.total;
+            first_page = false;
+        }
+        acp_running_sessions += page
+            .sessions
+            .iter()
+            .filter(|session| session.state == "running")
+            .count();
+        acp_idle_sessions += page
+            .sessions
+            .iter()
+            .filter(|session| session.state == "idle")
+            .count();
+        if !page.has_more || page.sessions.is_empty() {
+            break;
+        }
+        offset += page.sessions.len();
+    }
+
+    let mut doctor_issues = Vec::new();
+    if !pending_approvals.is_empty() {
+        doctor_issues.push(json!({
+            "code": "pending_approvals",
+            "severity": "warn",
+            "message": "There are pending approvals waiting for user action.",
+        }));
+    }
+    if recent_failed_count > 0 {
+        doctor_issues.push(json!({
+            "code": "recent_failed_runs",
+            "severity": "warn",
+            "message": "Recent companion runs have failed.",
+        }));
+    }
+    if config.checkpoint_sync.is_some() && !checkpoint_jobs_available {
+        let message = match checkpoint_support_reason {
+            "missing_pointer_registry" => {
+                "Checkpoint sync is configured but the 0G pointer registry is missing, so durable checkpoint jobs are disabled."
+            }
+            "unsupported_config" => {
+                "Checkpoint sync is configured but the current companion build cannot enable durable checkpoint jobs for it."
+            }
+            _ => "Checkpoint sync is configured but durable checkpoint jobs are currently unavailable.",
+        };
+        doctor_issues.push(json!({
+            "code": "checkpoint_jobs_unavailable",
+            "severity": "warn",
+            "message": message,
+        }));
+    }
+
+    Ok(Json(json!({
+        "contractVersion": capabilities.run_contract_version,
+        "protocolVersion": capabilities.protocol_version,
+        "version": version_string(),
+        "permissionPolicy": config.permission_policy,
+        "paths": {
+            "config": get_config_path().to_string_lossy(),
+            "pid": get_pid_path().to_string_lossy(),
+        },
+        "mcp": {
+            "configuredServers": config.mcp_servers.len(),
+            "connectedServers": state.mcp.get_connected_count().await,
+            "totalTools": state.mcp.get_all_tools().await.len(),
+            "servers": mcp_servers,
+        },
+        "mediaNormalizationSummary": {
+            "enabled": capabilities.supported_features.media_normalization,
+            "available": media_support.available,
+            "engine": media_support.engine,
+            "reason": media_support.reason,
+        },
+        "checkpointSync": checkpoint_sync_payload(&config, checkpoint_jobs_available),
+        "memoryCheckpointJobs": {
+            "available": checkpoint_jobs_available,
+        },
+        "memoryShadow": memory_shadow,
+        "memoryShadowRefresh": memory_shadow_refresh,
+        "browser": browser,
+        "automation": {
+            "activeWorkflowRuns": active_workflow_runs,
+            "outbox": build_automation_outbox_summary(&listed_outbox),
+            "recentLifecyclePhases": recent_lifecycle_phases,
+            "recentFailures": recent_workflow_failures,
+        },
+        "runs": {
+            "recentFailed": recent_failed,
+            "recentActions": recent_actions,
+        },
+        "approvals": {
+            "pending": pending_approvals,
+        },
+        "acp": {
+            "totalSessions": acp_total_sessions,
+            "runningSessions": acp_running_sessions,
+            "idleSessions": acp_idle_sessions,
+        },
+        "doctor": {
+            "status": if doctor_issues.is_empty() { "ok" } else { "needs_attention" },
+            "summary": {
+                "pendingApprovals": pending_approvals.len(),
+                "recentFailedRuns": recent_failed_count,
+                "runningAcpSessions": acp_running_sessions,
+                "stalledAcpSessions": 0,
+                "activeWorkflowRuns": active_workflow_runs,
+                "browserLoaded": browser.get("loaded").cloned().unwrap_or(Value::Null),
+            },
+            "issues": doctor_issues,
+        }
+    })))
+}
+
+async fn system_self_check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = run_cli_json_command(&["self-check", "--json"]).map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn system_repair(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SystemRepairBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "admin_action",
+        "Administrator actions are disabled in Companion permissions.",
+    )?;
+
+    let action = body
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("repair_config");
+    let payload = run_cli_json_command(&["repair", action, "--json"]).map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn system_restart(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    spawn_detached_cli_command(&["restart", "--force"]).map_err(internal_error)?;
+    state.request_shutdown();
+    Ok(Json(json!({
+        "ok": true,
+        "message": "restarting",
+    })))
+}
+
+async fn system_cleanup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = run_cli_json_command(&["cleanup", "--json"]).map_err(internal_error)?;
+    state.request_shutdown();
+    Ok(Json(payload))
 }
 
 async fn system_shutdown(
@@ -347,6 +1291,555 @@ async fn system_shutdown(
     authorize(&headers, &config)?;
     state.request_shutdown();
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn get_checkpoint_sync_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let checkpoint_jobs = state.checkpoint_jobs_runner().await;
+    Ok(Json(json!({
+        "ok": true,
+        "checkpointSync": checkpoint_sync_payload(&config, checkpoint_jobs.is_available()),
+    })))
+}
+
+async fn update_checkpoint_sync_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let current = state.snapshot_config().await;
+    authorize(&headers, &current)?;
+    let raw = body
+        .get("checkpointSync")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    let next_checkpoint_sync = serde_json::from_value::<Option<CheckpointSyncConfig>>(raw)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    let checkpoint_jobs = state
+        .update_checkpoint_sync(next_checkpoint_sync)
+        .await
+        .map_err(internal_error)?;
+    let next_config = state.snapshot_config().await;
+    Ok(Json(json!({
+        "ok": true,
+        "checkpointSync": checkpoint_sync_payload(&next_config, checkpoint_jobs.is_available()),
+    })))
+}
+
+async fn media_normalize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NormalizeImageRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = normalize_image_payload(&body)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(serde_json::to_value(payload).unwrap_or_else(|_| {
+        json!({
+            "changed": false,
+            "name": body.name,
+            "mimeType": body.mime_type,
+            "bytesBase64": body.bytes_base64,
+        })
+    })))
+}
+
+async fn checkpoint_jobs_submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CheckpointJobSubmitInput>,
+) -> Result<Json<CheckpointJobSubmitResult>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let checkpoint_jobs = state.checkpoint_jobs_runner().await;
+    if !checkpoint_jobs.is_available() {
+        return Err(json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "memory_checkpoint_jobs_unavailable",
+        ));
+    }
+    let result = checkpoint_jobs
+        .submit(body)
+        .await
+        .map_err(map_checkpoint_job_submit_error)?;
+    Ok(Json(result))
+}
+
+async fn checkpoint_job_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> Result<Json<CheckpointJobStatus>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let checkpoint_jobs = state.checkpoint_jobs_runner().await;
+    if !checkpoint_jobs.is_available() {
+        return Err(json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "memory_checkpoint_jobs_unavailable",
+        ));
+    }
+    let status = checkpoint_jobs
+        .get_status(&job_id)
+        .await
+        .map_err(internal_error)?;
+    let Some(status) = status else {
+        return Err(json_error(
+            StatusCode::NOT_FOUND,
+            "checkpoint_job_not_found",
+        ));
+    };
+    Ok(Json(status))
+}
+
+async fn memory_shadow_ingest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let status = state
+        .memory_shadow
+        .ingest_value(body, None)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(json!({ "ok": true, "status": status })))
+}
+
+async fn memory_shadow_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let status = state.memory_shadow.get_status().map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(status).unwrap_or_else(|_| {
+        json!({
+            "version": 1,
+            "authority": "extension_primary",
+            "mirroredGeneration": Value::Null,
+            "mirroredCommittedAt": Value::Null,
+            "verification": { "state": "unknown", "verifiedAt": Value::Null },
+            "freshness": { "state": "unknown", "shadowedAt": Value::Null },
+        })
+    })))
+}
+
+async fn memory_shadow_refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<MemoryShadowRefreshBody>>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let envelope = state.memory_shadow.get_envelope().map_err(internal_error)?;
+    let force = body.and_then(|Json(value)| value.force).unwrap_or(false);
+    let result = state
+        .memory_shadow_refresh
+        .refresh(envelope.as_ref(), force)
+        .map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(result).unwrap_or_else(|_| {
+        json!({
+            "published": false,
+            "reason": "publisher_unavailable",
+            "publishSource": Value::Null,
+        })
+    })))
+}
+
+async fn browser_sync_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let session = state
+        .browser
+        .sync_session(body)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(json!({ "ok": true, "session": session })))
+}
+
+async fn browser_sync_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let action = state
+        .browser
+        .sync_action(body)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(json!({ "ok": true, "action": action })))
+}
+
+async fn browser_sync_artifact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let artifact = state
+        .browser
+        .sync_artifact(body)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(json!({ "ok": true, "artifact": artifact })))
+}
+
+async fn browser_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<BrowserSessionsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .browser
+        .list_sessions(BrowserSessionListQuery {
+            session_id: params.session_id,
+            state: params.state,
+            owner_conversation_id: params.owner_conversation_id,
+            run_id: params.run_id,
+            conversation_id: params.conversation_id,
+            source_tool_name: params.source_tool_name,
+            source_tool_call_id: params.source_tool_call_id,
+            approval_request_id: params.approval_request_id,
+            limit: params.limit,
+            offset: params.offset,
+        })
+        .map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn browser_session_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let session = state
+        .browser
+        .get_session_by_id(&session_id)
+        .map_err(internal_error)?;
+    match session {
+        Some(session) => Ok(Json(json!({ "session": session }))),
+        None => Err(json_error(
+            StatusCode::NOT_FOUND,
+            "Browser session not found.",
+        )),
+    }
+}
+
+async fn browser_actions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<BrowserActionsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .browser
+        .list_actions(BrowserActionListQuery {
+            action_id: params.action_id,
+            session_id: params.session_id,
+            target_id: params.target_id,
+            kind: params.kind,
+            status: params.status,
+            run_id: params.run_id,
+            conversation_id: params.conversation_id,
+            source_tool_name: params.source_tool_name,
+            source_tool_call_id: params.source_tool_call_id,
+            approval_request_id: params.approval_request_id,
+            limit: params.limit,
+            offset: params.offset,
+        })
+        .map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn browser_artifacts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<BrowserArtifactsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .browser
+        .list_artifacts(BrowserArtifactListQuery {
+            artifact_id: params.artifact_id,
+            session_id: params.session_id,
+            target_id: params.target_id,
+            action_id: params.action_id,
+            kind: params.kind,
+            limit: params.limit,
+            offset: params.offset,
+        })
+        .map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn browser_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<BrowserEventsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .browser
+        .list_events(BrowserEventsQuery {
+            after: params.after,
+            window: params.window,
+            limit: params.limit,
+            session_id: params.session_id,
+            action_id: params.action_id,
+            artifact_id: params.artifact_id,
+            event_type: params.event_type,
+            run_id: params.run_id,
+            conversation_id: params.conversation_id,
+            source_tool_name: params.source_tool_name,
+            source_tool_call_id: params.source_tool_call_id,
+            approval_request_id: params.approval_request_id,
+        })
+        .map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn browser_drilldown(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<BrowserDrilldownParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .browser
+        .drilldown(BrowserDrilldownQuery {
+            run_id: params.run_id,
+            conversation_id: params.conversation_id,
+            source_tool_name: params.source_tool_name,
+            source_tool_call_id: params.source_tool_call_id,
+            approval_request_id: params.approval_request_id,
+            session_id: params.session_id,
+            action_id: params.action_id,
+            artifact_id: params.artifact_id,
+            event_type: params.event_type,
+            session_limit: params.session_limit,
+            action_limit: params.action_limit,
+            artifact_limit: params.artifact_limit,
+            event_limit: params.event_limit,
+            event_after: params.event_after,
+            event_window: params.event_window,
+        })
+        .map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn browser_diagnostics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let supported_features = state.supported_features().await;
+    let payload = state
+        .browser
+        .diagnostics(&supported_features)
+        .map_err(internal_error)?;
+    Ok(Json(payload))
+}
+
+async fn cron_jobs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let jobs = state.cron.list_jobs().map_err(internal_error)?;
+    Ok(Json(json!({ "jobs": jobs })))
+}
+
+async fn cron_upsert_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let task_id = state
+        .cron
+        .upsert_job(body.clone())
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(json!({
+        "ok": true,
+        "id": task_id,
+        "automation": build_cron_automation_response(&body),
+    })))
+}
+
+async fn cron_delete_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let removed = state.cron.remove_job(&task_id).map_err(internal_error)?;
+    Ok(Json(json!({ "ok": true, "removed": removed })))
+}
+
+async fn cron_pending(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let pending = state.cron.list_pending_runs().map_err(internal_error)?;
+    Ok(Json(json!({ "pending": pending })))
+}
+
+async fn cron_ack_pending(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let acked = state
+        .cron
+        .ack_pending_runs_value(&body)
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "ok": true, "acked": acked })))
+}
+
+async fn automation_outbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<AutomationOutboxParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let listed = state
+        .automation_outbox
+        .list_items(params.limit, params.offset)
+        .map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(listed).unwrap_or_else(|_| {
+        json!({
+            "items": [],
+            "total": 0,
+            "limit": params.limit.unwrap_or(100),
+            "offset": params.offset.unwrap_or(0),
+            "hasMore": false,
+        })
+    })))
+}
+
+async fn automation_outbox_ack(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AutomationOutboxAckBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let acked = state
+        .automation_outbox
+        .ack_items(body.ids.as_deref().unwrap_or(&[]))
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "ok": true, "acked": acked })))
+}
+
+async fn workflow_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<WorkflowStatusParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let run_id = params
+        .run_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "Missing required param: runId"))?;
+    let run = state
+        .runs
+        .get_run_record(run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, &format!("Run not found: {run_id}")))?;
+    Ok(Json(json!({
+        "runId": run.run_id,
+        "state": run.state,
+        "workflow": workflow_status_from_run(&run),
+        "updatedAt": run.updated_at,
+    })))
+}
+
+fn run_cli_json_command(args: &[&str]) -> Result<Value> {
+    let current_exe = resolve_cli_executable()?;
+    let output = Command::new(current_exe)
+        .args(args)
+        .output()
+        .context("Failed to invoke companion CLI")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !stderr.is_empty() {
+            anyhow::bail!("{stderr}");
+        }
+        if !stdout.is_empty() {
+            anyhow::bail!("{stdout}");
+        }
+        anyhow::bail!("Companion CLI exited with status {}", output.status);
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("CLI output is not valid UTF-8")?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(json!({ "ok": true }));
+    }
+
+    serde_json::from_str(trimmed).context("CLI output is not valid JSON")
+}
+
+fn spawn_detached_cli_command(args: &[&str]) -> Result<()> {
+    let current_exe = resolve_cli_executable()?;
+    let mut command = Command::new(current_exe);
+    command.args(args);
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
+    }
+
+    command
+        .spawn()
+        .context("Failed to spawn detached companion CLI command")?;
+    Ok(())
+}
+
+fn resolve_cli_executable() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TRAPEZOHE_CLI_PATH").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+
+    std::env::current_exe().context("Failed to resolve current executable")
 }
 
 async fn runtime_exec(
@@ -361,6 +1854,9 @@ async fn runtime_exec(
         "local_command",
         "Local command execution is disabled in Companion permissions.",
     )?;
+    let run_id = create_runtime_exec_run(&state, &body, &config)
+        .ok()
+        .map(|run| run.run_id);
     let result = state
         .runtime
         .run_command(ExecRequest {
@@ -372,6 +1868,50 @@ async fn runtime_exec(
         })
         .await
         .map_err(map_exec_runtime_error)?;
+    if let Some(run_id) = run_id {
+        let command = result.command.clone();
+        let cwd = result.cwd.clone();
+        let exit_code = result.exit_code;
+        let timed_out = result.timed_out;
+        let duration_ms = result.duration_ms;
+        let stderr = result.stderr.clone();
+        let _ = state.runs.update_run(&run_id, |run| {
+            run.state = if result.ok { "done" } else { "failed" }.to_string();
+            run.finished_at = Some(now_millis());
+            run.summary = Some(if result.ok {
+                "Local command completed".to_string()
+            } else {
+                "Local command failed".to_string()
+            });
+            run.error = if result.ok {
+                None
+            } else {
+                truncate_text_for_error(&stderr)
+            };
+            run.meta = merge_run_meta(
+                run.meta.clone(),
+                json_object(vec![
+                    ("command", Some(Value::String(command.clone()))),
+                    ("cwd", Some(Value::String(cwd.clone()))),
+                    (
+                        "capability",
+                        Some(Value::String("local_command".to_string())),
+                    ),
+                    (
+                        "permissionId",
+                        Some(Value::String("local_command".to_string())),
+                    ),
+                    ("actionSource", Some(Value::String("extension".to_string()))),
+                    ("exitCode", Some(Value::Number(exit_code.into()))),
+                    ("timedOut", Some(Value::Bool(timed_out))),
+                    (
+                        "durationMs",
+                        Some(Value::Number(serde_json::Number::from(duration_ms))),
+                    ),
+                ]),
+            );
+        });
+    }
     Ok(Json(serde_json::to_value(result).unwrap()))
 }
 
@@ -390,15 +1930,238 @@ async fn runtime_session_start(
     let result = state
         .runtime
         .start_session(SessionStartRequest {
-            command: body.command.unwrap_or_default(),
-            cwd: body.cwd,
+            command: body.command.clone().unwrap_or_default(),
+            cwd: body.cwd.clone(),
             timeout_ms: body.timeout_ms,
-            env: body.env.map(|value| value.into_iter().collect()),
+            env: body.env.clone().map(|value| value.into_iter().collect()),
             permission_policy: config.permission_policy.clone(),
         })
         .await
         .map_err(map_exec_runtime_error)?;
+    if let Ok(run) = create_runtime_session_run(&state, &result, &body) {
+        let _ = state.runs.set_session_run_link(
+            &result.session_id,
+            &run.run_id,
+            RunLinkInput {
+                run_type: Some("session".to_string()),
+                ..RunLinkInput::default()
+            },
+        );
+        let _ = reconcile_runtime_session_run(&state, &result.session_id).await;
+    }
     Ok(Json(serde_json::to_value(result).unwrap()))
+}
+
+async fn runtime_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<RunListParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let result = state
+        .runs
+        .list_runs(RunListQuery {
+            run_type: query.run_type,
+            state: query.state,
+            limit: query.limit,
+            offset: query.offset,
+        })
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(json!({
+        "ok": true,
+        "runs": result.runs,
+        "total": result.total,
+        "offset": result.offset,
+        "limit": result.limit,
+        "hasMore": result.has_more,
+    })))
+}
+
+async fn runtime_run_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let Some(run) = state.runs.get_run_by_id(&run_id).map_err(internal_error)? else {
+        return Err(json_error(StatusCode::NOT_FOUND, "Run not found."));
+    };
+    Ok(Json(json!({
+        "ok": true,
+        "run": run,
+    })))
+}
+
+async fn runtime_runs_diagnostics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<RunDiagnosticsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .runs
+        .get_run_diagnostics(query.limit)
+        .map_err(internal_error)?;
+    Ok(Json(serde_json::to_value(payload).unwrap()))
+}
+
+async fn acp_create_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AcpCreateSessionBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let session = state
+        .acp
+        .create_session(AcpCreateSessionInput {
+            agent_type: body.agent_type,
+            cwd: body.cwd,
+            command: parse_acp_command(body.command)
+                .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?,
+            env: body.env,
+            timeout_ms: body.timeout_ms,
+            origin: body.origin,
+            input_provenance: body.input_provenance,
+            ..AcpCreateSessionInput::default()
+        })
+        .await;
+    let run = create_acp_run(&state, &session).map_err(internal_error)?;
+    let session = state
+        .acp
+        .attach_run_id(&session.session_id, &run.run_id)
+        .await
+        .unwrap_or(session);
+    Ok(Json(serde_json::to_value(session).unwrap()))
+}
+
+async fn acp_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AcpSessionsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .acp
+        .list_sessions(AcpListQuery {
+            state: query.state,
+            limit: query.limit,
+            offset: query.offset,
+        })
+        .await;
+    Ok(Json(serde_json::to_value(payload).unwrap()))
+}
+
+async fn acp_session_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let Some(session) = state.acp.get_session(&session_id).await else {
+        return Err(json_error(StatusCode::NOT_FOUND, "ACP session not found."));
+    };
+    Ok(Json(serde_json::to_value(session).unwrap()))
+}
+
+async fn acp_prompt_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<AcpPromptBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let ack = state
+        .acp
+        .enqueue_prompt(
+            &session_id,
+            AcpPromptInput {
+                prompt: body.prompt,
+                turn_id: body.turn_id,
+                timeout_ms: body.timeout_ms,
+                command: parse_acp_command(body.command)
+                    .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?,
+                cwd: body.cwd,
+                env: body.env,
+                origin: body.origin,
+                input_provenance: body.input_provenance,
+            },
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    if let Some(session) = state.acp.get_session(&session_id).await {
+        sync_acp_run_ingress(&state, &session, Some(ack.turn_id.clone()))
+            .map_err(internal_error)?;
+    }
+    Ok(Json(serde_json::to_value(ack).unwrap()))
+}
+
+async fn acp_steer_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<AcpSteerBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let ack = state
+        .acp
+        .enqueue_steer(
+            &session_id,
+            AcpSteerInput {
+                text: body.text,
+                submit: body.submit,
+                turn_id: body.turn_id,
+            },
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(serde_json::to_value(ack).unwrap()))
+}
+
+async fn acp_cancel_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .acp
+        .cancel_session(&session_id)
+        .await
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    if let Some(session) = state.acp.get_session(&session_id).await {
+        let _ = sync_acp_terminal_run_state(&state, &session, None, None, None, None);
+    }
+    Ok(Json(serde_json::to_value(payload).unwrap()))
+}
+
+async fn acp_session_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<AcpEventsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = state
+        .acp
+        .list_session_events(
+            &session_id,
+            AcpEventsQuery {
+                after: query.after,
+                limit: query.limit,
+            },
+        )
+        .await;
+    Ok(Json(serde_json::to_value(payload).unwrap()))
 }
 
 async fn runtime_sessions(
@@ -699,6 +2462,337 @@ async fn mcp_restart_server(
     })))
 }
 
+async fn create_approval(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ApprovalCreateBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let request_id = trim_or_generated(body.request_id.clone());
+    let body_meta = value_to_object_map(body.meta.clone());
+    let existing = state
+        .approvals
+        .get_approval_by_id(&request_id)
+        .map_err(internal_error)?;
+    let mut run = existing
+        .as_ref()
+        .and_then(|approval| approval.meta.as_ref())
+        .and_then(|meta| object_string(Some(meta), "runId"))
+        .and_then(|run_id| state.runs.get_run_record(&run_id).ok().flatten());
+
+    let tracking =
+        resolve_approval_session_tracking(body_meta.as_ref(), existing.as_ref(), run.as_ref());
+
+    if run.is_none() {
+        run = Some(
+            state
+                .runs
+                .create_run(CreateRunInput {
+                    run_type: Some("approval".to_string()),
+                    state: Some("waiting_approval".to_string()),
+                    started_at: Some(now_millis()),
+                    session_id: tracking.session_id.clone(),
+                    session_type: tracking.session_type.clone(),
+                    lane_id: Some("remote:approval".to_string()),
+                    source: Some("remote".to_string()),
+                    contract_version: Some(capabilities_payload().run_contract_version),
+                    summary: Some("Awaiting approval".to_string()),
+                    meta: json_object(vec![
+                        ("requestId", Some(Value::String(request_id.clone()))),
+                        ("approvalRequestId", Some(Value::String(request_id.clone()))),
+                        (
+                            "conversationId",
+                            body.conversation_id
+                                .clone()
+                                .and_then(trim_optional)
+                                .map(Value::String),
+                        ),
+                        (
+                            "toolName",
+                            body.tool_name
+                                .clone()
+                                .and_then(trim_optional)
+                                .map(Value::String),
+                        ),
+                        (
+                            "toolPreview",
+                            body.tool_preview
+                                .clone()
+                                .and_then(trim_optional)
+                                .map(Value::String),
+                        ),
+                        (
+                            "riskLevel",
+                            body.risk_level
+                                .clone()
+                                .and_then(trim_optional)
+                                .map(Value::String),
+                        ),
+                        (
+                            "channels",
+                            body.channels.clone().map(|values| {
+                                Value::Array(values.into_iter().map(Value::String).collect())
+                            }),
+                        ),
+                        ("sessionId", tracking.session_id.clone().map(Value::String)),
+                        (
+                            "sessionType",
+                            tracking.session_type.clone().map(Value::String),
+                        ),
+                    ]),
+                    ..CreateRunInput::default()
+                })
+                .map_err(internal_error)?,
+        );
+    }
+
+    let mut approval = state
+        .approvals
+        .create_approval(CreateApprovalInput {
+            request_id: Some(request_id.clone()),
+            conversation_id: body.conversation_id.clone(),
+            tool_name: body.tool_name.clone(),
+            tool_preview: body.tool_preview.clone(),
+            risk_level: body.risk_level.clone(),
+            channels: body.channels.clone(),
+            expires_at: body.expires_at,
+            meta: merge_run_meta(
+                body_meta.clone(),
+                json_object(vec![
+                    (
+                        "runId",
+                        run.as_ref()
+                            .map(|value| Value::String(value.run_id.clone())),
+                    ),
+                    ("sessionId", tracking.session_id.clone().map(Value::String)),
+                    (
+                        "sessionType",
+                        tracking.session_type.clone().map(Value::String),
+                    ),
+                    ("requestId", Some(Value::String(request_id.clone()))),
+                    ("approvalRequestId", Some(Value::String(request_id.clone()))),
+                ]),
+            ),
+        })
+        .map_err(internal_error)?;
+
+    if let Some(run) = &run {
+        if object_string(approval.meta.as_ref(), "runId").as_deref() != Some(run.run_id.as_str()) {
+            approval = state
+                .approvals
+                .relink_approval_run(&approval.request_id, &run.run_id)
+                .map_err(internal_error)?
+                .unwrap_or(approval);
+        }
+
+        let summary = match approval.status.as_str() {
+            "approved" => "Approval approved",
+            "expired" => "Approval expired",
+            "rejected" => "Approval rejected",
+            _ => "Awaiting approval",
+        };
+        let desired_state = match approval.status.as_str() {
+            "approved" => "done",
+            "pending" => "waiting_approval",
+            _ => "cancelled",
+        };
+        let approval_meta = approval.meta.clone();
+        let conversation_id = approval.conversation_id.clone();
+        let resolved_by = approval.resolved_by.clone();
+        state
+            .runs
+            .update_run(&run.run_id, |current| {
+                current.state = desired_state.to_string();
+                current.summary = Some(summary.to_string());
+                current.session_id = tracking
+                    .session_id
+                    .clone()
+                    .or_else(|| current.session_id.clone());
+                current.session_type = tracking
+                    .session_type
+                    .clone()
+                    .or_else(|| current.session_type.clone());
+                if desired_state != "waiting_approval" {
+                    current.finished_at = Some(now_millis());
+                }
+                current.meta = merge_run_meta(
+                    current.meta.clone(),
+                    merge_run_meta(
+                        approval_meta.clone(),
+                        json_object(vec![
+                            (
+                                "conversationId",
+                                trim_optional(conversation_id.clone()).map(Value::String),
+                            ),
+                            (
+                                "approvalStatus",
+                                Some(Value::String(approval.status.clone())),
+                            ),
+                            (
+                                "resolvedBy",
+                                resolved_by
+                                    .clone()
+                                    .and_then(trim_optional)
+                                    .map(Value::String),
+                            ),
+                            ("sessionId", tracking.session_id.clone().map(Value::String)),
+                            (
+                                "sessionType",
+                                tracking.session_type.clone().map(Value::String),
+                            ),
+                        ]),
+                    ),
+                );
+            })
+            .map_err(internal_error)?;
+    }
+
+    let status = if existing.is_some() {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(serde_json::to_value(approval).unwrap())))
+}
+
+async fn list_pending_approvals(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let expired = state
+        .approvals
+        .expire_overdue_approvals()
+        .map_err(internal_error)?;
+    for approval in expired {
+        if let Some(run_id) = object_string(approval.meta.as_ref(), "runId") {
+            let status = approval.status.clone();
+            let meta = approval.meta.clone();
+            let _ = state.runs.update_run(&run_id, |run| {
+                run.state = "cancelled".to_string();
+                run.finished_at = Some(now_millis());
+                run.summary = Some("Approval expired".to_string());
+                run.meta = merge_run_meta(
+                    run.meta.clone(),
+                    merge_run_meta(
+                        meta.clone(),
+                        json_object(vec![(
+                            "approvalStatus",
+                            Some(Value::String(status.clone())),
+                        )]),
+                    ),
+                );
+            });
+        }
+    }
+    let approvals = state
+        .approvals
+        .list_pending_approvals()
+        .map_err(internal_error)?;
+    Ok(Json(json!({ "approvals": approvals })))
+}
+
+async fn resolve_approval(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    Json(body): Json<ApprovalResolveBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let Some(approval) = state
+        .approvals
+        .resolve_approval(
+            &request_id,
+            body.resolution.as_deref().unwrap_or("rejected"),
+            body.resolved_by,
+        )
+        .map_err(internal_error)?
+    else {
+        return Err(json_error(StatusCode::NOT_FOUND, "Approval not found."));
+    };
+    if let Some(run_id) = object_string(approval.meta.as_ref(), "runId") {
+        let state_value = match approval.status.as_str() {
+            "approved" => "done",
+            "pending" => "waiting_approval",
+            _ => "cancelled",
+        };
+        let summary = match approval.status.as_str() {
+            "approved" => "Approval approved",
+            "expired" => "Approval expired",
+            _ => "Approval rejected",
+        };
+        let approval_meta = approval.meta.clone();
+        let resolved_by = approval.resolved_by.clone();
+        let _ = state.runs.update_run(&run_id, |run| {
+            run.state = state_value.to_string();
+            run.summary = Some(summary.to_string());
+            if state_value != "waiting_approval" {
+                run.finished_at = Some(now_millis());
+            }
+            run.meta = merge_run_meta(
+                run.meta.clone(),
+                merge_run_meta(
+                    approval_meta.clone(),
+                    json_object(vec![
+                        (
+                            "approvalStatus",
+                            Some(Value::String(approval.status.clone())),
+                        ),
+                        (
+                            "resolvedBy",
+                            resolved_by
+                                .clone()
+                                .and_then(trim_optional)
+                                .map(Value::String),
+                        ),
+                    ]),
+                ),
+            );
+        });
+    }
+    Ok(Json(serde_json::to_value(approval).unwrap()))
+}
+
+async fn get_approval_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let expired = state
+        .approvals
+        .expire_overdue_approvals()
+        .map_err(internal_error)?;
+    for approval in expired {
+        if let Some(run_id) = object_string(approval.meta.as_ref(), "runId") {
+            let _ = state.runs.update_run(&run_id, |run| {
+                run.state = "cancelled".to_string();
+                run.finished_at = Some(now_millis());
+                run.summary = Some("Approval expired".to_string());
+                run.meta = merge_run_meta(
+                    run.meta.clone(),
+                    json_object(vec![(
+                        "approvalStatus",
+                        Some(Value::String("expired".to_string())),
+                    )]),
+                );
+            });
+        }
+    }
+    let Some(approval) = state
+        .approvals
+        .get_approval_by_id(&request_id)
+        .map_err(internal_error)?
+    else {
+        return Err(json_error(StatusCode::NOT_FOUND, "Approval not found."));
+    };
+    Ok(Json(serde_json::to_value(approval).unwrap()))
+}
+
 async fn get_security_policy(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -770,6 +2864,805 @@ async fn update_security_capabilities(
         "ok": true,
         "capabilities": next_capabilities,
     })))
+}
+
+#[derive(Debug, Clone, Default)]
+struct ApprovalTracking {
+    session_id: Option<String>,
+    session_type: Option<String>,
+}
+
+fn create_runtime_exec_run(
+    state: &AppState,
+    body: &RuntimeExecBody,
+    config: &CompanionConfig,
+) -> Result<RunRecord> {
+    let command = body.command.clone().unwrap_or_default();
+    let cwd = body.cwd.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string())
+    });
+    state.runs.create_run(CreateRunInput {
+        run_type: Some("exec".to_string()),
+        state: Some("running".to_string()),
+        started_at: Some(now_millis()),
+        lane_id: Some("remote:exec".to_string()),
+        source: Some("remote".to_string()),
+        contract_version: Some(capabilities_payload().run_contract_version),
+        summary: Some("Executing local command".to_string()),
+        meta: json_object(vec![
+            ("command", trim_optional(command).map(Value::String)),
+            ("cwd", trim_optional(cwd).map(Value::String)),
+            (
+                "timeoutMs",
+                body.timeout_ms
+                    .map(|value| Value::Number(serde_json::Number::from(value))),
+            ),
+            (
+                "capability",
+                Some(Value::String("local_command".to_string())),
+            ),
+            (
+                "permissionId",
+                Some(Value::String("local_command".to_string())),
+            ),
+            ("actionSource", Some(Value::String("extension".to_string()))),
+            (
+                "workspaceMode",
+                Some(Value::String(config.permission_policy.mode.clone())),
+            ),
+        ]),
+        ..CreateRunInput::default()
+    })
+}
+
+fn create_runtime_session_run(
+    state: &AppState,
+    session: &companion_runtime::SessionSnapshot,
+    body: &RuntimeExecBody,
+) -> Result<RunRecord> {
+    state.runs.create_run(CreateRunInput {
+        run_type: Some("session".to_string()),
+        state: Some(if session.status == "exited" {
+            if !session.timed_out && session.exit_code.unwrap_or(-1) == 0 {
+                "done".to_string()
+            } else {
+                "failed".to_string()
+            }
+        } else {
+            "running".to_string()
+        }),
+        started_at: Some(session.started_at),
+        finished_at: session.finished_at,
+        session_id: Some(session.session_id.clone()),
+        lane_id: Some("remote:session".to_string()),
+        source: Some("remote".to_string()),
+        contract_version: Some(capabilities_payload().run_contract_version),
+        summary: Some(if session.status == "exited" {
+            if !session.timed_out && session.exit_code.unwrap_or(-1) == 0 {
+                "Session completed".to_string()
+            } else {
+                "Session failed".to_string()
+            }
+        } else {
+            "Session started".to_string()
+        }),
+        error: if session.status == "exited"
+            && (session.timed_out || session.exit_code.unwrap_or(-1) != 0)
+        {
+            Some(format!(
+                "exitCode={}, timedOut={}",
+                session.exit_code.unwrap_or(-1),
+                session.timed_out
+            ))
+        } else {
+            None
+        },
+        meta: json_object(vec![
+            ("sessionId", Some(Value::String(session.session_id.clone()))),
+            (
+                "command",
+                body.command
+                    .clone()
+                    .and_then(trim_optional)
+                    .map(Value::String),
+            ),
+            ("cwd", trim_optional(session.cwd.clone()).map(Value::String)),
+            (
+                "timeoutMs",
+                body.timeout_ms
+                    .map(|value| Value::Number(serde_json::Number::from(value))),
+            ),
+            (
+                "capability",
+                Some(Value::String("local_command".to_string())),
+            ),
+            (
+                "permissionId",
+                Some(Value::String("local_command".to_string())),
+            ),
+            ("actionSource", Some(Value::String("extension".to_string()))),
+        ]),
+        ..CreateRunInput::default()
+    })
+}
+
+async fn reconcile_runtime_session_run(state: &AppState, session_id: &str) -> Result<()> {
+    let Some(session) = state.runtime.get_session(session_id).await else {
+        return Ok(());
+    };
+    if session.status != "exited" {
+        return Ok(());
+    }
+    let Some(link) = state.runs.get_session_run_link(session_id)? else {
+        return Ok(());
+    };
+    state.runs.update_run(&link.run_id, |run| {
+        run.state = if !session.timed_out && session.exit_code.unwrap_or(-1) == 0 {
+            "done".to_string()
+        } else {
+            "failed".to_string()
+        };
+        run.finished_at = session.finished_at.or(Some(now_millis()));
+        run.summary = Some(
+            if !session.timed_out && session.exit_code.unwrap_or(-1) == 0 {
+                "Session completed".to_string()
+            } else {
+                "Session failed".to_string()
+            },
+        );
+        run.error = if session.timed_out || session.exit_code.unwrap_or(-1) != 0 {
+            Some(format!(
+                "exitCode={}, timedOut={}",
+                session.exit_code.unwrap_or(-1),
+                session.timed_out
+            ))
+        } else {
+            None
+        };
+    })?;
+    state.runs.clear_session_run_link(session_id)?;
+    Ok(())
+}
+
+fn create_acp_run(
+    state: &AppState,
+    session: &companion_acp::AcpSessionSnapshot,
+) -> Result<RunRecord> {
+    let session_type = build_acp_session_type(&session.session_id);
+    let record = state.runs.create_run(CreateRunInput {
+        run_type: Some("acp".to_string()),
+        state: Some(map_acp_run_state(&session.state).to_string()),
+        started_at: session.started_at,
+        finished_at: session.finished_at,
+        session_id: Some(session.session_id.clone()),
+        session_type: session_type.clone(),
+        lane_id: Some("remote:acp".to_string()),
+        source: Some("remote".to_string()),
+        contract_version: Some(capabilities_payload().run_contract_version),
+        summary: Some(acp_summary_for_state(&session.state, true).to_string()),
+        meta: json_object(vec![
+            ("sessionId", Some(Value::String(session.session_id.clone()))),
+            ("sessionType", session_type.clone().map(Value::String)),
+            (
+                "agentType",
+                trim_optional(session.agent_type.clone()).map(Value::String),
+            ),
+            ("cwd", trim_optional(session.cwd.clone()).map(Value::String)),
+            (
+                "origin",
+                session
+                    .origin
+                    .clone()
+                    .and_then(trim_optional)
+                    .map(Value::String),
+            ),
+            ("inputProvenance", session.input_provenance.clone()),
+            (
+                "conversationId",
+                json_value_string(session.input_provenance.as_ref(), "conversationId")
+                    .map(Value::String),
+            ),
+            ("command", session.command.as_ref().map(command_spec_value)),
+        ]),
+        ..CreateRunInput::default()
+    })?;
+    let _ = state.runs.set_session_run_link(
+        &session.session_id,
+        &record.run_id,
+        RunLinkInput {
+            run_type: Some("acp".to_string()),
+            ..RunLinkInput::default()
+        },
+    )?;
+    Ok(record)
+}
+
+fn sync_acp_run_ingress(
+    state: &AppState,
+    session: &companion_acp::AcpSessionSnapshot,
+    turn_id: Option<String>,
+) -> Result<Option<RunRecord>> {
+    let Some(run_id) = resolve_acp_run_id(state, session)? else {
+        return Ok(None);
+    };
+    let session_type = build_acp_session_type(&session.session_id);
+    let effective_turn_id = turn_id.or_else(|| session.current_turn_id.clone());
+    let updated = state.runs.update_run(&run_id, |run| {
+        run.state = map_acp_run_state(&session.state).to_string();
+        run.started_at = session.started_at.or(run.started_at);
+        run.session_id = Some(session.session_id.clone());
+        run.session_type = session_type.clone();
+        run.summary = Some(acp_summary_for_state(&session.state, false).to_string());
+        run.error = None;
+        run.meta = merge_run_meta(
+            run.meta.clone(),
+            json_object(vec![
+                ("sessionId", Some(Value::String(session.session_id.clone()))),
+                ("sessionType", session_type.clone().map(Value::String)),
+                (
+                    "turnId",
+                    effective_turn_id
+                        .clone()
+                        .and_then(trim_optional)
+                        .map(Value::String),
+                ),
+                (
+                    "agentType",
+                    trim_optional(session.agent_type.clone()).map(Value::String),
+                ),
+                ("cwd", trim_optional(session.cwd.clone()).map(Value::String)),
+                (
+                    "origin",
+                    session
+                        .origin
+                        .clone()
+                        .and_then(trim_optional)
+                        .map(Value::String),
+                ),
+                ("inputProvenance", session.input_provenance.clone()),
+                (
+                    "conversationId",
+                    json_value_string(session.input_provenance.as_ref(), "conversationId")
+                        .map(Value::String),
+                ),
+                ("command", session.command.as_ref().map(command_spec_value)),
+            ]),
+        );
+    })?;
+    let _ = state.runs.set_session_run_link(
+        &session.session_id,
+        &run_id,
+        RunLinkInput {
+            run_type: Some("acp".to_string()),
+            ..RunLinkInput::default()
+        },
+    )?;
+    Ok(updated)
+}
+
+fn sync_acp_terminal_run_state(
+    state: &AppState,
+    session: &companion_acp::AcpSessionSnapshot,
+    turn_id: Option<String>,
+    terminal_code: Option<String>,
+    message: Option<String>,
+    exit_code: Option<i32>,
+) -> Result<Option<RunRecord>> {
+    let Some(run_id) = resolve_acp_run_id(state, session)? else {
+        return Ok(None);
+    };
+    let next_state = map_acp_run_state(&session.state).to_string();
+    let session_type = build_acp_session_type(&session.session_id);
+    let effective_turn_id = turn_id.or_else(|| session.current_turn_id.clone());
+    let error_text = if next_state == "failed" {
+        message
+            .clone()
+            .and_then(trim_optional)
+            .or_else(|| terminal_code.clone().and_then(trim_optional))
+            .or_else(|| exit_code.map(|value| format!("exitCode={value}")))
+    } else {
+        None
+    };
+    let updated = state.runs.update_run(&run_id, |run| {
+        run.state = next_state.clone();
+        run.started_at = session.started_at.or(run.started_at);
+        run.finished_at = session
+            .finished_at
+            .or(run.finished_at)
+            .or(Some(now_millis()));
+        run.session_id = Some(session.session_id.clone());
+        run.session_type = session_type.clone();
+        run.summary = Some(acp_summary_for_state(&session.state, false).to_string());
+        run.error = error_text.clone();
+        run.meta = merge_run_meta(
+            run.meta.clone(),
+            json_object(vec![
+                ("sessionId", Some(Value::String(session.session_id.clone()))),
+                ("sessionType", session_type.clone().map(Value::String)),
+                (
+                    "turnId",
+                    effective_turn_id
+                        .clone()
+                        .and_then(trim_optional)
+                        .map(Value::String),
+                ),
+                (
+                    "agentType",
+                    trim_optional(session.agent_type.clone()).map(Value::String),
+                ),
+                ("cwd", trim_optional(session.cwd.clone()).map(Value::String)),
+                (
+                    "origin",
+                    session
+                        .origin
+                        .clone()
+                        .and_then(trim_optional)
+                        .map(Value::String),
+                ),
+                ("inputProvenance", session.input_provenance.clone()),
+                (
+                    "conversationId",
+                    json_value_string(session.input_provenance.as_ref(), "conversationId")
+                        .map(Value::String),
+                ),
+                ("command", session.command.as_ref().map(command_spec_value)),
+                (
+                    "exitCode",
+                    exit_code.map(|value| Value::Number(value.into())),
+                ),
+                (
+                    "terminalCode",
+                    terminal_code
+                        .clone()
+                        .and_then(trim_optional)
+                        .map(Value::String),
+                ),
+            ]),
+        );
+    })?;
+    let _ = state.runs.clear_session_run_link(&session.session_id)?;
+    Ok(updated)
+}
+
+fn parse_acp_command(value: Option<Value>) -> Result<Option<CommandSpec>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(command)) => Ok(Some(CommandSpec::Shell(
+            trim_optional(command).ok_or_else(|| anyhow!("ACP command cannot be empty."))?,
+        ))),
+        Some(Value::Array(items)) => {
+            let mut args = Vec::new();
+            for item in items {
+                let Some(item) = item.as_str() else {
+                    return Err(anyhow!("ACP command array must contain only strings."));
+                };
+                let normalized = trim_optional(item.to_string())
+                    .ok_or_else(|| anyhow!("ACP command array cannot contain empty values."))?;
+                args.push(normalized);
+            }
+            if args.is_empty() {
+                return Err(anyhow!("ACP command array cannot be empty."));
+            }
+            Ok(Some(CommandSpec::Args(args)))
+        }
+        Some(_) => Err(anyhow!(
+            "ACP command must be a string shell command or an array of command arguments."
+        )),
+    }
+}
+
+fn resolve_acp_run_id(
+    state: &AppState,
+    session: &companion_acp::AcpSessionSnapshot,
+) -> Result<Option<String>> {
+    if let Some(run_id) = session.run_id.clone().and_then(trim_optional) {
+        return Ok(Some(run_id));
+    }
+    Ok(state
+        .runs
+        .get_session_run_link(&session.session_id)?
+        .map(|link| link.run_id))
+}
+
+fn build_acp_session_type(session_id: &str) -> Option<String> {
+    let normalized = session_id.trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(format!("acp/{normalized}"))
+    }
+}
+
+fn map_acp_run_state(state: &str) -> &'static str {
+    match state {
+        "idle" => "idle",
+        "running" => "running",
+        "done" => "done",
+        "cancelled" => "cancelled",
+        _ => "failed",
+    }
+}
+
+fn acp_summary_for_state(state: &str, created: bool) -> &'static str {
+    match state {
+        "idle" if created => "ACP session created",
+        "idle" => "ACP session ready",
+        "running" => "ACP session running",
+        "done" => "ACP session completed",
+        "cancelled" => "ACP session cancelled",
+        _ => "ACP session failed",
+    }
+}
+
+fn command_spec_value(command: &CommandSpec) -> Value {
+    match command {
+        CommandSpec::Shell(command) => Value::String(command.clone()),
+        CommandSpec::Args(args) => Value::Array(args.iter().cloned().map(Value::String).collect()),
+    }
+}
+
+fn json_value_string(value: Option<&Value>, key: &str) -> Option<String> {
+    value
+        .and_then(Value::as_object)
+        .and_then(|object| object_string(Some(object), key))
+}
+
+fn action_log_from_run(run: &RunRecord) -> Option<serde_json::Value> {
+    if run.r#type != "exec" && run.r#type != "session" && run.r#type != "approval" {
+        return None;
+    }
+    let meta = run.meta.as_ref();
+    Some(json!({
+        "runId": run.run_id,
+        "timestamp": run.finished_at.unwrap_or(run.updated_at.max(run.created_at)),
+        "actionName": meta.and_then(|value| object_string(Some(value), "toolName")).or_else(|| run.summary.clone()).unwrap_or_else(|| run.r#type.clone()),
+        "source": run.source.clone().or_else(|| meta.and_then(|value| object_string(Some(value), "actionSource"))).unwrap_or_else(|| "remote".to_string()),
+        "capability": meta.and_then(|value| object_string(Some(value), "capability")).unwrap_or_default(),
+        "permissionId": meta.and_then(|value| object_string(Some(value), "permissionId")).unwrap_or_default(),
+        "target": meta.and_then(|value| object_string(Some(value), "command")).or_else(|| meta.and_then(|value| object_string(Some(value), "toolPreview"))).unwrap_or_default(),
+        "status": run.state,
+        "detail": run.error.clone().unwrap_or_default(),
+    }))
+}
+
+fn build_cron_automation_response(job: &Value) -> Value {
+    let executor = job
+        .get("executor")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if executor == Some("companion_acp") {
+        json!({
+            "executor": "companion_acp",
+            "supported": false,
+            "unsupportedReason": "rust_automation_executor_pending",
+        })
+    } else {
+        json!({
+            "executor": executor,
+            "supported": true,
+            "unsupportedReason": Value::Null,
+        })
+    }
+}
+
+fn workflow_status_from_run(run: &RunRecord) -> Value {
+    let workflow = run
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("workflow"))
+        .or_else(|| {
+            run.meta
+                .as_ref()
+                .and_then(|meta| meta.get("automationSpec"))
+                .and_then(|value| value.get("workflow"))
+        });
+
+    let Some(workflow) = workflow.and_then(Value::as_object) else {
+        return Value::Null;
+    };
+
+    let template = workflow
+        .get("template")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let state = workflow.get("state").and_then(Value::as_object);
+    let steps = state
+        .and_then(|value| value.get("steps"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter()
+                .filter_map(|item| item.as_object())
+                .map(|item| {
+                    json!({
+                        "id": item.get("id").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()),
+                        "kind": item.get("kind").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()),
+                        "state": item.get("state").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()),
+                        "summary": item.get("summary").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "template": template,
+        "terminalState": state.and_then(|value| value.get("terminalState")).cloned().unwrap_or(Value::Null),
+        "currentStepId": state.and_then(|value| value.get("currentStepId")).cloned().unwrap_or(Value::Null),
+        "steps": steps,
+    })
+}
+
+fn count_active_workflow_runs(runs: &[companion_control::RunRecordView]) -> usize {
+    runs.iter()
+        .filter(|item| item.run.r#type == "cron")
+        .filter(|item| {
+            item.run
+                .meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "executionMode"))
+                .as_deref()
+                == Some("companion_acp")
+        })
+        .filter(|item| matches!(item.run.state.as_str(), "queued" | "running" | "retrying"))
+        .filter(|item| {
+            item.run
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("workflow"))
+                .and_then(Value::as_object)
+                .and_then(|workflow| workflow.get("template"))
+                .and_then(Value::as_str)
+                .is_some_and(|template| {
+                    template == "research_synthesis" || template == "research_decision"
+                })
+        })
+        .count()
+}
+
+fn build_recent_workflow_lifecycle_phases(runs: &[companion_control::RunRecordView]) -> Vec<Value> {
+    runs.iter()
+        .filter(|item| item.run.r#type == "cron")
+        .filter(|item| {
+            item.run
+                .meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "executionMode"))
+                .as_deref()
+                == Some("companion_acp")
+        })
+        .take(5)
+        .map(|item| {
+            let meta = item.run.meta.as_ref();
+            json!({
+                "runId": item.run.run_id,
+                "taskId": meta.and_then(|value| object_string(Some(value), "taskId")).unwrap_or_default(),
+                "taskName": meta.and_then(|value| object_string(Some(value), "taskName")).unwrap_or_default(),
+                "taskState": meta.and_then(|value| value.get("taskState")).cloned().unwrap_or(Value::Null),
+                "stepState": meta.and_then(|value| value.get("stepState")).cloned().unwrap_or(Value::Null),
+                "workflow": meta.and_then(|value| value.get("workflow")).cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
+fn build_recent_workflow_failures(runs: &[companion_control::RunRecordView]) -> Vec<Value> {
+    runs.iter()
+        .filter(|item| item.run.r#type == "cron")
+        .filter(|item| item.run.state == "failed")
+        .filter(|item| {
+            item.run
+                .meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "executionMode"))
+                .as_deref()
+                == Some("companion_acp")
+        })
+        .take(5)
+        .map(|item| {
+            let meta = item.run.meta.as_ref();
+            json!({
+                "runId": item.run.run_id,
+                "summary": item.run.summary,
+                "error": item.run.error,
+                "taskId": meta.and_then(|value| object_string(Some(value), "taskId")),
+                "taskName": meta.and_then(|value| object_string(Some(value), "taskName")),
+                "finishedAt": item.run.finished_at,
+            })
+        })
+        .collect()
+}
+
+fn build_automation_outbox_summary(
+    listed: &companion_automation::AutomationOutboxListResult,
+) -> Value {
+    json!({
+        "depth": listed.total,
+        "recent": listed.items.iter().take(5).map(|item| {
+            json!({
+                "id": item.id,
+                "runId": item.run_id,
+                "taskId": item.task_id,
+                "taskName": item.task_name,
+                "mode": item.mode,
+                "createdAt": item.created_at,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn resolve_approval_session_tracking(
+    body_meta: Option<&Map<String, Value>>,
+    existing_approval: Option<&companion_control::ApprovalRecord>,
+    run: Option<&RunRecord>,
+) -> ApprovalTracking {
+    let run_session_id = run
+        .and_then(run_session_id)
+        .or_else(|| approval_tracking_meta(body_meta, "sessionId"))
+        .or_else(|| {
+            existing_approval
+                .and_then(|value| approval_tracking_meta(value.meta.as_ref(), "sessionId"))
+        });
+    let run_session_type = run
+        .and_then(run_session_type)
+        .or_else(|| approval_tracking_meta(body_meta, "sessionType"))
+        .or_else(|| {
+            existing_approval
+                .and_then(|value| approval_tracking_meta(value.meta.as_ref(), "sessionType"))
+        })
+        .or_else(|| infer_session_type(run_session_id.as_deref().unwrap_or("")));
+    ApprovalTracking {
+        session_id: run_session_id,
+        session_type: run_session_type,
+    }
+}
+
+fn approval_tracking_meta(meta: Option<&Map<String, Value>>, key: &str) -> Option<String> {
+    object_string(meta, key).or_else(|| {
+        meta.and_then(|value| value.get("tracking"))
+            .and_then(Value::as_object)
+            .and_then(|value| object_string(Some(value), key))
+    })
+}
+
+fn run_session_id(run: &RunRecord) -> Option<String> {
+    run.session_id.clone().or_else(|| {
+        run.meta
+            .as_ref()
+            .and_then(|value| object_string(Some(value), "sessionId"))
+    })
+}
+
+fn run_session_type(run: &RunRecord) -> Option<String> {
+    run.session_type.clone().or_else(|| {
+        run.meta
+            .as_ref()
+            .and_then(|value| object_string(Some(value), "sessionType"))
+    })
+}
+
+fn infer_session_type(session_id: &str) -> Option<String> {
+    let normalized = session_id.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.starts_with("chat:main") {
+        return Some("chat/main".to_string());
+    }
+    if let Some(value) = normalized.strip_prefix("workflow:") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(format!("workflow/{trimmed}"));
+        }
+    }
+    if let Some(value) = normalized.strip_prefix("automation:") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(format!("automation/{trimmed}"));
+        }
+    }
+    if let Some(value) = normalized.strip_prefix("acp:") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(format!("acp/{trimmed}"));
+        }
+    }
+    None
+}
+
+fn merge_run_meta(
+    base: Option<Map<String, Value>>,
+    extra: Option<Map<String, Value>>,
+) -> Option<Map<String, Value>> {
+    let mut merged = base.unwrap_or_default();
+    if let Some(extra) = extra {
+        for (key, value) in extra {
+            merged.insert(key, value);
+        }
+    }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    }
+}
+
+fn json_object(items: Vec<(&str, Option<Value>)>) -> Option<Map<String, Value>> {
+    let mut object = Map::new();
+    for (key, value) in items {
+        if let Some(value) = value {
+            object.insert(key.to_string(), value);
+        }
+    }
+    if object.is_empty() {
+        None
+    } else {
+        Some(object)
+    }
+}
+
+fn value_to_object_map(value: Option<Value>) -> Option<Map<String, Value>> {
+    match value {
+        Some(Value::Object(map)) if !map.is_empty() => Some(map),
+        _ => None,
+    }
+}
+
+fn object_string(object: Option<&Map<String, Value>>, key: &str) -> Option<String> {
+    object
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn trim_optional(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn trim_or_generated(value: Option<String>) -> String {
+    value
+        .and_then(trim_optional)
+        .unwrap_or_else(|| format!("approval-{}", now_millis()))
+}
+
+fn mask_sensitive_tail(value: &str, keep: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    if chars.len() <= keep {
+        return trimmed.to_string();
+    }
+
+    let suffix = chars[chars.len() - keep..].iter().collect::<String>();
+    format!("...{suffix}")
+}
+
+fn truncate_text_for_error(value: &str) -> Option<String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        None
+    } else if normalized.chars().count() <= 500 {
+        Some(normalized.to_string())
+    } else {
+        Some(format!(
+            "{}...[truncated]",
+            normalized.chars().take(484).collect::<String>().trim_end()
+        ))
+    }
 }
 
 async fn cors_middleware(req: axum::extract::Request, next: Next) -> Response {
@@ -887,6 +3780,19 @@ fn map_runtime_error(error: RuntimeError) -> Response {
     }
 }
 
+fn map_checkpoint_job_submit_error(error: anyhow::Error) -> Response {
+    let message = error.to_string();
+    match message.as_str() {
+        "memory_checkpoint_jobs_unavailable" => {
+            json_error(StatusCode::SERVICE_UNAVAILABLE, &message)
+        }
+        "checkpoint_job_invalid_request"
+        | "checkpoint_job_generation_mismatch"
+        | "checkpoint_job_step_invalid" => json_error(StatusCode::BAD_REQUEST, &message),
+        _ => internal_error(error),
+    }
+}
+
 fn json_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
@@ -944,8 +3850,14 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use companion_automation::AutomationOutboxItem;
+    use companion_checkpoint::{build_checkpoint_job_result, CheckpointJobRunner};
+    use companion_config::CheckpointSyncConfig;
     use http_body_util::BodyExt;
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
     use tower::ServiceExt;
 
     fn test_config() -> CompanionConfig {
@@ -957,9 +3869,175 @@ mod tests {
         config
     }
 
+    fn test_app() -> (Router, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let app = build_router(AppState::new_in(
+            test_config(),
+            Some(temp_dir.path().to_path_buf()),
+        ));
+        (app, temp_dir)
+    }
+
+    fn test_state_app() -> (AppState, Router, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let state = AppState::new_in(test_config(), Some(temp_dir.path().to_path_buf()));
+        let app = build_router(state.clone());
+        (state, app, temp_dir)
+    }
+
+    fn make_shadow_envelope() -> Value {
+        let latest_pointer = json!({
+            "version": 1,
+            "generation": "2026-03-13T00-00-00.000Z",
+            "committedAt": 1700000005000_u64,
+            "manifestKey": "memory-checkpoints/generations/2026-03-13T00-00-00.000Z/manifest.json",
+        });
+        let history = json!({
+            "version": 1,
+            "generation": "2026-03-13T00-00-00.000Z",
+            "previousGeneration": "2026-03-12T00-00-00.000Z",
+            "coverageDay": "2026-03-13",
+            "committedAt": 1700000005000_u64,
+            "manifestKey": latest_pointer["manifestKey"].clone(),
+            "artifactCount": 2,
+            "requiredArtifactCount": 2,
+            "lastHistoryKey": "memory-checkpoints/history/2026-03-13T00-00-00.000Z.json",
+        });
+        let manifest = json!({
+            "version": 1,
+            "generatedAt": 1700000000000_u64,
+            "committedAt": 1700000005000_u64,
+            "generation": "2026-03-13T00-00-00.000Z",
+            "previousGeneration": "2026-03-12T00-00-00.000Z",
+            "latestPointerKey": "memory-checkpoints/latest.json",
+            "overallHash": "overall-hash",
+            "nodeCount": 1,
+            "coreDocCount": 0,
+            "dailyLogCount": 0,
+            "structuredContextCount": 1,
+            "artifacts": [
+                {
+                    "key": "context-nodes.json",
+                    "label": "Context Snapshot",
+                    "kind": "context_snapshot",
+                    "updatedAt": 1700000000000_u64,
+                    "checksum": "ctx-checksum",
+                    "count": 1,
+                    "bytes": 128,
+                    "storageKey": "memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/context-nodes.json",
+                    "required": true,
+                },
+                {
+                    "key": "memory-index.json",
+                    "label": "memory-index.json",
+                    "kind": "derived_meta",
+                    "updatedAt": 1700000005000_u64,
+                    "checksum": "memory-index-checksum",
+                    "bytes": 32,
+                    "storageKey": "memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/indexes/memory-index.json",
+                    "required": true,
+                }
+            ]
+        });
+        json!({
+            "version": 1,
+            "authority": "extension_primary",
+            "generation": "2026-03-13T00-00-00.000Z",
+            "previousGeneration": "2026-03-12T00-00-00.000Z",
+            "committedAt": 1700000005000_u64,
+            "latestPointer": latest_pointer,
+            "latestPointerPayload": latest_pointer.to_string(),
+            "history": history,
+            "historyPayload": history.to_string(),
+            "manifest": manifest,
+            "manifestPayload": manifest.to_string(),
+            "artifactPayloads": {
+                "memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/context-nodes.json": "{\"nodes\":true}",
+                "memory-checkpoints/generations/2026-03-13T00-00-00.000Z/artifacts/indexes/memory-index.json": "[{\"id\":\"mem-1\"}]"
+            }
+        })
+    }
+
+    fn make_checkpoint_job_bundle() -> Value {
+        let generation = "2026-03-12T08-00-00.000Z";
+        let committed_at = 1_773_312_000_000_u64;
+        json!({
+            "generation": generation,
+            "committedAt": committed_at,
+            "coverageDay": "2026-03-12",
+            "latestPointer": {
+                "version": 1,
+                "generation": generation,
+                "committedAt": committed_at,
+                "manifestKey": format!("memory-checkpoints/generations/{generation}/manifest.json"),
+            },
+            "latestPointerPayload": format!("{{\"version\":1,\"generation\":\"{generation}\"}}"),
+            "history": {
+                "version": 1,
+                "generation": generation,
+                "previousGeneration": Value::Null,
+                "coverageDay": "2026-03-12",
+                "committedAt": committed_at,
+                "manifestKey": format!("memory-checkpoints/generations/{generation}/manifest.json"),
+                "artifactCount": 0,
+                "requiredArtifactCount": 0,
+                "lastHistoryKey": format!("memory-checkpoints/generations/{generation}/history.json"),
+            },
+            "historyPayload": format!("{{\"version\":1,\"generation\":\"{generation}\"}}"),
+            "manifest": {
+                "version": 1,
+                "generation": generation,
+                "previousGeneration": Value::Null,
+                "committedAt": committed_at,
+                "generatedAt": committed_at,
+                "artifacts": [],
+            },
+            "manifestPayload": format!("{{\"version\":1,\"generation\":\"{generation}\",\"artifacts\":[]}}"),
+            "artifactPayloads": {},
+            "localAckPlan": {
+                "remoteStorageKeys": [],
+                "generation": generation,
+                "committedAt": committed_at,
+            },
+        })
+    }
+
+    fn persist_checkpoint_job_snapshot(temp_dir: &TempDir, bundle: &Value, state: &str) {
+        let generation = bundle["generation"].as_str().unwrap();
+        let snapshot = json!({
+            "version": 1,
+            "jobs": [
+                {
+                    "jobId": format!("checkpoint-{generation}"),
+                    "generation": generation,
+                    "state": state,
+                    "stage": state,
+                    "createdAt": 1_773_312_000_001_u64,
+                    "updatedAt": 1_773_312_000_001_u64,
+                    "startedAt": if state == "running" {
+                        Some(1_773_312_000_002_u64)
+                    } else {
+                        None::<u64>
+                    },
+                    "finishedAt": Value::Null,
+                    "attemptCount": 0,
+                    "error": Value::Null,
+                    "completedSteps": [],
+                    "publishBundle": bundle,
+                    "result": Value::Null,
+                }
+            ]
+        });
+        fs::write(
+            temp_dir.path().join("checkpoint-jobs.json"),
+            format!("{}\n", serde_json::to_string_pretty(&snapshot).unwrap()),
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn healthz_requires_authorization() {
-        let app = build_router(AppState::new(test_config()));
+        let (app, _temp_dir) = test_app();
         let response = app
             .oneshot(
                 Request::builder()
@@ -974,7 +4052,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_returns_payload_for_valid_token() {
-        let app = build_router(AppState::new(test_config()));
+        let (app, _temp_dir) = test_app();
         let response = app
             .oneshot(
                 Request::builder()
@@ -1010,7 +4088,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_exec_endpoint_returns_command_output() {
-        let app = build_router(AppState::new(test_config()));
+        let (app, _temp_dir) = test_app();
         let command = if cfg!(windows) {
             "echo hello"
         } else {
@@ -1058,7 +4136,11 @@ mod tests {
                 write_capable: Some(false),
             },
         );
-        let app = build_router(AppState::new(config));
+        let temp_dir = TempDir::new().unwrap();
+        let app = build_router(AppState::new_in(
+            config,
+            Some(temp_dir.path().to_path_buf()),
+        ));
         let response = app
             .oneshot(
                 Request::builder()
@@ -1076,5 +4158,1609 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0]["name"].as_str(), Some("demo"));
         assert_eq!(servers[0]["status"].as_str(), Some("stopped"));
+    }
+
+    #[tokio::test]
+    async fn media_normalize_route_keeps_png_payloads_unchanged() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/normalize")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": "photo.png",
+                            "mimeType": "image/png",
+                            "bytesBase64": "cG5nLWJpbmFyeQ==",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["changed"].as_bool(), Some(false));
+        assert_eq!(payload["mimeType"].as_str(), Some("image/png"));
+        assert_eq!(
+            payload["normalization"]["status"].as_str(),
+            Some("unchanged")
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_shadow_routes_ingest_and_report_status() {
+        let (app, _temp_dir) = test_app();
+        let ingest = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/memory/checkpoints/shadow")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(make_shadow_envelope().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ingest.status(), StatusCode::OK);
+        let ingest_bytes = ingest.into_body().collect().await.unwrap().to_bytes();
+        let ingest_payload: serde_json::Value = serde_json::from_slice(&ingest_bytes).unwrap();
+        assert_eq!(ingest_payload["ok"].as_bool(), Some(true));
+        assert_eq!(
+            ingest_payload["status"]["mirroredGeneration"].as_str(),
+            Some("2026-03-13T00-00-00.000Z")
+        );
+
+        let status = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/memory/checkpoints/shadow/status")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status_bytes = status.into_body().collect().await.unwrap().to_bytes();
+        let status_payload: serde_json::Value = serde_json::from_slice(&status_bytes).unwrap();
+        assert_eq!(
+            status_payload["mirroredGeneration"].as_str(),
+            Some("2026-03-13T00-00-00.000Z")
+        );
+        assert_eq!(status_payload["freshness"]["state"].as_str(), Some("fresh"));
+    }
+
+    #[tokio::test]
+    async fn memory_shadow_ingest_rejects_non_authoritative_payloads() {
+        let (app, _temp_dir) = test_app();
+        let mut invalid = make_shadow_envelope();
+        invalid["authority"] = Value::String("companion_shadow".to_string());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/memory/checkpoints/shadow")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(invalid.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("extension_primary"));
+    }
+
+    #[tokio::test]
+    async fn memory_shadow_refresh_without_envelope_reports_empty_state() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/memory/checkpoints/shadow/refresh")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["published"].as_bool(), Some(false));
+        assert_eq!(payload["reason"].as_str(), Some("no_shadow_checkpoint"));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_job_routes_return_503_when_executor_is_unavailable() {
+        let (app, _temp_dir) = test_app();
+        let bundle = make_checkpoint_job_bundle();
+
+        let submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/checkpoint-jobs")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "generation": bundle["generation"].clone(),
+                            "publishBundle": bundle.clone(),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(submit.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let submit_bytes = submit.into_body().collect().await.unwrap().to_bytes();
+        let submit_payload: serde_json::Value = serde_json::from_slice(&submit_bytes).unwrap();
+        assert_eq!(
+            submit_payload["error"].as_str(),
+            Some("memory_checkpoint_jobs_unavailable")
+        );
+
+        let status = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/checkpoint-jobs/checkpoint-2026-03-12T08-00-00.000Z/status")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_capability_enables_for_mainnet_without_kv_rpc() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.checkpoint_sync = Some(CheckpointSyncConfig {
+            stream_id: "stream-a".to_string(),
+            private_key: "0x59c6995e998f97a5a0044966f094538e9f5cb7d9f86f1c3a2d0a0f6f5d74d6a1"
+                .to_string(),
+            kv_rpc: None,
+        });
+        let app = build_router(AppState::new_in(
+            config,
+            Some(temp_dir.path().to_path_buf()),
+        ));
+
+        let capabilities = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/capabilities")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let capabilities_bytes = capabilities.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&capabilities_bytes).unwrap();
+        assert_eq!(
+            payload["supportedFeatures"]["memoryCheckpointJobs"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_capability_enables_with_supported_sync_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.checkpoint_sync = Some(CheckpointSyncConfig {
+            stream_id: "stream-a".to_string(),
+            private_key: "0x59c6995e998f97a5a0044966f094538e9f5cb7d9f86f1c3a2d0a0f6f5d74d6a1"
+                .to_string(),
+            kv_rpc: Some("https://kv-rpc-galileo.0g.ai".to_string()),
+        });
+        let app = build_router(AppState::new_in(
+            config,
+            Some(temp_dir.path().to_path_buf()),
+        ));
+
+        let capabilities = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/capabilities")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let capabilities_bytes = capabilities.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&capabilities_bytes).unwrap();
+        assert_eq!(
+            payload["supportedFeatures"]["memoryCheckpointJobs"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn system_diagnostics_reports_checkpoint_job_support_reason() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.checkpoint_sync = Some(CheckpointSyncConfig {
+            stream_id: "stream-a".to_string(),
+            private_key: "0x59c6995e998f97a5a0044966f094538e9f5cb7d9f86f1c3a2d0a0f6f5d74d6a1"
+                .to_string(),
+            kv_rpc: None,
+        });
+        let app = build_router(AppState::new_in(
+            config,
+            Some(temp_dir.path().to_path_buf()),
+        ));
+
+        let diagnostics = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/diagnostics")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(diagnostics.status(), StatusCode::OK);
+        let diagnostics_bytes = diagnostics.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&diagnostics_bytes).unwrap();
+        assert_eq!(
+            payload["checkpointSync"]["jobSupportStatus"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            payload["checkpointSync"]["jobSupportReason"].as_str(),
+            Some("ready")
+        );
+        assert_eq!(
+            payload["checkpointSync"]["jobsAvailable"].as_bool(),
+            Some(true)
+        );
+        assert!(!payload["doctor"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"].as_str() == Some("checkpoint_jobs_unavailable")));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_sync_config_route_updates_runner_availability() {
+        let temp_dir = TempDir::new().unwrap();
+        let app = build_router(AppState::new_in(
+            test_config(),
+            Some(temp_dir.path().to_path_buf()),
+        ));
+
+        let update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/checkpoint-sync/config")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "checkpointSync": {
+                                "streamId": "stream-a",
+                                "privateKey": "0x59c6995e998f97a5a0044966f094538e9f5cb7d9f86f1c3a2d0a0f6f5d74d6a1",
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update.status(), StatusCode::OK);
+        let update_bytes = update.into_body().collect().await.unwrap().to_bytes();
+        let update_payload: serde_json::Value = serde_json::from_slice(&update_bytes).unwrap();
+        assert_eq!(
+            update_payload["checkpointSync"]["configured"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            update_payload["checkpointSync"]["jobsAvailable"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            update_payload["checkpointSync"]["jobSupportReason"].as_str(),
+            Some("ready")
+        );
+
+        let capabilities = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/capabilities")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let capabilities_bytes = capabilities.into_body().collect().await.unwrap().to_bytes();
+        let capabilities_payload: serde_json::Value =
+            serde_json::from_slice(&capabilities_bytes).unwrap();
+        assert_eq!(
+            capabilities_payload["supportedFeatures"]["memoryCheckpointJobs"].as_bool(),
+            Some(true)
+        );
+
+        let clear = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/checkpoint-sync/config")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "checkpointSync": serde_json::Value::Null,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(clear.status(), StatusCode::OK);
+        let clear_bytes = clear.into_body().collect().await.unwrap().to_bytes();
+        let clear_payload: serde_json::Value = serde_json::from_slice(&clear_bytes).unwrap();
+        assert_eq!(
+            clear_payload["checkpointSync"]["configured"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            clear_payload["checkpointSync"]["jobsAvailable"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            clear_payload["checkpointSync"]["jobSupportStatus"].as_str(),
+            Some("disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn app_state_resumes_persisted_checkpoint_jobs() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle = make_checkpoint_job_bundle();
+        persist_checkpoint_job_snapshot(&temp_dir, &bundle, "queued");
+        let resumed_job_ids = Arc::new(Mutex::new(Vec::<String>::new()));
+        let runner = CheckpointJobRunner::with_executor_in(temp_dir.path().to_path_buf(), {
+            let resumed_job_ids = resumed_job_ids.clone();
+            move |job| {
+                let resumed_job_ids = resumed_job_ids.clone();
+                async move {
+                    resumed_job_ids.lock().unwrap().push(job.job_id.clone());
+                    Ok(build_checkpoint_job_result(
+                        &job.publish_bundle,
+                        "verified",
+                        None,
+                    ))
+                }
+            }
+        });
+        let state = AppState::new_in(test_config(), Some(temp_dir.path().to_path_buf()));
+        state.set_checkpoint_jobs_for_tests(runner.clone()).await;
+
+        let resumed = state.resume_pending_checkpoint_jobs().await.unwrap();
+        let job_id = format!("checkpoint-{}", bundle["generation"].as_str().unwrap());
+
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(
+            resumed_job_ids.lock().unwrap().as_slice(),
+            &[job_id.clone()]
+        );
+        let status = runner.get_status(&job_id).await.unwrap().unwrap();
+        assert_eq!(status.state, "completed");
+        assert_eq!(status.result.unwrap().verification_status, "verified");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_job_routes_submit_and_report_status_with_executor() {
+        let temp_dir = TempDir::new().unwrap();
+        let runner = CheckpointJobRunner::with_executor_in(
+            temp_dir.path().to_path_buf(),
+            |job| async move {
+                Ok(build_checkpoint_job_result(
+                    &job.publish_bundle,
+                    "verified",
+                    None,
+                ))
+            },
+        );
+        let state = AppState::new_in(test_config(), Some(temp_dir.path().to_path_buf()));
+        state.set_checkpoint_jobs_for_tests(runner).await;
+        let app = build_router(state);
+
+        let capabilities = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/capabilities")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capabilities.status(), StatusCode::OK);
+        let capabilities_bytes = capabilities.into_body().collect().await.unwrap().to_bytes();
+        let capabilities_payload: serde_json::Value =
+            serde_json::from_slice(&capabilities_bytes).unwrap();
+        assert_eq!(
+            capabilities_payload["supportedFeatures"]["memoryCheckpointJobs"].as_bool(),
+            Some(true)
+        );
+
+        let bundle = make_checkpoint_job_bundle();
+        let submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/checkpoint-jobs")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "generation": bundle["generation"].clone(),
+                            "publishBundle": bundle.clone(),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(submit.status(), StatusCode::OK);
+        let submit_bytes = submit.into_body().collect().await.unwrap().to_bytes();
+        let submit_payload: serde_json::Value = serde_json::from_slice(&submit_bytes).unwrap();
+        let job_id = submit_payload["job"]["jobId"].as_str().unwrap().to_string();
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let status = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/checkpoint-jobs/{job_id}/status"))
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status_bytes = status.into_body().collect().await.unwrap().to_bytes();
+        let status_payload: serde_json::Value = serde_json::from_slice(&status_bytes).unwrap();
+        assert_eq!(status_payload["state"].as_str(), Some("completed"));
+        assert_eq!(
+            status_payload["result"]["verificationStatus"].as_str(),
+            Some("verified")
+        );
+        assert_eq!(
+            status_payload["result"]["localAckPlan"]["generation"].as_str(),
+            Some("2026-03-12T08-00-00.000Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_job_routes_store_jobs_and_mark_companion_executor_pending() {
+        let (app, _temp_dir) = test_app();
+
+        let upsert_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/cron/jobs")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "id": "task-1",
+                            "name": "Research workflow",
+                            "executor": "companion_acp",
+                            "workflow": {
+                                "template": "research_synthesis"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upsert_response.status(), StatusCode::OK);
+        let upsert_bytes = upsert_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let upsert_payload: serde_json::Value = serde_json::from_slice(&upsert_bytes).unwrap();
+        assert_eq!(upsert_payload["ok"].as_bool(), Some(true));
+        assert_eq!(upsert_payload["id"].as_str(), Some("task-1"));
+        assert_eq!(
+            upsert_payload["automation"]["unsupportedReason"].as_str(),
+            Some("rust_automation_executor_pending")
+        );
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cron/jobs")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_bytes = list_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let list_payload: serde_json::Value = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_payload["jobs"].as_array().unwrap().len(), 1);
+
+        let delete_response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/cron/jobs/task-1")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::OK);
+        let delete_bytes = delete_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let delete_payload: serde_json::Value = serde_json::from_slice(&delete_bytes).unwrap();
+        assert_eq!(delete_payload["removed"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn cron_pending_routes_support_pending_ids_and_task_ids() {
+        let (state, app, _temp_dir) = test_state_app();
+        let first = state.cron.add_pending_run("task-occurrence").unwrap();
+        let second = state.cron.add_pending_run("task-occurrence").unwrap();
+        let third = state.cron.add_pending_run("task-other").unwrap();
+
+        let listed_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cron/pending")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed_response.status(), StatusCode::OK);
+        let listed_bytes = listed_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let listed_payload: serde_json::Value = serde_json::from_slice(&listed_bytes).unwrap();
+        assert_eq!(listed_payload["pending"].as_array().unwrap().len(), 3);
+
+        let ack_first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/cron/pending/ack")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "pendingIds": [first.pending_id, third.pending_id] })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ack_first.status(), StatusCode::OK);
+        let ack_first_bytes = ack_first.into_body().collect().await.unwrap().to_bytes();
+        let ack_first_payload: serde_json::Value =
+            serde_json::from_slice(&ack_first_bytes).unwrap();
+        assert_eq!(ack_first_payload["acked"].as_u64(), Some(2));
+
+        let ack_second = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/cron/pending/ack")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "taskIds": ["task-occurrence"] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ack_second.status(), StatusCode::OK);
+        let ack_second_bytes = ack_second.into_body().collect().await.unwrap().to_bytes();
+        let ack_second_payload: serde_json::Value =
+            serde_json::from_slice(&ack_second_bytes).unwrap();
+        assert_eq!(ack_second_payload["acked"].as_u64(), Some(1));
+
+        let remaining = state.cron.list_pending_runs().unwrap();
+        assert!(remaining.is_empty());
+        assert_ne!(first.pending_id, second.pending_id);
+    }
+
+    #[tokio::test]
+    async fn automation_outbox_routes_list_and_ack_items() {
+        let (state, app, _temp_dir) = test_state_app();
+        state
+            .automation_outbox
+            .enqueue_item(AutomationOutboxItem {
+                id: "outbox-1".to_string(),
+                run_id: "run-1".to_string(),
+                task_id: "task-1".to_string(),
+                task_name: "Daily brief".to_string(),
+                mode: "chat".to_string(),
+                text: "Brief ready".to_string(),
+                target: None,
+                created_at: 10,
+            })
+            .unwrap();
+        state
+            .automation_outbox
+            .enqueue_item(AutomationOutboxItem {
+                id: "outbox-2".to_string(),
+                run_id: "run-2".to_string(),
+                task_id: "task-2".to_string(),
+                task_name: "Slack alert".to_string(),
+                mode: "remote_channel".to_string(),
+                text: "Alert ready".to_string(),
+                target: Some(serde_json::json!({ "channelId": "slack" })),
+                created_at: 20,
+            })
+            .unwrap();
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/automation/outbox?limit=10&offset=0")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_bytes = list_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let list_payload: serde_json::Value = serde_json::from_slice(&list_bytes).unwrap();
+        assert_eq!(list_payload["total"].as_u64(), Some(2));
+        assert_eq!(list_payload["items"][0]["id"].as_str(), Some("outbox-2"));
+
+        let ack_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/automation/outbox/ack")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "ids": ["outbox-2"] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ack_response.status(), StatusCode::OK);
+        let ack_bytes = ack_response.into_body().collect().await.unwrap().to_bytes();
+        let ack_payload: serde_json::Value = serde_json::from_slice(&ack_bytes).unwrap();
+        assert_eq!(ack_payload["acked"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn workflow_status_route_reads_workflow_from_run_meta() {
+        let (state, app, _temp_dir) = test_state_app();
+        state
+            .runs
+            .create_run(CreateRunInput {
+                run_id: Some("workflow-run-1".to_string()),
+                run_type: Some("cron".to_string()),
+                state: Some("running".to_string()),
+                meta: json_object(vec![
+                    ("executionMode", Some(Value::String("companion_acp".to_string()))),
+                    (
+                        "workflow",
+                        Some(serde_json::json!({
+                            "template": "research_synthesis",
+                            "state": {
+                                "terminalState": Value::Null,
+                                "currentStepId": "research",
+                                "steps": [
+                                    { "id": "plan", "kind": "plan", "state": "done", "summary": "Plan ready." },
+                                    { "id": "research", "kind": "research", "state": "running", "summary": Value::Null }
+                                ]
+                            }
+                        })),
+                    ),
+                ]),
+                ..CreateRunInput::default()
+            })
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/status?runId=workflow-run-1")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["runId"].as_str(), Some("workflow-run-1"));
+        assert_eq!(payload["state"].as_str(), Some("running"));
+        assert_eq!(
+            payload["workflow"]["template"].as_str(),
+            Some("research_synthesis")
+        );
+        assert_eq!(
+            payload["workflow"]["currentStepId"].as_str(),
+            Some("research")
+        );
+        assert_eq!(payload["workflow"]["steps"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn browser_routes_sync_records_and_feed_diagnostics() {
+        let (app, _temp_dir) = test_app();
+
+        let session_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/sessions/sync")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "session": {
+                                "sessionId": "browser-session-1",
+                                "state": "ready",
+                                "createdAt": 10,
+                                "updatedAt": 11,
+                                "profileId": "default",
+                                "primaryTargetId": "target-1"
+                            },
+                            "targets": [{
+                                "targetId": "target-1",
+                                "url": "https://example.com",
+                                "title": "Example",
+                                "active": true,
+                                "attached": true
+                            }],
+                            "link": {
+                                "runId": "run-browser-1",
+                                "conversationId": "conv-browser-1",
+                                "sourceToolName": "browser_navigate",
+                                "sourceToolCallId": "tool-call-browser-1",
+                                "approvalRequestId": "approval-browser-1"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session_response.status(), StatusCode::OK);
+
+        let action_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/actions/sync")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "action": {
+                                "actionId": "browser-action-1",
+                                "sessionId": "browser-session-1",
+                                "targetId": "target-1",
+                                "kind": "navigate",
+                                "status": "completed",
+                                "startedAt": 20,
+                                "finishedAt": 21,
+                                "inputSummary": "navigate",
+                                "resultSummary": "done"
+                            },
+                            "link": {
+                                "runId": "run-browser-1",
+                                "conversationId": "conv-browser-1",
+                                "sourceToolName": "browser_navigate",
+                                "sourceToolCallId": "tool-call-browser-1",
+                                "approvalRequestId": "approval-browser-1"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(action_response.status(), StatusCode::OK);
+
+        let artifact_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/artifacts/sync")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "artifact": {
+                                "artifactId": "browser-artifact-1",
+                                "sessionId": "browser-session-1",
+                                "targetId": "target-1",
+                                "kind": "screenshot",
+                                "mimeType": "image/png",
+                                "byteLength": 128,
+                                "pathOrKey": "browser/browser-artifact-1.png"
+                            },
+                            "actionId": "browser-action-1"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(artifact_response.status(), StatusCode::OK);
+
+        let sessions_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/browser/sessions?runId=run-browser-1")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sessions_response.status(), StatusCode::OK);
+        let sessions_bytes = sessions_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let sessions_payload: serde_json::Value = serde_json::from_slice(&sessions_bytes).unwrap();
+        assert_eq!(sessions_payload["total"].as_u64(), Some(1));
+        assert_eq!(
+            sessions_payload["sessions"][0]["link"]["sourceToolCallId"].as_str(),
+            Some("tool-call-browser-1")
+        );
+
+        let diagnostics_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/browser/diagnostics")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(diagnostics_response.status(), StatusCode::OK);
+        let diagnostics_bytes = diagnostics_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let diagnostics_payload: serde_json::Value =
+            serde_json::from_slice(&diagnostics_bytes).unwrap();
+        assert_eq!(diagnostics_payload["sessions"]["linked"].as_u64(), Some(1));
+        assert_eq!(diagnostics_payload["actions"]["linked"].as_u64(), Some(1));
+        assert_eq!(
+            diagnostics_payload["operator"]["routes"]["drilldown"].as_str(),
+            Some("/api/browser/drilldown")
+        );
+
+        let system_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/diagnostics")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(system_response.status(), StatusCode::OK);
+        let system_bytes = system_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let system_payload: serde_json::Value = serde_json::from_slice(&system_bytes).unwrap();
+        assert_eq!(system_payload["browser"]["loaded"].as_bool(), Some(true));
+        assert_eq!(
+            system_payload["doctor"]["summary"]["browserLoaded"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_drilldown_endpoint_prefers_source_tool_call_filter() {
+        let (app, _temp_dir) = test_app();
+
+        for request in [
+            serde_json::json!({
+                "method": "POST",
+                "uri": "/api/browser/sessions/sync",
+                "body": {
+                    "session": {
+                        "sessionId": "browser-session-drilldown-1",
+                        "state": "ready"
+                    },
+                    "link": {
+                        "runId": "run-browser-drilldown-1",
+                        "conversationId": "conv-browser-drilldown-1",
+                        "sourceToolName": "browser_navigate",
+                        "sourceToolCallId": "tool-call-browser-drilldown-1",
+                        "approvalRequestId": "approval-browser-drilldown-1"
+                    }
+                }
+            }),
+            serde_json::json!({
+                "method": "POST",
+                "uri": "/api/browser/actions/sync",
+                "body": {
+                    "action": {
+                        "actionId": "browser-action-drilldown-1",
+                        "sessionId": "browser-session-drilldown-1",
+                        "kind": "click",
+                        "status": "completed",
+                        "resultSummary": "clicked checkout button"
+                    },
+                    "link": {
+                        "runId": "run-browser-drilldown-1",
+                        "conversationId": "conv-browser-drilldown-1",
+                        "sourceToolName": "browser_click",
+                        "sourceToolCallId": "tool-call-browser-drilldown-1",
+                        "approvalRequestId": "approval-browser-drilldown-1"
+                    }
+                }
+            }),
+            serde_json::json!({
+                "method": "POST",
+                "uri": "/api/browser/artifacts/sync",
+                "body": {
+                    "artifact": {
+                        "artifactId": "browser-artifact-drilldown-1",
+                        "sessionId": "browser-session-drilldown-1",
+                        "kind": "screenshot",
+                        "mimeType": "image/png",
+                        "byteLength": 64,
+                        "pathOrKey": "browser/browser-artifact-drilldown-1.png"
+                    },
+                    "actionId": "browser-action-drilldown-1"
+                }
+            }),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(request["method"].as_str().unwrap())
+                        .uri(request["uri"].as_str().unwrap())
+                        .header("authorization", "Bearer secret-token")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request["body"].to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let drilldown_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(
+                        "/api/browser/drilldown?runId=run-browser-drilldown-1&conversationId=conv-browser-drilldown-1&sourceToolName=browser_click&sourceToolCallId=tool-call-browser-drilldown-1&approvalRequestId=approval-browser-drilldown-1&sessionId=browser-session-drilldown-1&actionId=browser-action-drilldown-1&eventWindow=tail&eventLimit=2",
+                    )
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(drilldown_response.status(), StatusCode::OK);
+        let drilldown_bytes = drilldown_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let drilldown_payload: serde_json::Value =
+            serde_json::from_slice(&drilldown_bytes).unwrap();
+        assert_eq!(drilldown_payload["sessions"]["total"].as_u64(), Some(1));
+        assert_eq!(drilldown_payload["actions"]["total"].as_u64(), Some(1));
+        assert_eq!(drilldown_payload["artifacts"]["total"].as_u64(), Some(1));
+        assert!(drilldown_payload["filters"].get("sourceToolName").is_none());
+        assert_eq!(
+            drilldown_payload["filters"]["sourceToolCallId"].as_str(),
+            Some("tool-call-browser-drilldown-1")
+        );
+        assert_eq!(
+            drilldown_payload["events"]["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_exec_is_mirrored_into_run_ledger() {
+        let (app, _temp_dir) = test_app();
+        let command = if cfg!(windows) {
+            "echo ledger"
+        } else {
+            "printf ledger"
+        };
+
+        let exec_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtime/exec")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "command": command }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(exec_response.status(), StatusCode::OK);
+
+        let runs_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/runtime/runs?type=exec&limit=10")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(runs_response.status(), StatusCode::OK);
+        let bytes = runs_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let runs = payload["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["type"].as_str(), Some("exec"));
+        assert_eq!(runs[0]["state"].as_str(), Some("done"));
+        assert_eq!(
+            runs[0]["meta"]["capability"].as_str(),
+            Some("local_command")
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_lifecycle_updates_run_and_diagnostics() {
+        let (app, _temp_dir) = test_app();
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtime/approvals")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "requestId": "approval-1",
+                            "conversationId": "conv-approval",
+                            "toolName": "Read",
+                            "toolPreview": "Read /tmp/one.txt",
+                            "riskLevel": "medium",
+                            "channels": ["sidepanel"],
+                            "meta": {
+                                "sessionId": "chat:main:conv-approval",
+                                "toolCallId": "call-1"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let created_bytes = create_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let created_payload: serde_json::Value = serde_json::from_slice(&created_bytes).unwrap();
+        let approval_run_id = created_payload["meta"]["runId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/runtime/approvals/pending")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_bytes = pending_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let pending_payload: serde_json::Value = serde_json::from_slice(&pending_bytes).unwrap();
+        assert_eq!(pending_payload["approvals"].as_array().unwrap().len(), 1);
+
+        let resolve_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtime/approvals/approval-1/resolve")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "resolution": "approved",
+                            "resolvedBy": "sidepanel"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resolve_response.status(), StatusCode::OK);
+
+        let run_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runtime/runs/{approval_run_id}"))
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(run_response.status(), StatusCode::OK);
+        let run_bytes = run_response.into_body().collect().await.unwrap().to_bytes();
+        let run_payload: serde_json::Value = serde_json::from_slice(&run_bytes).unwrap();
+        assert_eq!(run_payload["run"]["state"].as_str(), Some("done"));
+        assert_eq!(
+            run_payload["run"]["meta"]["approvalStatus"].as_str(),
+            Some("approved")
+        );
+        assert_eq!(
+            run_payload["run"]["sessionType"].as_str(),
+            Some("chat/main")
+        );
+
+        let diagnostics_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/diagnostics")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(diagnostics_response.status(), StatusCode::OK);
+        let diagnostics_bytes = diagnostics_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let diagnostics_payload: serde_json::Value =
+            serde_json::from_slice(&diagnostics_bytes).unwrap();
+        assert!(diagnostics_payload["approvals"]["pending"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(diagnostics_payload["doctor"]["status"].as_str(), Some("ok"));
+        assert_eq!(
+            diagnostics_payload["doctor"]["summary"]["pendingApprovals"].as_u64(),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_session_prompt_updates_run_ledger_and_diagnostics() {
+        let (state, app, _temp_dir) = test_state_app();
+        spawn_acp_run_sync(state.clone());
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/acp/sessions")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "agentType": "raw",
+                            "cwd": cwd,
+                            "command": [
+                                "node",
+                                "-e",
+                                "process.stdin.on('data', () => { console.log(JSON.stringify({ type: 'message_stop' })); process.exit(0); })"
+                            ],
+                            "timeoutMs": 5_000,
+                            "origin": "code_agent",
+                            "inputProvenance": {
+                                "kind": "inter_agent",
+                                "sourceChannel": "code_agent",
+                                "conversationId": "conv-acp-ledger",
+                                "originSessionId": "code-agent-session-1",
+                                "metaOnly": true
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_bytes = create_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let created: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+        let session_id = created["sessionId"].as_str().unwrap().to_string();
+        let run_id = created["runId"].as_str().unwrap().to_string();
+        assert_eq!(created["origin"].as_str(), Some("code_agent"));
+
+        let diagnostics_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/system/diagnostics")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(diagnostics_response.status(), StatusCode::OK);
+        let diagnostics_bytes = diagnostics_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let diagnostics_payload: serde_json::Value =
+            serde_json::from_slice(&diagnostics_bytes).unwrap();
+        assert_eq!(
+            diagnostics_payload["acp"]["totalSessions"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(diagnostics_payload["acp"]["idleSessions"].as_u64(), Some(1));
+
+        let prompt_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/acp/sessions/{session_id}/prompt"))
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "prompt": "hello",
+                            "inputProvenance": {
+                                "kind": "inter_agent",
+                                "sourceChannel": "code_agent",
+                                "conversationId": "conv-acp-ledger",
+                                "originSessionId": "code-agent-session-1",
+                                "metaOnly": true
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt_response.status(), StatusCode::OK);
+        let prompt_bytes = prompt_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let prompt_payload: serde_json::Value = serde_json::from_slice(&prompt_bytes).unwrap();
+        assert!(prompt_payload["turnId"].as_str().is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let run = loop {
+            let run = state.runs.get_run_record(&run_id).unwrap();
+            if let Some(run) = run {
+                if matches!(run.state.as_str(), "done" | "failed") {
+                    break run;
+                }
+            }
+            assert!(Instant::now() < deadline);
+            sleep(Duration::from_millis(50)).await;
+        };
+
+        assert_eq!(run.r#type, "acp");
+        assert_eq!(run.state, "done");
+        assert_eq!(run.session_id.as_deref(), Some(session_id.as_str()));
+        assert_eq!(
+            run.session_type.as_deref(),
+            Some(format!("acp/{session_id}").as_str())
+        );
+        assert_eq!(
+            run.meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "origin")),
+            Some("code_agent".to_string())
+        );
+        assert_eq!(
+            run.meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "conversationId")),
+            Some("conv-acp-ledger".to_string())
+        );
+        assert!(run
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("inputProvenance"))
+            .is_some());
+        state.request_shutdown();
+    }
+
+    #[tokio::test]
+    async fn acp_permission_wait_creates_approval_and_marks_run_waiting() {
+        let (state, app, _temp_dir) = test_state_app();
+        spawn_acp_run_sync(state.clone());
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let create_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/acp/sessions")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "agentType": "raw",
+                            "cwd": cwd,
+                            "command": [
+                                "node",
+                                "-e",
+                                "process.stderr.write('Requested permissions were not granted yet.\\n'); setInterval(() => {}, 1000)"
+                            ],
+                            "timeoutMs": 5_000
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_bytes = create_response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let created: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+        let session_id = created["sessionId"].as_str().unwrap().to_string();
+        let run_id = created["runId"].as_str().unwrap().to_string();
+
+        let prompt_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/acp/sessions/{session_id}/prompt"))
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "prompt": "inspect the workspace",
+                            "inputProvenance": {
+                                "kind": "remote_user",
+                                "sourceChannel": "telegram",
+                                "conversationId": "conv-acp-approval",
+                                "remoteActorId": "tg:77"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prompt_response.status(), StatusCode::OK);
+
+        let approval_deadline = Instant::now() + Duration::from_secs(8);
+        let approval = loop {
+            let approvals = state.approvals.list_pending_approvals().unwrap();
+            if let Some(approval) = approvals.into_iter().find(|item| {
+                item.meta
+                    .as_ref()
+                    .and_then(|meta| object_string(Some(meta), "runId"))
+                    .as_deref()
+                    == Some(run_id.as_str())
+            }) {
+                break approval;
+            }
+            assert!(Instant::now() < approval_deadline);
+            sleep(Duration::from_millis(50)).await;
+        };
+
+        assert_eq!(approval.status, "pending");
+        assert_eq!(
+            approval
+                .meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "sessionId")),
+            Some(session_id.clone())
+        );
+        assert_eq!(
+            approval
+                .meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "sessionType")),
+            Some(format!("acp/{session_id}"))
+        );
+        assert_eq!(
+            approval
+                .meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "conversationId")),
+            Some("conv-acp-approval".to_string())
+        );
+
+        let run_deadline = Instant::now() + Duration::from_secs(8);
+        let run = loop {
+            let run = state.runs.get_run_record(&run_id).unwrap();
+            if let Some(run) = run {
+                if run.state == "waiting_approval" {
+                    break run;
+                }
+            }
+            assert!(Instant::now() < run_deadline);
+            sleep(Duration::from_millis(50)).await;
+        };
+
+        assert_eq!(run.state, "waiting_approval");
+        assert_eq!(
+            run.session_type.as_deref(),
+            Some(format!("acp/{session_id}").as_str())
+        );
+        assert_eq!(
+            run.meta
+                .as_ref()
+                .and_then(|meta| object_string(Some(meta), "approvalStatus")),
+            Some("pending".to_string())
+        );
+
+        let cancel_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/acp/sessions/{session_id}/cancel"))
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cancel_response.status(), StatusCode::OK);
+
+        let cancelled_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let run = state.runs.get_run_record(&run_id).unwrap().unwrap();
+            if run.state == "cancelled" {
+                break;
+            }
+            assert!(Instant::now() < cancelled_deadline);
+            sleep(Duration::from_millis(50)).await;
+        }
+        state.request_shutdown();
     }
 }

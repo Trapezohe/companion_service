@@ -561,6 +561,9 @@ mod tests {
             1_772_431_234_000,
         );
 
-        assert!(matches!(snapshot.state, CompanionShellState::Healthy { .. }));
+        assert!(matches!(
+            snapshot.state,
+            CompanionShellState::Healthy { .. }
+        ));
     }
 }

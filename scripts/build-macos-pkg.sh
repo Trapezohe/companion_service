@@ -6,7 +6,7 @@ source "${ROOT_DIR}/scripts/lib/macos-signing.sh"
 
 VERSION="${1:-$(node -p "JSON.parse(require('fs').readFileSync('${ROOT_DIR}/package.json','utf8')).version")}"
 OUT_DIR="${ROOT_DIR}/dist/installers"
-STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray}"
+STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray/${VERSION}}"
 WORK_DIR="$(mktemp -d)"
 PKG_ROOT="${WORK_DIR}/root"
 PKG_SCRIPTS="${WORK_DIR}/scripts"

@@ -130,9 +130,9 @@ fn resolve_tray_panel_position(
     let target_x = (f64::from(tray_rect.position.x) + f64::from(tray_rect.size.width) / 2.0
         - f64::from(window_size.width) / 2.0)
         .round() as i32;
-    let target_y =
-        (f64::from(tray_rect.position.y) + f64::from(tray_rect.size.height)).round() as i32
-            + STATUS_PANEL_VERTICAL_GAP;
+    let target_y = (f64::from(tray_rect.position.y) + f64::from(tray_rect.size.height)).round()
+        as i32
+        + STATUS_PANEL_VERTICAL_GAP;
 
     let min_x = work_area.position.x;
     let max_x = work_area.position.x + work_area.size.width as i32 - window_size.width as i32;
@@ -213,7 +213,8 @@ pub fn handle_status_window_event(window: &Window<Wry>, event: &WindowEvent) {
             );
         }
         WindowEvent::Focused(false) => {
-            let _ = apply_status_window_intent(&window.app_handle(), StatusWindowTrigger::FocusLost);
+            let _ =
+                apply_status_window_intent(&window.app_handle(), StatusWindowTrigger::FocusLost);
         }
         _ => {}
     }
