@@ -6,12 +6,15 @@ const en = {
 
   // HomePage
   appSubtitle: "Local bridge service for browser extension",
-  statusOnline: "Plugin Connected",
+  statusOnline: "Service Running",
   statusOffline: "Offline",
   statusError: "Error",
   statusChecking: "Checking…",
   port: "Port",
   daemonReady: "Local companion is ready to handle extension requests.",
+  daemonStopped: "Local companion is not running right now.",
+  daemonChecking: "Checking local companion status.",
+  daemonNeedsAttention: "Local companion needs attention before it can serve requests.",
   pid: "PID",
   approvals: "Approvals",
   updatedAt: "Updated",
@@ -22,6 +25,31 @@ const en = {
   mcpOnline: "online",
   mcpTools: "tools",
   connected: "Connected",
+  mcpManageTitle: "MCP Services",
+  mcpSummary: (connected: number, configured: number, tools: number) =>
+    `${connected} connected · ${configured} configured · ${tools} tools`,
+  mcpDetectedHint: (count: number) =>
+    count > 0 ? `${count} MCP services or configs were found on this machine.` : "No runnable MCP service or saved MCP config was found on this machine.",
+  mcpDetectedAllEnabled: "All discovered MCP services are already enabled.",
+  mcpConfiguredSection: "Configured",
+  mcpDetectedSection: "Discovered",
+  mcpConfiguredEmpty: "No MCP service has been enabled yet.",
+  mcpDetectedEmpty: "No runnable MCP service or saved MCP config was found.",
+  mcpMore: (count: number) => `+${count} more`,
+  mcpServerMeta: (tools: number, status: string) => `${tools} tools · ${status}`,
+  mcpSourceLabel: (source: string) =>
+    `Source: ${
+      source === "path"
+        ? "PATH"
+        : source === "claude-config"
+          ? "Claude config"
+          : source === "alma-config"
+            ? "Alma config"
+            : source
+    }`,
+  mcpAddAction: "Enable",
+  mcpRemoveAction: "Remove",
+  mcpWorking: "Working…",
   permissionsTitle: "Permissions & Security",
   permissionsSubtitle: (enabled: number, review: number) =>
     `${enabled} enabled · ${review} to review`,
@@ -94,12 +122,15 @@ const zh: typeof en = {
   footer: "点面板外即可关闭",
 
   appSubtitle: "浏览器插件使用的本地桥接服务",
-  statusOnline: "已连接插件",
+  statusOnline: "服务运行中",
   statusOffline: "离线",
   statusError: "错误",
   statusChecking: "检查中…",
   port: "端口",
   daemonReady: "本地 companion 已就绪，可以响应插件请求。",
+  daemonStopped: "本地 companion 当前没有运行。",
+  daemonChecking: "正在检查本地 companion 状态。",
+  daemonNeedsAttention: "本地 companion 当前需要处理后才能继续提供服务。",
   pid: "PID",
   approvals: "审批",
   updatedAt: "更新时间",
@@ -110,6 +141,31 @@ const zh: typeof en = {
   mcpOnline: "在线",
   mcpTools: "个工具",
   connected: "已连接",
+  mcpManageTitle: "MCP 服务",
+  mcpSummary: (connected: number, configured: number, tools: number) =>
+    `${connected} 个已连接 · ${configured} 个已配置 · ${tools} 个工具`,
+  mcpDetectedHint: (count: number) =>
+    count > 0 ? `本机发现 ${count} 个可用的 MCP 服务或 MCP 配置。` : "本机暂未发现可用的 MCP 服务或已保存的 MCP 配置。",
+  mcpDetectedAllEnabled: "本机发现到的 MCP 都已经开启了。",
+  mcpConfiguredSection: "已配置",
+  mcpDetectedSection: "本机发现",
+  mcpConfiguredEmpty: "当前还没有启用任何 MCP 服务。",
+  mcpDetectedEmpty: "当前没有发现可用的 MCP 服务或已保存的 MCP 配置。",
+  mcpMore: (count: number) => `还有 ${count} 个`,
+  mcpServerMeta: (tools: number, status: string) => `${tools} 个工具 · ${status}`,
+  mcpSourceLabel: (source: string) =>
+    `来源：${
+      source === "path"
+        ? "PATH"
+        : source === "claude-config"
+          ? "Claude 配置"
+          : source === "alma-config"
+            ? "Alma 配置"
+            : source
+    }`,
+  mcpAddAction: "启用",
+  mcpRemoveAction: "移除",
+  mcpWorking: "处理中…",
   permissionsTitle: "权限与安全",
   permissionsSubtitle: (enabled: number, review: number) =>
     `${enabled} 已启用 · ${review} 须处理`,
