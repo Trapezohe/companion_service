@@ -20,8 +20,9 @@ use companion_checkpoint::{
     CheckpointJobRunner, CheckpointJobStatus, CheckpointJobSubmitInput, CheckpointJobSubmitResult,
 };
 use companion_config::{
-    ensure_token, get_config_dir, get_config_path, get_pid_path, normalize_mcp_server_config,
-    remove_mcp_server_config, remove_pid, save_config, update_mcp_server_config, write_pid,
+    ensure_token, get_config_dir, get_config_path, get_pid_path, mark_mcp_server_disabled,
+    mark_mcp_server_enabled, normalize_mcp_server_config, remove_mcp_server_config, remove_pid,
+    save_config, sync_discovered_mcp_servers, update_mcp_server_config, write_pid,
     CheckpointSyncConfig, CompanionConfig, McpServerConfig,
 };
 use companion_control::{
@@ -533,6 +534,16 @@ struct SystemRepairBody {
 
 pub async fn serve_with_signals(mut config: CompanionConfig) -> Result<()> {
     ensure_token(&mut config)?;
+    match sync_discovered_mcp_servers(&config) {
+        Ok(result) if result.changed() => {
+            save_config(&result.config)?;
+            config = result.config;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!("Failed to sync discovered MCP servers before daemon start: {error}");
+        }
+    }
     let state = AppState::new(config.clone());
     state.mcp.start_all().await;
     let _started_at = Instant::now();
@@ -2393,8 +2404,9 @@ async fn mcp_upsert_server(
         .config
         .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "\"config\" is required."))?;
     let normalized = normalize_mcp_server_config(&config).map_err(internal_error)?;
-    let next_config =
-        update_mcp_server_config(&current, &name, &normalized).map_err(internal_error)?;
+    let next_config = update_mcp_server_config(&current, &name, &normalized)
+        .and_then(|next| mark_mcp_server_enabled(&next, &name))
+        .map_err(internal_error)?;
     save_config(&next_config).map_err(internal_error)?;
     {
         let mut guard = state.config.write().await;
@@ -2425,8 +2437,11 @@ async fn mcp_delete_server(
 ) -> Result<Json<serde_json::Value>, Response> {
     let current = state.snapshot_config().await;
     authorize(&headers, &current)?;
-    let (next_config, removed) =
-        remove_mcp_server_config(&current, &name).map_err(internal_error)?;
+    let (next_config, removed) = remove_mcp_server_config(&current, &name)
+        .and_then(|(next, removed)| {
+            mark_mcp_server_disabled(&next, &name).map(|updated| (updated, removed))
+        })
+        .map_err(internal_error)?;
     save_config(&next_config).map_err(internal_error)?;
     {
         let mut guard = state.config.write().await;

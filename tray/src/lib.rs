@@ -2,6 +2,7 @@ mod autostart;
 mod config;
 mod daemon;
 mod health;
+mod mcp;
 mod models;
 mod permissions;
 mod preferences;
@@ -16,7 +17,7 @@ use startup::{
     context_from_decision, decide_post_ensure_action, decide_startup_action, startup_context,
     StartupAction,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconEvent},
@@ -280,6 +281,8 @@ async fn run_startup_reconciliation(app: AppHandle<Wry>) {
             "Tray launched and is reconciling the local companion runtime.",
         )),
     );
+    let config = current_config(&app);
+    let _ = mcp::sync_discovered_servers(config.as_ref()).await;
     let snapshot = refresh_snapshot(&app, true).await;
     let policy = autostart::load_startup_policy().ok().flatten();
     let decision =
@@ -538,6 +541,53 @@ fn open_system_permission_settings(id: String) -> Result<(), String> {
     permissions::open_system_settings_for_permission(&id)
 }
 
+#[tauri::command]
+async fn get_mcp_discovery_snapshot(
+    app: AppHandle<Wry>,
+) -> Result<mcp::McpDiscoverySnapshot, String> {
+    let config = current_or_loaded_config(&app).ok();
+    let _ = mcp::sync_discovered_servers(config.as_ref()).await;
+    let snapshot = refresh_snapshot(&app, false).await;
+    mcp::build_snapshot(Some(&snapshot)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn enable_mcp_server(
+    app: AppHandle<Wry>,
+    name: String,
+    command: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+    cwd: Option<String>,
+) -> Result<mcp::McpDiscoverySnapshot, String> {
+    let config = current_or_loaded_config(&app).ok();
+    mcp::enable_server(
+        config.as_ref(),
+        &name,
+        &command,
+        &args,
+        &env,
+        cwd.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let snapshot = refresh_snapshot(&app, false).await;
+    mcp::build_snapshot(Some(&snapshot)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn disable_mcp_server(
+    app: AppHandle<Wry>,
+    name: String,
+) -> Result<mcp::McpDiscoverySnapshot, String> {
+    let config = current_or_loaded_config(&app).ok();
+    mcp::disable_server(config.as_ref(), &name)
+        .await
+        .map_err(|error| error.to_string())?;
+    let snapshot = refresh_snapshot(&app, false).await;
+    mcp::build_snapshot(Some(&snapshot)).map_err(|error| error.to_string())
+}
+
 fn spawn_update_checker(app: AppHandle<Wry>) {
     tauri::async_runtime::spawn(async move {
         // Wait 30 seconds after launch before first check
@@ -586,6 +636,9 @@ pub fn run() {
             get_permissions_snapshot,
             toggle_companion_permission,
             open_system_permission_settings,
+            get_mcp_discovery_snapshot,
+            enable_mcp_server,
+            disable_mcp_server,
         ])
         .setup(|app| {
             let config_result = config::load_config();
