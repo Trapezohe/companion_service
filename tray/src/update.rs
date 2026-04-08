@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 #[cfg(not(target_os = "macos"))]
 use reqwest::Client;
+#[cfg(target_os = "macos")]
+use reqwest::Url;
 #[cfg(not(target_os = "macos"))]
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,29 @@ pub const RELEASES_PAGE_URL: &str = "https://github.com/Trapezohe/companion_serv
 pub const RELEASES_LATEST_JSON_URL: &str =
     "https://github.com/Trapezohe/companion_service/releases/latest/download/latest.json";
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn compile_time_env(_name: &str, value: Option<&'static str>) -> Option<&'static str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+pub fn effective_updater_endpoint() -> &'static str {
+    compile_time_env(
+        "TRAPEZOHE_UPDATER_ENDPOINT",
+        option_env!("TRAPEZOHE_UPDATER_ENDPOINT"),
+    )
+    .unwrap_or(RELEASES_LATEST_JSON_URL)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_updater(app: &AppHandle<Wry>) -> Result<tauri_plugin_updater::Updater> {
+    let endpoint = Url::parse(effective_updater_endpoint()).map_err(|error| {
+        anyhow!(
+            "Configured updater endpoint is invalid: {} ({error})",
+            effective_updater_endpoint()
+        )
+    })?;
+    Ok(app.updater_builder().endpoints(vec![endpoint])?.build()?)
+}
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Deserialize)]
@@ -297,7 +322,7 @@ async fn manual_check_for_update(current_version: &str) -> Result<UpdateInfo> {
 pub async fn check_for_update(app: &AppHandle<Wry>, current_version: &str) -> Result<UpdateInfo> {
     #[cfg(target_os = "macos")]
     {
-        let update = app.updater_builder().build()?.check().await?;
+        let update = macos_updater(app)?.check().await?;
         return Ok(match update {
             Some(update) => macos_update_info(current_version, &update),
             None => up_to_date_info(current_version),
@@ -318,7 +343,7 @@ pub async fn install_update(
 ) -> Result<UpdateInfo> {
     #[cfg(target_os = "macos")]
     {
-        let Some(update) = app.updater_builder().build()?.check().await? else {
+        let Some(update) = macos_updater(app)?.check().await? else {
             return Ok(up_to_date_info(current_version));
         };
 
@@ -434,6 +459,14 @@ mod tests {
         assert_eq!(
             release_url_for_version("v0.1.17"),
             "https://github.com/Trapezohe/companion_service/releases/tag/v0.1.17"
+        );
+    }
+
+    #[test]
+    fn effective_updater_endpoint_defaults_to_github_release_manifest() {
+        assert_eq!(
+            effective_updater_endpoint(),
+            "https://github.com/Trapezohe/companion_service/releases/latest/download/latest.json"
         );
     }
 

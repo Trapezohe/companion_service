@@ -90,6 +90,9 @@ jobs:
       APPLE_DEVELOPER_ID_INSTALLER_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_IDENTITY }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_BASE_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_BASE_URL }}
+      CLOUDFLARE_R2_PREFIX: ${{ vars.CLOUDFLARE_R2_PREFIX }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -249,6 +252,60 @@ jobs:
           echo "TRAPEZOHE_MACOS_SIGNING_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
           echo "TRAPEZOHE_UPDATER_ENV_FILE=${SIGNING_ENV_FILE}" >> "$GITHUB_ENV"
 
+      - name: Resolve updater mirror settings
+        run: |
+          bucket="${CLOUDFLARE_R2_BUCKET:-}"
+          prefix="${CLOUDFLARE_R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+
+          has_r2_input=false
+          for value in \
+            "${CLOUDFLARE_R2_PUBLIC_BASE_URL:-}" \
+            "${bucket:-}"
+          do
+            if [[ -n "${value}" ]]; then
+              has_r2_input=true
+              break
+            fi
+          done
+
+          if [[ "${has_r2_input}" != "true" ]]; then
+            echo "TRAPEZOHE_UPDATER_ENDPOINT=" >> "$GITHUB_ENV"
+            echo "TRAPEZOHE_UPDATER_BASE_URL=" >> "$GITHUB_ENV"
+            echo "TRAPEZOHE_R2_SYNC_ENABLED=false" >> "$GITHUB_ENV"
+            echo "Cloudflare R2 mirror is not configured; updater stays on GitHub Releases."
+            exit 0
+          fi
+
+          missing=()
+          for name in \
+            CLOUDFLARE_R2_PUBLIC_BASE_URL
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+          if [[ -z "${bucket:-}" ]]; then
+            missing+=("CLOUDFLARE_R2_BUCKET")
+          fi
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Cloudflare R2 mirror is partially configured. Missing:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+          feed_root="${CLOUDFLARE_R2_PUBLIC_BASE_URL%/}"
+          if [[ -n "${prefix}" ]]; then
+            feed_root="${feed_root}/${prefix}"
+          fi
+
+          echo "TRAPEZOHE_UPDATER_ENDPOINT=${feed_root}/latest.json" >> "$GITHUB_ENV"
+          echo "TRAPEZOHE_UPDATER_BASE_URL=${feed_root}/v${{ needs.check-version.outputs.version }}" >> "$GITHUB_ENV"
+          echo "TRAPEZOHE_R2_SYNC_ENABLED=true" >> "$GITHUB_ENV"
+          echo "Using Cloudflare R2 updater mirror: ${feed_root}"
+
       - name: Build .pkg
         run: ./scripts/build-macos-pkg.sh "${{ needs.check-version.outputs.version }}"
 
@@ -269,6 +326,9 @@ jobs:
           platform = next(iter(latest["platforms"].values()))
           assert latest["version"] == "${{ needs.check-version.outputs.version }}"
           assert platform["url"].endswith("/trapezohe-companion-macos.app.tar.gz")
+          expected_base = "${TRAPEZOHE_UPDATER_BASE_URL:-}"
+          if expected_base:
+              assert platform["url"].startswith(expected_base + "/")
           assert platform["signature"]
           PY
 
@@ -344,6 +404,11 @@ jobs:
       - build-windows-msi
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_BASE_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_BASE_URL }}
+      CLOUDFLARE_R2_PREFIX: ${{ vars.CLOUDFLARE_R2_PREFIX }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -374,6 +439,11 @@ jobs:
           sha256sum trapezohe-companion-windows.msi >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Setup Node.js for Wrangler
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Create Git tag
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: |
@@ -381,6 +451,84 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "v${{ needs.check-version.outputs.version }}"
           git push origin "v${{ needs.check-version.outputs.version }}"
+
+      - name: Sync release artifacts to Cloudflare R2
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          bucket="${CLOUDFLARE_R2_BUCKET:-}"
+          prefix="${CLOUDFLARE_R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+
+          has_r2_input=false
+          for value in \
+            "${CLOUDFLARE_R2_PUBLIC_BASE_URL:-}" \
+            "${bucket:-}"
+          do
+            if [[ -n "${value}" ]]; then
+              has_r2_input=true
+              break
+            fi
+          done
+
+          if [[ "${has_r2_input}" != "true" ]]; then
+            echo "Cloudflare R2 mirror is not configured; skipping sync."
+            exit 0
+          fi
+
+          missing=()
+          for name in \
+            CLOUDFLARE_R2_PUBLIC_BASE_URL
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+          if [[ -z "${bucket:-}" ]]; then
+            missing+=("CLOUDFLARE_R2_BUCKET")
+          fi
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Cloudflare R2 mirror is partially configured. Missing:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+            echo "Cloudflare auth is missing. Set CLOUDFLARE_API_TOKEN." >&2
+            exit 1
+          fi
+
+          public_root="${CLOUDFLARE_R2_PUBLIC_BASE_URL%/}"
+          bucket_root="${bucket}"
+          if [[ -n "${prefix}" ]]; then
+            public_root="${public_root}/${prefix}"
+            bucket_root="${bucket_root}/${prefix}"
+          fi
+          version_root="${bucket_root}/v${VERSION}"
+
+          export PUBLIC_ROOT="${public_root}"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          public_root = os.environ["PUBLIC_ROOT"]
+          latest = json.loads(Path("dist/release/latest.json").read_text())
+          platform = next(iter(latest["platforms"].values()))
+          expected = f"{public_root}/v{version}/trapezohe-companion-macos.app.tar.gz"
+          assert latest["version"] == version
+          assert platform["url"] == expected, (platform["url"], expected)
+          assert platform["signature"]
+          PY
+
+          npx --yes wrangler@4.63.0 r2 object put "${version_root}/trapezohe-companion-macos.app.tar.gz" --remote --file dist/release/trapezohe-companion-macos.app.tar.gz --content-type application/gzip --cache-control "public, max-age=31536000, immutable"
+          npx --yes wrangler@4.63.0 r2 object put "${version_root}/trapezohe-companion-macos.app.tar.gz.sig" --remote --file dist/release/trapezohe-companion-macos.app.tar.gz.sig --content-type text/plain --cache-control "public, max-age=31536000, immutable"
+          npx --yes wrangler@4.63.0 r2 object put "${version_root}/trapezohe-companion-macos.pkg" --remote --file dist/release/trapezohe-companion-macos.pkg --content-type application/octet-stream --cache-control "public, max-age=31536000, immutable"
+          npx --yes wrangler@4.63.0 r2 object put "${version_root}/trapezohe-companion-windows.msi" --remote --file dist/release/trapezohe-companion-windows.msi --content-type application/x-msi --cache-control "public, max-age=31536000, immutable"
+          npx --yes wrangler@4.63.0 r2 object put "${version_root}/SHA256SUMS.txt" --remote --file dist/release/SHA256SUMS.txt --content-type text/plain --cache-control "public, max-age=31536000, immutable"
+          npx --yes wrangler@4.63.0 r2 object put "${bucket_root}/latest.json" --remote --file dist/release/latest.json --content-type application/json --cache-control "no-store, max-age=0"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

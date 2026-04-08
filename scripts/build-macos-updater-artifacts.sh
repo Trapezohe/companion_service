@@ -25,7 +25,10 @@ SIGNATURE_PATH="${ARCHIVE_PATH}.sig"
 LATEST_JSON_PATH="${OUT_DIR}/latest.json"
 PLATFORM_KEY="$(tauri_updater_platform_key)"
 PUB_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-RELEASE_BASE_URL="https://github.com/Trapezohe/companion_service/releases/download/v${VERSION}"
+RELEASE_BASE_URL="${TRAPEZOHE_UPDATER_BASE_URL:-}"
+if [[ -z "${RELEASE_BASE_URL}" ]]; then
+  RELEASE_BASE_URL="https://github.com/Trapezohe/companion_service/releases/download/v${VERSION}"
+fi
 NOTES="GhastAI Companion v${VERSION} macOS in-app update."
 
 mkdir -p "${OUT_DIR}"

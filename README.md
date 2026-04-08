@@ -73,6 +73,19 @@ The desktop tray panel is installed together with the daemon in the packaged des
 
 The macOS installer is signed and notarized in official GitHub releases. The Windows installer may still trigger SmartScreen until Windows code signing is added. Verify the release source and `SHA256SUMS.txt` before proceeding.
 
+### Automatic update mirror
+
+The first installer download still ships through GitHub Releases.
+
+For packaged macOS apps, the in-app updater feed can be mirrored to Cloudflare R2 during release automation. When the release workflow sees these repository settings, it rewrites the updater feed to the R2 public URL and uploads the release artifacts there automatically:
+
+- repository variable: `CLOUDFLARE_R2_PUBLIC_BASE_URL`
+- optional repository variable: `CLOUDFLARE_R2_PREFIX`
+- repository variable: `CLOUDFLARE_R2_BUCKET`
+- repository secret: `CLOUDFLARE_API_TOKEN`
+
+If these settings are absent, the updater falls back to GitHub Releases.
+
 ### Script / CLI install
 
 For Linux or developer-oriented manual setup flows:

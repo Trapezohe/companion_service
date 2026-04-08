@@ -86,8 +86,12 @@ const HomePage = ({
     updateStatus === "error" || (update?.available && !update?.can_install)
       ? update?.last_error ?? null
       : null;
+  const isUpdateActionLocked =
+    updateStatus === "downloading" || updateStatus === "installing";
   const updateButtonLabel =
-    update?.can_install && updateStatus === "error"
+    isUpdateActionLocked
+      ? null
+      : update?.can_install && updateStatus === "error"
       ? tr.retryUpdate
       : update?.can_install && update?.available
         ? tr.updateNow
