@@ -28,7 +28,6 @@ LEGACY_TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
 TRAY_BIN_PATH="${TRAY_APP_PATH}/Contents/MacOS/trapezohe-companion-tray"
 APP_RUNTIME_DIR="${TRAY_APP_PATH}/Contents/Resources/companion"
 APP_CLI_PATH="${APP_RUNTIME_DIR}/bin/trapezohe-companion"
-APP_NODE_DIR="${TRAY_APP_PATH}/Contents/Resources/runtime/node"
 TRAY_AGENT_PATH="$HOME/Library/LaunchAgents/ai.trapezohe.companion.tray.plist"
 LEGACY_DAEMON_AGENT_PATH="$HOME/Library/LaunchAgents/ai.trapezohe.companion.plist"
 STARTUP_POLICY_PATH="$TRAPEZOHE_DIR/companion-startup.json"
@@ -36,16 +35,6 @@ LEGACY_TRAY_PREFS_PATH="$TRAPEZOHE_DIR/companion-tray.json"
 
 log() {
   echo "[$(date)] $*"
-}
-
-resolve_app_node() {
-  local node_bin="${APP_NODE_DIR}/bin/node"
-  if [[ -x "${node_bin}" ]]; then
-    echo "${node_bin}"
-    return 0
-  fi
-  log "Bundled app Node.js missing at ${node_bin}"
-  return 1
 }
 
 write_startup_policy() {
@@ -108,156 +97,45 @@ PLIST
   log "Registered tray login item via ${TRAY_AGENT_PATH}"
 }
 
-ensure_companion_config() {
-  local config_file="${TRAPEZOHE_DIR}/companion.json"
-  if [[ -f "${config_file}" ]]; then
-    log "Config already exists: ${config_file}"
-    return 0
-  fi
-
-  mkdir -p "${TRAPEZOHE_DIR}"
-  local token
-  token="$(openssl rand -hex 24)"
-  cat > "${config_file}" <<JSON
-{
-  "port": 41591,
-  "token": "${token}",
-  "mcpServers": {},
-  "permissionPolicy": {
-    "mode": "workspace",
-    "workspaceRoots": ["$HOME/trapezohe-workspace"]
-  }
-}
-JSON
-  chmod 600 "${config_file}"
-  mkdir -p "$HOME/trapezohe-workspace"
-  log "Created config with auto-generated token: ${config_file}"
-}
-
-register_native_host() {
-  local launcher="${TRAPEZOHE_DIR}/native-host-launcher.sh"
-  mkdir -p "${TRAPEZOHE_DIR}"
-  if [[ -x "${APP_CLI_PATH}" ]]; then
-    cat > "${launcher}" <<LAUNCHER
-#!/bin/sh
-exec "${APP_CLI_PATH}" native-host "\$@"
-LAUNCHER
-    chmod 755 "${launcher}"
-    log "Registered native host launcher via bundled Rust CLI"
-  else
-    local node_bin
-    if ! node_bin="$(resolve_app_node)"; then
-      log "Bundled Rust CLI and app Node.js are both unavailable; skipping native host registration"
-      return 0
-    fi
-
-    local src_script="${APP_RUNTIME_DIR}/bin/native-host.mjs"
-
-    if [[ ! -f "${src_script}" ]]; then
-      log "Native host script not found at ${src_script}; skipping"
-      return 0
-    fi
-
-    cat > "${launcher}" <<LAUNCHER
-#!/bin/sh
-exec "${node_bin}" "${src_script}" "\$@"
-LAUNCHER
-    chmod 755 "${launcher}"
-    log "Registered native host launcher via bundled Node runtime fallback"
-  fi
-
-  # Write Chrome NativeMessagingHosts manifests
-  local ext_id="nnhdkkgpoeojjddikcjadgpkbfbjhcal"
-  local origin="chrome-extension://${ext_id}/"
-  local host_names=("com.ghast.companion" "com.trapezohe.companion")
-  local browser_dirs=(
-    "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
-    "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
-    "$HOME/Library/Application Support/Chromium/NativeMessagingHosts"
-    "$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
-  )
-
-  for host_name in "${host_names[@]}"; do
-    for dir in "${browser_dirs[@]}"; do
-      mkdir -p "${dir}"
-      cat > "${dir}/${host_name}.json" <<MANIFEST
-{
-  "name": "${host_name}",
-  "description": "GhastAI Companion — local runtime bridge for the Ghast browser extension",
-  "path": "${launcher}",
-  "type": "stdio",
-  "allowed_origins": [
-    "${origin}"
-  ]
-}
-MANIFEST
-    done
-  done
-
-  log "Registered native messaging host for extension ${ext_id}"
-}
-
 restart_companion_daemon() {
   if [[ ! -f "${TRAPEZOHE_DIR}/companion.json" ]]; then
     log "Companion config missing; skipping runtime handoff"
     return 0
   fi
 
-  if [[ -x "${APP_CLI_PATH}" ]]; then
-    if "${APP_CLI_PATH}" stop --force >/dev/null 2>&1; then
-      log "Stopped any existing companion daemon before handoff"
-    else
-      log "Bundled Rust CLI stop command failed; continuing with daemon handoff"
-    fi
-
-    if "${APP_CLI_PATH}" start -d >/dev/null 2>&1; then
-      log "Started bundled Rust companion daemon after handoff"
-    else
-      log "Bundled Rust CLI start command failed; runtime handoff skipped"
-    fi
+  if [[ ! -x "${APP_CLI_PATH}" ]]; then
+    log "Bundled Rust CLI missing at ${APP_CLI_PATH}; skipping runtime handoff"
     return 0
   fi
 
-  local node_bin
-  if ! node_bin="$(resolve_app_node)"; then
-    log "Bundled Rust CLI missing and bundled app Node.js unavailable; skipping runtime handoff"
-    return 0
-  fi
-
-  if [[ ! -f "${APP_RUNTIME_DIR}/bin/cli.mjs" ]]; then
-    log "Bundled companion CLI missing at ${APP_RUNTIME_DIR}/bin/cli.mjs; skipping runtime handoff"
-    return 0
-  fi
-
-  if "${node_bin}" "${APP_RUNTIME_DIR}/bin/cli.mjs" stop --force >/dev/null 2>&1; then
+  if "${APP_CLI_PATH}" stop --force >/dev/null 2>&1; then
     log "Stopped any existing companion daemon before handoff"
   else
-    log "Bundled Node CLI stop command failed; continuing with daemon handoff"
+    log "Bundled Rust CLI stop command failed; continuing with daemon handoff"
   fi
 
-  if "${node_bin}" "${APP_RUNTIME_DIR}/bin/cli.mjs" start -d >/dev/null 2>&1; then
-    log "Started bundled Node companion daemon after handoff"
+  if "${APP_CLI_PATH}" start -d >/dev/null 2>&1; then
+    log "Started bundled Rust companion daemon after handoff"
   else
-    log "Bundled Node CLI start command failed; runtime handoff skipped"
+    log "Bundled Rust CLI start command failed; runtime handoff skipped"
   fi
 }
 
 bootstrap_companion_runtime() {
   local workspace_dir="$HOME/trapezohe-workspace"
 
-  if [[ -x "${APP_CLI_PATH}" ]]; then
-    if "${APP_CLI_PATH}" bootstrap --mode workspace --workspace "${workspace_dir}" --no-autostart --no-start >/dev/null 2>&1; then
-      log "Bootstrapped companion config and native host via bundled Rust CLI"
-      restart_companion_daemon || true
-      return 0
-    fi
-
-    log "Bundled Rust CLI bootstrap failed; falling back to legacy shell bootstrap"
+  if [[ ! -x "${APP_CLI_PATH}" ]]; then
+    log "Bundled Rust CLI missing at ${APP_CLI_PATH}; skipping bootstrap"
+    return 0
   fi
 
-  ensure_companion_config
-  register_native_host || true
-  restart_companion_daemon || true
+  if "${APP_CLI_PATH}" bootstrap --mode workspace --workspace "${workspace_dir}" --no-autostart --no-start >/dev/null 2>&1; then
+    log "Bootstrapped companion config and native host via bundled Rust CLI"
+    restart_companion_daemon || true
+    return 0
+  fi
+
+  log "Bundled Rust CLI bootstrap failed; skipping runtime bootstrap"
 }
 
 launch_tray_once() {

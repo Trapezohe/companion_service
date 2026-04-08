@@ -1,4 +1,4 @@
-name: Auto Release Companion Installers
+name: Auto Release GhastAI Companion
 
 on:
   push:
@@ -30,8 +30,27 @@ jobs:
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "Manual tag push: v${VERSION}"
           else
-            # Push to main — check package.json version
-            VERSION=$(node -p "require('./package.json').version")
+            # Push to main — check the workspace release version
+            VERSION=$(python3 - <<'PY'
+            import json
+            import tomllib
+            from pathlib import Path
+
+            cargo = tomllib.loads(Path("Cargo.toml").read_text())
+            tray_cargo = tomllib.loads(Path("tray/Cargo.toml").read_text())
+            tauri = json.loads(Path("tray/tauri.conf.json").read_text())
+            version = cargo["workspace"]["package"]["version"]
+            if tray_cargo["package"]["version"] != version:
+                raise SystemExit(
+                    f"Version mismatch: Cargo.toml={version} tray/Cargo.toml={tray_cargo['package']['version']}"
+                )
+            if tauri["version"] != version:
+                raise SystemExit(
+                    f"Version mismatch: Cargo.toml={version} tray/tauri.conf.json={tauri['version']}"
+                )
+            print(version)
+            PY
+            )
             if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               echo "Tag v${VERSION} already exists — skipping release"
@@ -42,7 +61,7 @@ jobs:
             fi
           fi
 
-  test-node:
+  test-surface:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
@@ -50,13 +69,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Run companion Node test suite
-        run: npm test
+      - name: Run companion surface tests
+        run: python3 -m unittest discover -s tests -p '*_test.py'
 
   test-tray:
     needs: check-version
@@ -79,7 +93,7 @@ jobs:
   build-macos-pkg:
     needs:
       - check-version
-      - test-node
+      - test-surface
       - test-tray
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: macos-latest
@@ -103,6 +117,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Install tray UI dependencies
+        run: npm ci --prefix tray/ui-react
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -304,7 +321,7 @@ jobs:
   build-windows-msi:
     needs:
       - check-version
-      - test-node
+      - test-surface
       - test-tray
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: windows-latest
@@ -316,6 +333,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Install tray UI dependencies
+        shell: pwsh
+        run: npm ci --prefix tray/ui-react
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -443,7 +464,7 @@ jobs:
 
             ## After Installation
 
-            The companion desktop tray panel is installed together with the daemon and pairs with the Trapezohe browser extension. No manual configuration is required for the default installer flow.
+            The companion desktop tray panel is installed together with the daemon and pairs with the GhastAI browser extension. No manual configuration is required for the default installer flow.
 
             After sign-in, the tray is the single desktop entry point: it surfaces local status, lifecycle controls, diagnostics, and daemon startup orchestration without opening Chrome.
 

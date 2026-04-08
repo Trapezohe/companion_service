@@ -8,14 +8,13 @@ $ProgressPreference = "SilentlyContinue"
 
 $version = "__COMPANION_VERSION__"
 $installerFlowMarker = "tray-launch-v1"
-$nodeVersion = "v22.12.0"
-$minNodeMajor = 18
 $workspace = Join-Path $env:USERPROFILE "trapezohe-workspace"
 $trapezoheDir = Join-Path $env:USERPROFILE ".trapezohe"
-$localNodeDir = Join-Path $trapezoheDir "node"
+$stagedCompanionBinDir = Join-Path $trapezoheDir "bin"
+$stagedCompanionCliPath = Join-Path $stagedCompanionBinDir "trapezohe-companion.exe"
 $startupPolicyPath = Join-Path $trapezoheDir "companion-startup.json"
 $legacyTrayPrefsPath = Join-Path $trapezoheDir "companion-tray.json"
-$packageTarballPath = Join-Path $PSScriptRoot "trapezohe-companion-package.tgz"
+$bundledCompanionCliPath = Join-Path $PSScriptRoot "trapezohe-companion.exe"
 $trayExePath = Join-Path $PSScriptRoot "trapezohe-companion-tray.exe"
 $logDir = Join-Path $env:ProgramData "TrapezoheCompanion"
 $logFile = Join-Path $logDir "installer.log"
@@ -192,74 +191,6 @@ function Invoke-LoggedProcess {
   }
 }
 
-function Test-UsableNode {
-  $nodePath = Get-Command node -ErrorAction SilentlyContinue
-  if (-not $nodePath) { return $false }
-  try {
-    $ver = & node -v 2>$null
-    $major = [int]($ver -replace '^v','').Split('.')[0]
-    return $major -ge $minNodeMajor
-  } catch {
-    return $false
-  }
-}
-
-function Ensure-Node {
-  Write-InstallerStep 1 4 "Checking for Node.js runtime."
-
-  if (Test-UsableNode) {
-    $ver = & node -v
-    Write-InstallerStatus "Using the Node.js version already installed on this PC: $ver"
-    Write-InstallerLog "Using system Node.js: $ver"
-    return $true
-  }
-
-  $localNode = Join-Path $localNodeDir "node.exe"
-  if (Test-Path $localNode) {
-    $env:PATH = "$localNodeDir;$env:PATH"
-    if (Test-UsableNode) {
-      $ver = & node -v
-      Write-InstallerStatus "Using the local Node.js runtime already prepared for this Windows user: $ver"
-      Write-InstallerLog "Using local Node.js: $ver"
-      return $true
-    }
-  }
-
-  $arch = if ([Environment]::Is64BitOperatingSystem) {
-    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
-  } else { "x86" }
-
-  $url = "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-$arch.zip"
-  $zipPath = Join-Path $env:TEMP "node-$nodeVersion-win-$arch.zip"
-
-  Write-InstallerStatus "Node.js was not found. Downloading a local runtime for this Windows user."
-  Write-InstallerLog "Node.js not found - downloading $nodeVersion ($arch)..."
-  try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
-
-    New-Item -ItemType Directory -Force -Path $localNodeDir | Out-Null
-    Expand-Archive -Path $zipPath -DestinationPath $env:TEMP -Force
-
-    $extracted = Join-Path $env:TEMP "node-$nodeVersion-win-$arch"
-    Get-ChildItem -Path $extracted | Move-Item -Destination $localNodeDir -Force
-    Remove-Item -Path $extracted -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
-
-    $env:PATH = "$localNodeDir;$env:PATH"
-    $ver = & node -v
-    Write-InstallerStatus "Node.js download completed."
-    Write-InstallerStatus "Local Node.js is ready to use: $ver"
-    Write-InstallerLog "Installed local Node.js: $ver -> $localNodeDir"
-    return $true
-  } catch {
-    Write-InstallerStatus "Node.js download failed. Please install Node.js $minNodeMajor or newer, then run this installer again."
-    Write-InstallerLog "Failed to download Node.js: $_"
-    Write-InstallerLog "Please install Node.js $minNodeMajor+ manually from https://nodejs.org"
-    return $false
-  }
-}
-
 function Write-StartupPolicy {
   try {
     New-Item -ItemType Directory -Force -Path $trapezoheDir | Out-Null
@@ -310,93 +241,40 @@ function Start-DetachedInstallerCommand {
   Start-Process -FilePath $cmdCli -ArgumentList @("/d", "/s", "/c", '"' + $detachedCommand + '"') -WindowStyle Hidden | Out-Null
 }
 
-function Ensure-NpmGlobalBinOnPath {
-  try {
-    $npmPrefix = (& npm config get prefix 2>$null).Trim()
-    if ($npmPrefix -and (Test-Path $npmPrefix)) {
-      if ($env:PATH -notlike "*$npmPrefix*") {
-        $env:PATH = "$npmPrefix;$env:PATH"
-        Write-InstallerLog "Added npm global prefix to PATH: $npmPrefix"
-      }
-    }
-  } catch {
-    Write-InstallerLog "Warning: could not resolve npm global prefix: $_"
+function Get-CompanionCliCandidates {
+  $candidates = @()
+
+  if (Test-Path $stagedCompanionCliPath) {
+    $candidates += $stagedCompanionCliPath
   }
 
-  $appDataNpm = Join-Path $env:APPDATA "npm"
-  if ((Test-Path $appDataNpm) -and ($env:PATH -notlike "*$appDataNpm*")) {
-    $env:PATH = "$appDataNpm;$env:PATH"
-    Write-InstallerLog "Added APPDATA npm dir to PATH: $appDataNpm"
-  }
-}
-
-function Ensure-LocalNodeOnPath {
-  if ((Test-Path $localNodeDir) -and ($env:PATH -notlike "*$localNodeDir*")) {
-    $env:PATH = "$localNodeDir;$env:PATH"
-    Write-InstallerLog "Added local Node dir to PATH: $localNodeDir"
-  }
-}
-
-function Resolve-InstalledCompanionCliScript {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$NpmCli
-  )
-
-  try {
-    $prefixOutput = & $NpmCli prefix -g 2>$null
-    if (-not $prefixOutput) {
-      return $null
-    }
-
-    $npmPrefix = [string]::Join("", $prefixOutput).Trim()
-    if ([string]::IsNullOrWhiteSpace($npmPrefix)) {
-      return $null
-    }
-
-    $candidate = Join-Path $npmPrefix "node_modules\\trapezohe-companion\\bin\\cli.mjs"
-    if (Test-Path $candidate) {
-      return $candidate
-    }
-  } catch {
-    Write-InstallerLog "Warning: failed to resolve installed companion CLI script: $($_.Exception.Message)"
+  if ((Test-Path $bundledCompanionCliPath) -and ($bundledCompanionCliPath -notin $candidates)) {
+    $candidates += $bundledCompanionCliPath
   }
 
-  return $null
+  $pathCli = Resolve-InstallerCommand @("trapezohe-companion.exe", "trapezohe-companion.cmd", "trapezohe-companion")
+  if ($pathCli -and ($pathCli -notin $candidates)) {
+    $candidates += $pathCli
+  }
+
+  return $candidates
 }
 
 function Stop-InstalledCompanionDaemon {
   try {
-    Ensure-LocalNodeOnPath
-    Ensure-NpmGlobalBinOnPath
-
-    $nodeCli = Resolve-InstallerCommand @("node.exe", "node")
-    $npmCli = Resolve-InstallerCommand @("npm.cmd", "npm")
-    $companionCliScript = if ($npmCli) {
-      Resolve-InstalledCompanionCliScript -NpmCli $npmCli
-    } else {
-      $null
+    $cliCandidates = @(Get-CompanionCliCandidates)
+    if ($cliCandidates.Count -eq 0) {
+      Write-InstallerLog "No companion CLI found; skipping daemon stop."
+      return
     }
 
-    if ($nodeCli -and $companionCliScript) {
-      $exitCode = Invoke-LoggedProcess -FilePath $nodeCli -ArgumentList @($companionCliScript, "stop", "--force") -LogPrefix "companion-stop"
+    foreach ($cliPath in $cliCandidates) {
+      $exitCode = Invoke-LoggedProcess -FilePath $cliPath -ArgumentList @("stop", "--force") -LogPrefix "companion-stop"
       if ($exitCode -eq 0) {
-        Write-InstallerLog "Requested companion daemon stop via installed CLI script."
+        Write-InstallerLog "Requested companion daemon stop via CLI: $cliPath"
         return
       }
-      Write-InstallerLog "Warning: installed companion CLI script stop returned exit code $exitCode"
-    }
-
-    $companionCli = Resolve-InstallerCommand @("trapezohe-companion.cmd", "trapezohe-companion")
-    if ($companionCli) {
-      $exitCode = Invoke-LoggedProcess -FilePath $companionCli -ArgumentList @("stop", "--force") -LogPrefix "companion-stop"
-      if ($exitCode -eq 0) {
-        Write-InstallerLog "Requested companion daemon stop via installed command shim."
-        return
-      }
-      Write-InstallerLog "Warning: installed companion command shim stop returned exit code $exitCode"
-    } else {
-      Write-InstallerLog "No installed companion CLI found; skipping daemon stop."
+      Write-InstallerLog "Warning: companion CLI stop returned exit code $exitCode for $cliPath"
     }
   } catch {
     Write-InstallerLog "Warning: failed to stop installed companion daemon: $_"
@@ -404,76 +282,33 @@ function Stop-InstalledCompanionDaemon {
 }
 
 function Bootstrap-Companion {
-  if (-not (Ensure-Node)) {
+  Write-InstallerStep 1 4 "Checking bundled companion runtime."
+
+  if (-not (Test-Path $bundledCompanionCliPath)) {
+    Write-InstallerStatus "The bundled companion runtime is missing. Setup cannot continue."
+    Write-InstallerLog "ERROR: bundled Rust companion CLI missing at $bundledCompanionCliPath"
     return $false
   }
 
-  Ensure-NpmGlobalBinOnPath
-  Write-InstallerLog "Installing bundled package over any existing global companion install to keep upgrades update-safe."
-  Ensure-NpmGlobalBinOnPath
+  Write-InstallerStatus "Bundled companion runtime is ready."
+  Write-InstallerLog "Using bundled Rust companion CLI: $bundledCompanionCliPath"
 
-  $npmCli = Resolve-InstallerCommand @("npm.cmd", "npm")
-  if (-not $npmCli) {
-    Write-InstallerStatus "npm is not available after preparing Node.js. Setup cannot continue."
-    Write-InstallerLog "ERROR: npm not found on PATH after preparing Node.js. PATH=$($env:PATH)"
-    return $false
-  }
-
-  $stagedPackageDir = $null
-  $npmInstallTarget = "trapezohe-companion@$version"
-  if (Test-Path $packageTarballPath) {
-    $stagedPackageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("trapezohe-companion-install-" + [guid]::NewGuid().ToString("N"))
-    $stagedPackageTarballPath = Join-Path $stagedPackageDir "trapezohe-companion-package.tgz"
-    try {
-      New-Item -ItemType Directory -Force -Path $stagedPackageDir | Out-Null
-      Copy-Item $packageTarballPath $stagedPackageTarballPath -Force
-      $npmInstallTarget = $stagedPackageTarballPath
-      Write-InstallerLog "Staged bundled package to $stagedPackageTarballPath"
-    } catch {
-      Write-InstallerStatus "The bundled package could not be staged to a temporary Windows path. Setup cannot continue."
-      Write-InstallerLog "Failed to stage bundled package to temp path: $_"
-      return $false
-    }
-  } else {
-    Write-InstallerLog "Bundled companion package missing at $packageTarballPath; falling back to npm registry target $npmInstallTarget"
-  }
-
-  Write-InstallerStep 2 4 "Installing GhastAI Companion from the bundled package."
-  Write-InstallerLog "Running: npm install -g $npmInstallTarget"
-  try {
-    $npmExitCode = Invoke-LoggedProcess -FilePath $npmCli -ArgumentList @("install", "-g", $npmInstallTarget) -LogPrefix "npm"
-    if ($npmExitCode -ne 0) {
-      Write-InstallerStatus "The bundled package installation failed. Review the installer log for details."
-      Write-InstallerLog "npm install failed with exit code $npmExitCode. Installation continues for manual retry."
-      return $false
-    }
-  } finally {
-    if ($stagedPackageDir) {
-      Remove-Item -Path $stagedPackageDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-  }
-  Write-InstallerStatus "Bundled package installation completed."
-  Write-InstallerLog "npm install -g from bundled package succeeded."
-
-  Write-InstallerLog "Step 2 complete; resolving installed Node.js and companion CLI handoff."
-  Ensure-NpmGlobalBinOnPath
-
-  $nodeCli = Resolve-InstallerCommand @("node.exe", "node")
-  $companionCliScript = Resolve-InstalledCompanionCliScript -NpmCli $npmCli
-  if (-not $nodeCli -or -not $companionCliScript) {
-    Write-InstallerStatus "The GhastAI Companion command was not found after installation. Setup cannot continue."
-    Write-InstallerLog "ERROR: installed companion CLI script could not be resolved after npm install -g. node=$nodeCli script=$companionCliScript PATH=$($env:PATH)"
-    return $false
-  }
-  Write-InstallerLog "Resolved Node CLI at: $nodeCli"
-  Write-InstallerLog "Resolved installed companion CLI script at: $companionCliScript"
+  Write-InstallerStep 2 4 "Stopping any previous companion process."
+  Stop-InstalledCompanionDaemon
+  Write-InstallerLog "Finished pre-bootstrap daemon stop check."
 
   Write-InstallerStep 3 4 "Running first-time companion setup."
-  $bootstrapExitCode = Invoke-LoggedProcess -FilePath $nodeCli -ArgumentList @($companionCliScript, "bootstrap", "--mode", "workspace", "--workspace", $workspace, "--no-autostart", "--no-start") -LogPrefix "bootstrap"
+  $bootstrapExitCode = Invoke-LoggedProcess -FilePath $bundledCompanionCliPath -ArgumentList @("bootstrap", "--mode", "workspace", "--workspace", $workspace, "--no-autostart", "--no-start") -LogPrefix "bootstrap"
   if ($bootstrapExitCode -ne 0) {
     Write-InstallerStatus "First-time companion setup failed. Review the installer log for details."
     Write-InstallerLog "bootstrap failed with exit code $bootstrapExitCode. Installation continues for manual retry."
     return $false
+  }
+
+  if (Test-Path $stagedCompanionCliPath) {
+    Write-InstallerLog "Bootstrap staged companion CLI to $stagedCompanionCliPath"
+  } else {
+    Write-InstallerLog "Bootstrap completed, but staged companion CLI was not found at $stagedCompanionCliPath"
   }
 
   Write-InstallerStatus "First-time companion setup completed."

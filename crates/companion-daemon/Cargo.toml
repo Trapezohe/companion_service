@@ -9,6 +9,7 @@ repository.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 companion-acp = { path = "../companion-acp" }
+companion-app = { path = "../companion-app" }
 companion-automation = { path = "../companion-automation" }
 companion-browser = { path = "../companion-browser" }
 companion-checkpoint = { path = "../companion-checkpoint" }

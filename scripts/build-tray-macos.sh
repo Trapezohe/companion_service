@@ -4,7 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/macos-signing.sh"
 
-VERSION="${1:-$(node -p "require('${ROOT_DIR}/package.json').version")}"
+VERSION="${1:-$(ROOT_DIR_ENV="${ROOT_DIR}" python3 - <<'PY'
+import tomllib
+import os
+from pathlib import Path
+
+root = Path(os.environ["ROOT_DIR_ENV"])
+data = tomllib.loads(root.joinpath("Cargo.toml").read_text())
+print(data["workspace"]["package"]["version"])
+PY
+)}"
 MODE="${2:---stage-only}"
 STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray/${VERSION}}"
 ARCHIVE_ROOT="${ROOT_DIR}/dist/debug-artifacts"
@@ -16,48 +25,39 @@ APP_DIR="${STAGE_ROOT}/${APP_NAME}"
 MACOS_DIR="${APP_DIR}/Contents/MacOS"
 RESOURCES_DIR="${APP_DIR}/Contents/Resources"
 COMPANION_DIR="${RESOURCES_DIR}/companion"
-RUNTIME_NODE_DIR="${RESOURCES_DIR}/runtime/node"
 BIN_NAME="trapezohe-companion-tray"
 ZIP_PATH="${ARCHIVE_ROOT}/trapezohe-companion-tray-macos.zip"
-NODE_BIN="${TRAPEZOHE_MACOS_NODE_BIN:-$(command -v node || true)}"
 NPM_BIN="${TRAPEZOHE_MACOS_NPM_BIN:-$(command -v npm || true)}"
+CARGO_BIN="${CARGO:-$(command -v cargo || true)}"
+
+if [[ -z "${CARGO_BIN}" && -x "${HOME}/.cargo/bin/cargo" ]]; then
+  CARGO_BIN="${HOME}/.cargo/bin/cargo"
+fi
 
 rm -rf "${APP_DIR}" "${ZIP_PATH}"
 mkdir -p "${STAGE_ROOT}"
-mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${COMPANION_DIR}/bin" "${COMPANION_DIR}/src" "${RUNTIME_NODE_DIR}/bin"
-
-if [[ -z "${NODE_BIN}" || ! -x "${NODE_BIN}" ]]; then
-  echo "Node.js executable not found for macOS app bundling." >&2
-  exit 1
-fi
+mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${COMPANION_DIR}/bin"
 
 if [[ -z "${NPM_BIN}" || ! -x "${NPM_BIN}" ]]; then
   echo "npm executable not found for macOS app bundling." >&2
   exit 1
 fi
 
+if [[ -z "${CARGO_BIN}" || ! -x "${CARGO_BIN}" ]]; then
+  echo "cargo executable not found for macOS app bundling." >&2
+  exit 1
+fi
+
 "${NPM_BIN}" --prefix "${UI_DIR}" run build
 
-cargo build --manifest-path "${ROOT_DIR}/tray/Cargo.toml" --release --features custom-protocol
-cargo build --manifest-path "${ROOT_DIR}/Cargo.toml" -p companion-cli --release
+"${CARGO_BIN}" build --manifest-path "${ROOT_DIR}/tray/Cargo.toml" --release --features custom-protocol
+"${CARGO_BIN}" build --manifest-path "${ROOT_DIR}/Cargo.toml" -p companion-cli --release
 
 cp "${BUILD_DIR}/${BIN_NAME}" "${MACOS_DIR}/${BIN_NAME}"
 cp "${ROOT_DIR}/tray/icons/icon.png" "${RESOURCES_DIR}/icon.png"
 cp "${CLI_BUILD_DIR}/trapezohe-companion" "${COMPANION_DIR}/bin/trapezohe-companion"
-cp "${ROOT_DIR}/bin/cli.mjs" "${COMPANION_DIR}/bin/cli.mjs"
-cp "${ROOT_DIR}/bin/native-host.mjs" "${COMPANION_DIR}/bin/native-host.mjs"
-cp "${ROOT_DIR}/package.json" "${COMPANION_DIR}/package.json"
-while IFS= read -r -d '' source_file; do
-  cp "${source_file}" "${COMPANION_DIR}/src/"
-done < <(
-  find "${ROOT_DIR}/src" -maxdepth 1 -type f -name '*.mjs' ! -name '*.test.mjs' -print0 | sort -z
-)
-cp "${NODE_BIN}" "${RUNTIME_NODE_DIR}/bin/node"
 chmod 755 \
-  "${COMPANION_DIR}/bin/trapezohe-companion" \
-  "${COMPANION_DIR}/bin/cli.mjs" \
-  "${COMPANION_DIR}/bin/native-host.mjs" \
-  "${RUNTIME_NODE_DIR}/bin/node"
+  "${COMPANION_DIR}/bin/trapezohe-companion"
 
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

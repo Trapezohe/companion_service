@@ -75,9 +75,9 @@ The macOS installer is signed and notarized in official GitHub releases. The Win
 
 ### Script / CLI install
 
-For Linux, development environments, or manual setup flows:
+For Linux or developer-oriented manual setup flows:
 
-**macOS / Linux**
+**Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash
@@ -89,26 +89,21 @@ Non-interactive workspace-scoped setup:
 curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash -s -- --non-interactive --mode workspace --workspace ~/trapezohe-workspace
 ```
 
-**Windows (PowerShell)**
+This Linux script now installs the Rust CLI with Cargo and then runs `bootstrap`.
+
+**macOS / Windows**
+
+The script entrypoints now just download and launch the signed release installers:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.sh | bash
+```
 
 ```powershell
 irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex
 ```
 
-Non-interactive workspace-scoped setup:
-
-```powershell
-irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex -- --non-interactive --mode workspace --workspace "$HOME\\trapezohe-workspace"
-```
-
-### npm install
-
-```bash
-npm install -g trapezohe-companion
-trapezohe-companion bootstrap --mode workspace --workspace ~/trapezohe-workspace
-```
-
-`bootstrap` creates config, registers the native host, and starts the local daemon in one flow.
+For ordinary users, prefer downloading the `.pkg` or `.msi` directly from the latest GitHub release.
 
 ## Pairing with the extension
 
@@ -172,8 +167,8 @@ trapezohe-companion stop --force
 trapezohe-companion status
 trapezohe-companion init
 trapezohe-companion token
-trapezohe-companion policy
-trapezohe-companion policy workspace ~/trapezohe-workspace
+trapezohe-companion register
+trapezohe-companion unregister
 trapezohe-companion self-check --json
 trapezohe-companion repair repair_config
 trapezohe-companion repair register_native_host
@@ -191,6 +186,7 @@ All HTTP endpoints are local-only and require `Authorization: Bearer <token>`.
 | `/api/system/diagnostics` | Companion health, browser ledger state, memory shadow, and MCP/runtime summaries |
 | `/api/system/self-check` | Repair-oriented health checks |
 | `/api/runtime/*` | Exec, session lifecycle, logs, stdin, send-keys, run ledger, approvals |
+| `/api/apps/*` | Native app bridges for calendar, reminders, contacts, notes, Finder, and Safari |
 | `/api/mcp/*` | MCP server inventory and tool invocation |
 | `/api/browser/*` | Browser sessions, actions, artifacts, events, and drill-down routes |
 | `/api/acp/*` | ACP session ingress and event transport |
@@ -198,7 +194,20 @@ All HTTP endpoints are local-only and require `Authorization: Bearer <token>`.
 | `/api/media/normalize` | HEIC / HEIF image normalization for local uploads |
 | `/api/memory/checkpoints/shadow*` | Mirrored checkpoint shadow ingest, status, and refresh state |
 
-If you need the exact contract, read `crates/companion-daemon/src/lib.rs`, `crates/companion-browser/src/lib.rs`, `crates/companion-media/src/lib.rs`, `crates/companion-memory/src/lib.rs`, and the remaining compatibility routes in `src/server.mjs`.
+If you need the exact contract, read `crates/companion-daemon/src/lib.rs`, `crates/companion-browser/src/lib.rs`, `crates/companion-media/src/lib.rs`, and `crates/companion-memory/src/lib.rs`.
+
+### App integrations
+
+The local daemon now exposes companion-gated native app routes for:
+
+- Calendar: list calendars, list events, create events
+- Reminders: list reminder lists, list items, create items, complete items
+- Contacts: list groups, search people
+- Notes: list folders, list notes, create notes
+- Finder: list folder contents, reveal a file or folder in Finder
+- Safari: list tabs, open a new tab
+
+All of these routes stay off until the corresponding Companion permission is enabled in the tray panel.
 
 ## Diagnostics and repair
 
@@ -216,12 +225,12 @@ These checks cover config integrity, token availability, native-host registratio
 ## Development
 
 ```bash
-npm install
-npm test
-node bin/cli.mjs --help
+npm --prefix tray/ui-react install
+python3 -m unittest discover -s tests -p '*_test.py'
+python3 scripts/critical-checks.py
 cargo test --manifest-path tray/Cargo.toml --locked
-npm run build:installer:macos
-npm run build:installer:windows
+bash scripts/build-macos-pkg.sh
+pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-msi.ps1
 ```
 
 Useful local outputs:
@@ -231,7 +240,7 @@ Useful local outputs:
 
 ### Rust companion workspace
 
-The repo root now also contains the first Rust rewrite scaffold for the daemon stack. The initial crates are:
+The companion runtime, installer handoff, native host registration, and tray orchestration now live on the Rust side. The main crates are:
 
 - `crates/companion-shared`
 - `crates/companion-config`
@@ -247,7 +256,7 @@ The repo root now also contains the first Rust rewrite scaffold for the daemon s
 - `crates/companion-daemon`
 - `crates/companion-cli`
 
-Useful Rust commands during the migration:
+Useful Rust commands:
 
 ```bash
 cargo check --workspace
@@ -258,7 +267,7 @@ cargo run -p companion-cli -- status
 
 ### GitHub release signing inputs
 
-The `Auto Release Companion Installers` workflow now treats signed + notarized macOS releases as the default path. If any required secret is missing, the macOS release job now fails instead of quietly producing an unsigned package. Set these repository secrets before relying on GitHub auto-publish:
+The `Auto Release GhastAI Companion` workflow now treats signed + notarized macOS releases as the default path. If any required secret is missing, the macOS release job now fails instead of quietly producing an unsigned package. Set these repository secrets before relying on GitHub auto-publish:
 
 - `APPLE_ID`
 - `APPLE_TEAM_ID`

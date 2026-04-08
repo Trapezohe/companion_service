@@ -5,10 +5,147 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$WindowsInstallerProductName = "GhastAI Companion Installer"
+$WindowsInstallerManufacturer = "Trapezohe"
+$WindowsInstallerUpgradeCode = "4AF4D4EF-2C1D-4FB9-99EB-387DABEE6D20"
+$WindowsInstallerFolderName = "TrapezoheCompanion"
+$WindowsMsiFiles = @(
+  @{ componentId = "RunInstallCmdComponent"; fileId = "RunInstallCmd"; fileName = "run-install.cmd" },
+  @{ componentId = "InstallCompanionPs1Component"; fileId = "InstallCompanionPs1"; fileName = "install-companion.ps1" },
+  @{ componentId = "CompanionCliComponent"; fileId = "CompanionCli"; fileName = "trapezohe-companion.exe" },
+  @{ componentId = "TrayExeComponent"; fileId = "TrayExe"; fileName = "trapezohe-companion-tray.exe" },
+  @{ componentId = "TrayReadmeComponent"; fileId = "TrayReadme"; fileName = "tray.README.txt" }
+)
+
+function Get-HostPlatform {
+  if ($env:OS -eq "Windows_NT") {
+    return "win32"
+  }
+
+  $description = [string][System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+  if ($description -match "Darwin|macOS") {
+    return "darwin"
+  }
+  if ($description -match "Linux") {
+    return "linux"
+  }
+
+  return $description.Trim().ToLowerInvariant()
+}
+
+function Get-WindowsMsiBuildPlan {
+  param(
+    [string]$HostPlatform = (Get-HostPlatform)
+  )
+
+  $normalizedPlatform = if ([string]::IsNullOrWhiteSpace($HostPlatform)) {
+    ""
+  } else {
+    $HostPlatform.Trim().ToLowerInvariant()
+  }
+  $isWindowsHost = $normalizedPlatform -eq "win32"
+
+  return @{
+    builder = if ($isWindowsHost) { "wix" } else { "wixl" }
+    schemaVersion = if ($isWindowsHost) { "wix4" } else { "wix3" }
+    wxsSourceMode = if ($isWindowsHost) { "v4-template" } else { "rendered" }
+  }
+}
+
+function Convert-ToPosixPath {
+  param(
+    [string]$Value
+  )
+
+  return [string]$Value -replace "\\", "/"
+}
+
+function ConvertTo-EscapedXmlAttribute {
+  param(
+    [string]$Value
+  )
+
+  $escaped = [string]$Value
+  $escaped = $escaped.Replace("&", "&amp;")
+  $escaped = $escaped.Replace('"', "&quot;")
+  $escaped = $escaped.Replace("<", "&lt;")
+  $escaped = $escaped.Replace(">", "&gt;")
+  $escaped = $escaped.Replace("'", "&apos;")
+  return $escaped
+}
+
+function Get-WindowsMsiTemplatePath {
+  return Join-Path $root "packaging/windows/installer.wxs"
+}
+
+function Render-WindowsMsiSource {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$SchemaVersion,
+    [string]$ProductVersion = "",
+    [string]$InstallerSourceDir = ""
+  )
+
+  if ($SchemaVersion -eq "wix4") {
+    return Get-Content (Get-WindowsMsiTemplatePath) -Raw
+  }
+
+  if ($SchemaVersion -ne "wix3") {
+    throw "Unsupported Windows MSI schema version: $SchemaVersion"
+  }
+
+  $normalizedSourceDir = Convert-ToPosixPath $InstallerSourceDir
+  $componentLines = ($WindowsMsiFiles | ForEach-Object {
+    $source = ConvertTo-EscapedXmlAttribute "$normalizedSourceDir/$($_.fileName)"
+@"
+          <Component Id="$($_.componentId)" Guid="*">
+            <File Id="$($_.fileId)" Source="$source" KeyPath="yes" />
+          </Component>
+"@
+  }) -join "`n"
+  $componentRefLines = ($WindowsMsiFiles | ForEach-Object {
+    "      <ComponentRef Id=""$($_.componentId)"" />"
+  }) -join "`n"
+  $escapedVersion = ConvertTo-EscapedXmlAttribute $ProductVersion
+
+@"
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="$WindowsInstallerProductName" Language="1033" Version="$escapedVersion" Manufacturer="$WindowsInstallerManufacturer" UpgradeCode="$WindowsInstallerUpgradeCode">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer $WindowsInstallerProductName is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="$WindowsInstallerFolderName">
+$componentLines
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="MainFeature" Title="Companion Installer" Level="1">
+$componentRefLines
+    </Feature>
+    <CustomAction Id="StopTrayBeforeInstall" FileKey="RunInstallCmd" ExeCommand="-StopTrayOnly" Execute="deferred" Return="ignore" Impersonate="yes" />
+    <CustomAction Id="RunCompanionBootstrap" FileKey="RunInstallCmd" ExeCommand="" Execute="deferred" Return="check" Impersonate="yes" />
+    <CustomAction Id="UninstallCleanup" Directory="INSTALLFOLDER" ExeCommand="cmd.exe /c run-install.cmd -Cleanup" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="StopTrayBeforeInstall" Before="InstallFiles">(Installed OR WIX_UPGRADE_DETECTED) AND NOT REMOVE~="ALL"</Custom>
+      <Custom Action="RunCompanionBootstrap" After="InstallFiles">NOT REMOVE~="ALL"</Custom>
+      <Custom Action="UninstallCleanup" Before="RemoveFiles">REMOVE~="ALL"</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>
+"@
+}
+
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 if ([string]::IsNullOrWhiteSpace($Version)) {
-  $pkg = Get-Content (Join-Path $root "package.json") -Raw | ConvertFrom-Json
-  $Version = [string]$pkg.version
+  $cargoToml = Get-Content (Join-Path $root "Cargo.toml") -Raw
+  $match = [regex]::Match($cargoToml, '(?s)\[workspace\.package\].*?^\s*version\s*=\s*"([^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  if (-not $match.Success) {
+    throw "Failed to resolve workspace version from Cargo.toml."
+  }
+  $Version = [string]$match.Groups[1].Value
 }
 
 $outDir = Join-Path $root "dist/installers"
@@ -23,8 +160,7 @@ $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
 $workDir = Join-Path $tempRoot ("trapezohe-companion-msi-" + [guid]::NewGuid().ToString("N"))
 $sourceDir = Join-Path $workDir "source"
 $trayStageDir = Join-Path $trayStageRoot "windows-tray"
-$msiPlanScript = Join-Path $root "scripts/windows-msi-plan.mjs"
-$packageTarballPath = Join-Path $sourceDir "trapezohe-companion-package.tgz"
+$bundledCliPath = Join-Path $sourceDir "trapezohe-companion.exe"
 $msiPath = Join-Path $outDir "trapezohe-companion-windows.msi"
 $generatedWxsPath = Join-Path $workDir "installer.generated.wxs"
 
@@ -38,39 +174,25 @@ $psRendered = $psTemplate -replace "__COMPANION_VERSION__", $Version
 Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRendered -Encoding UTF8
 
 Push-Location $root
-$packJson = & npm pack --pack-destination $workDir --json
-$packExitCode = $LASTEXITCODE
+& cargo build --manifest-path (Join-Path $root "Cargo.toml") -p companion-cli --release
+$cargoExitCode = $LASTEXITCODE
 Pop-Location
-if ($packExitCode -ne 0) {
-  throw "Failed to pack the companion npm payload for the Windows installer."
+if ($cargoExitCode -ne 0) {
+  throw "Failed to build the Rust companion CLI for the Windows installer."
 }
 
-$packResult = $packJson | ConvertFrom-Json
-$packFileName = if ($packResult -is [array]) { $packResult[0].filename } else { $packResult.filename }
-if ([string]::IsNullOrWhiteSpace($packFileName)) {
-  throw "npm pack did not report a tarball filename."
+$compiledCliPath = Join-Path $root "target/release/trapezohe-companion.exe"
+if (-not (Test-Path $compiledCliPath)) {
+  throw "Compiled Rust companion CLI missing at $compiledCliPath"
 }
-
-$packedTarball = Join-Path $workDir $packFileName
-if (-not (Test-Path $packedTarball)) {
-  throw "Packed tarball missing at $packedTarball"
-}
-Copy-Item $packedTarball $packageTarballPath
+Copy-Item $compiledCliPath $bundledCliPath
 
 & (Join-Path $root "scripts/build-tray-windows.ps1") -Version $Version
 Copy-Item (Join-Path $trayStageDir "trapezohe-companion-tray.exe") (Join-Path $sourceDir "trapezohe-companion-tray.exe")
 Copy-Item (Join-Path $trayStageDir "README.txt") (Join-Path $sourceDir "tray.README.txt")
 
-$planJson = & node $msiPlanScript --json
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to resolve Windows MSI build plan."
-}
-$plan = $planJson | ConvertFrom-Json
-
-$renderedWxs = & node $msiPlanScript --render --schema-version $plan.schemaVersion --product-version $Version --installer-source-dir $sourceDir
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to render Windows MSI source."
-}
+$plan = Get-WindowsMsiBuildPlan
+$renderedWxs = Render-WindowsMsiSource -SchemaVersion $plan.schemaVersion -ProductVersion $Version -InstallerSourceDir $sourceDir
 Set-Content -Path $generatedWxsPath -Value $renderedWxs -Encoding UTF8
 
 if ($plan.builder -eq "wix") {

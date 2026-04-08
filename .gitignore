@@ -7,6 +7,7 @@ dist/
 docs/
 .superpowers/
 *.tsbuildinfo
+__pycache__/
 tray/ui-react/vite.config.js
 tray/ui-react/vite.config.d.ts
 tray/ui-react/vite.config.d.ts.map

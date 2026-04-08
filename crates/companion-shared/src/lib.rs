@@ -15,10 +15,34 @@ pub const COMPANION_PERMISSION_IDS: &[&str] = &[
     "microphone",
     "location",
     "notifications",
+    "calendar",
+    "reminders",
+    "contacts",
+    "photos",
+    "notes",
+    "mail",
+    "messages",
+    "finder",
+    "safari",
+    "desktop_notification",
+    "clipboard",
+    "filesystem",
+    "explorer",
+    "process_control",
+    "screenshot",
+    "window_automation",
+    "registry_write",
+    "service_control",
+    "task_scheduler",
+    "admin_shell",
     "local_command",
     "browser_control",
     "admin_action",
 ];
+
+pub fn companion_capability_default_enabled(id: &str) -> bool {
+    matches!(id, "local_command" | "browser_control")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

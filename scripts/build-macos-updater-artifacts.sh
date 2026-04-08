@@ -5,7 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/macos-signing.sh"
 source "${ROOT_DIR}/scripts/lib/tauri-updater.sh"
 
-VERSION="${1:-$(node -p "JSON.parse(require('fs').readFileSync('${ROOT_DIR}/package.json','utf8')).version")}" 
+VERSION="${1:-$(ROOT_DIR_ENV="${ROOT_DIR}" python3 - <<'PY'
+import tomllib
+import os
+from pathlib import Path
+
+root = Path(os.environ["ROOT_DIR_ENV"])
+data = tomllib.loads(root.joinpath("Cargo.toml").read_text())
+print(data["workspace"]["package"]["version"])
+PY
+)}"
 OUT_DIR="${ROOT_DIR}/dist/installers"
 STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray}"
 APP_NAME="GhastAI Companion.app"

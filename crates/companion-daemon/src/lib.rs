@@ -10,6 +10,29 @@ use companion_acp::{
     PromptInput as AcpPromptInput, SessionEventsQuery as AcpEventsQuery,
     SessionListQuery as AcpListQuery, SteerInput as AcpSteerInput,
 };
+use companion_app::{
+    activate_window, capture_screenshot, complete_reminder, create_calendar_event, create_note,
+    create_reminder, delete_scheduled_task, get_clipboard_text, list_calendar_events,
+    list_calendars, list_contact_groups, list_contacts, list_explorer_items, list_finder_items,
+    list_note_folders, list_notes, list_processes, list_reminder_lists, list_reminders,
+    list_safari_tabs, list_scheduled_tasks, list_services, list_windows, minimize_window,
+    open_safari_tab, read_text_file, restart_service, reveal_explorer_item, reveal_finder_item,
+    run_admin_shell, run_scheduled_task, set_clipboard_text, show_desktop_notification,
+    start_service, stop_service, terminate_process, write_registry_value, write_text_file,
+    AdminShellRequest, AdminShellResult, AppIntegrationError, CalendarEvent,
+    CaptureScreenshotRequest, ClipboardTextResult, CompleteReminderRequest,
+    CreateCalendarEventRequest, CreateNoteRequest, CreateReminderRequest,
+    DesktopNotificationRequest, DesktopNotificationResult, ExplorerRevealRequest,
+    ExplorerRevealResult, FinderRevealRequest, FinderRevealResult, ListCalendarEventsRequest,
+    ListContactsRequest, ListExplorerItemsRequest, ListFinderItemsRequest, ListNotesRequest,
+    ListProcessesRequest, ListRemindersRequest, ListSafariTabsRequest, ListScheduledTasksRequest,
+    ListServicesRequest, ListWindowsRequest, NoteItem, OpenSafariTabRequest,
+    ProcessTerminationResult, ReadTextFileRequest, RegistryWriteRequest, RegistryWriteResult,
+    ReminderCompletion, ReminderItem, SafariTab, ScheduledTaskActionRequest,
+    ScheduledTaskActionResult, ScreenshotCapture, ServiceActionRequest, ServiceActionResult,
+    SetClipboardTextRequest, TerminateProcessRequest, TextFileContent, TextFileWriteResult,
+    WindowActionRequest, WindowActionResult,
+};
 use companion_automation::AutomationOutboxStore;
 use companion_browser::{
     BrowserActionListQuery, BrowserArtifactListQuery, BrowserDrilldownQuery, BrowserEventsQuery,
@@ -30,7 +53,7 @@ use companion_control::{
     RunStore,
 };
 use companion_cron::CronStore;
-use companion_mcp::McpManager;
+use companion_mcp::{ListedTool, McpManager, ToolCallResult};
 use companion_media::{
     normalize_image_payload, probe_media_normalization_support, NormalizeImageRequest,
 };
@@ -54,6 +77,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{watch, RwLock};
 use tokio::time::sleep;
+
+const BUILTIN_DESKTOP_TOOL_SERVER: &str = "ghast-companion-native";
+const BUILTIN_DESKTOP_TOOL_NAME: &str = "desktop_control";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -286,6 +312,139 @@ struct RuntimeExecBody {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CalendarEventsParams {
+    calendar_name: Option<String>,
+    from_at: Option<String>,
+    to_at: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarEventCreateBody {
+    title: Option<String>,
+    start_at: Option<String>,
+    end_at: Option<String>,
+    calendar_name: Option<String>,
+    location: Option<String>,
+    notes: Option<String>,
+    all_day: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderItemsParams {
+    list_name: Option<String>,
+    include_completed: Option<bool>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReminderCreateBody {
+    title: Option<String>,
+    list_name: Option<String>,
+    due_at: Option<String>,
+    notes: Option<String>,
+    priority: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactsParams {
+    query: Option<String>,
+    group_id: Option<String>,
+    group_name: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotesParams {
+    folder_id: Option<String>,
+    folder_name: Option<String>,
+    query: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NoteCreateBody {
+    title: Option<String>,
+    body: Option<String>,
+    folder_id: Option<String>,
+    folder_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FinderItemsParams {
+    path: Option<String>,
+    include_hidden: Option<bool>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FinderRevealBody {
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardSetBody {
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerItemsParams {
+    path: Option<String>,
+    include_hidden: Option<bool>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerRevealBody {
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessItemsParams {
+    query: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessTerminateBody {
+    pid: Option<u32>,
+    force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotCaptureBody {
+    display_index: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SafariTabsParams {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SafariOpenTabBody {
+    url: Option<String>,
+    activate: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SessionStopBody {
     force: Option<bool>,
 }
@@ -343,6 +502,30 @@ struct McpToolCallBody {
     server: Option<String>,
     tool: Option<String>,
     arguments: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopControlToolArgs {
+    action: Option<String>,
+    text: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+    path: Option<String>,
+    name: Option<String>,
+    value: Option<Value>,
+    value_type: Option<String>,
+    command: Option<String>,
+    arguments: Option<Vec<String>>,
+    working_directory: Option<String>,
+    window_handle: Option<String>,
+    include_hidden: Option<bool>,
+    include_minimized: Option<bool>,
+    limit: Option<usize>,
+    query: Option<String>,
+    pid: Option<u32>,
+    force: Option<bool>,
+    display_index: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -633,6 +816,42 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/restart", post(system_restart))
         .route("/api/system/cleanup", post(system_cleanup))
         .route("/api/system/shutdown", post(system_shutdown))
+        .route("/api/apps/calendar/calendars", get(calendar_calendars))
+        .route(
+            "/api/apps/calendar/events",
+            get(calendar_events).post(calendar_create_event),
+        )
+        .route("/api/apps/reminders/lists", get(reminder_lists))
+        .route(
+            "/api/apps/reminders/items",
+            get(reminder_items).post(reminder_create_item),
+        )
+        .route(
+            "/api/apps/reminders/items/{reminder_id}/complete",
+            post(reminder_complete_item),
+        )
+        .route("/api/apps/contacts/groups", get(contact_groups))
+        .route("/api/apps/contacts/people", get(contact_people))
+        .route("/api/apps/notes/folders", get(note_folders))
+        .route(
+            "/api/apps/notes/items",
+            get(note_items).post(note_create_item),
+        )
+        .route(
+            "/api/apps/clipboard/text",
+            get(clipboard_text).post(clipboard_set_text),
+        )
+        .route("/api/apps/explorer/items", get(explorer_items))
+        .route("/api/apps/explorer/reveal", post(explorer_reveal))
+        .route("/api/apps/processes", get(process_items))
+        .route("/api/apps/processes/terminate", post(process_terminate))
+        .route("/api/apps/screenshot/capture", post(screenshot_capture))
+        .route("/api/apps/finder/items", get(finder_items))
+        .route("/api/apps/finder/reveal", post(finder_reveal))
+        .route(
+            "/api/apps/safari/tabs",
+            get(safari_tabs).post(safari_open_new_tab),
+        )
         .route("/api/media/normalize", post(media_normalize))
         .route(
             "/api/checkpoint-sync/config",
@@ -1302,6 +1521,1481 @@ async fn system_shutdown(
     authorize(&headers, &config)?;
     state.request_shutdown();
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn calendar_calendars(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "calendar",
+        "Calendar access is disabled in Companion permissions.",
+    )?;
+
+    let run_id = create_app_action_run(
+        &state,
+        "calendar",
+        "list_calendars",
+        Some("all calendars".to_string()),
+        "Listing calendars",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_calendars();
+    match result {
+        Ok(calendars) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "calendarCount",
+                    Some(Value::Number(serde_json::Number::from(
+                        calendars.len() as u64
+                    ))),
+                )]);
+                let _ =
+                    finish_app_action_run(&state, &run_id, true, "Listed calendars", None, extra);
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "calendars": calendars,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list calendars",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn calendar_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<CalendarEventsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "calendar",
+        "Calendar access is disabled in Companion permissions.",
+    )?;
+
+    let query = ListCalendarEventsRequest {
+        calendar_name: params.calendar_name,
+        from_at: params.from_at,
+        to_at: params.to_at,
+        limit: params.limit,
+    };
+    let preview = query
+        .calendar_name
+        .clone()
+        .unwrap_or_else(|| "upcoming calendar events".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "calendar",
+        "list_calendar_events",
+        Some(preview),
+        "Listing calendar events",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_calendar_events(&query);
+    match result {
+        Ok(events) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "eventCount",
+                    Some(Value::Number(serde_json::Number::from(events.len() as u64))),
+                )]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed calendar events",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "events": events,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list calendar events",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn calendar_create_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CalendarEventCreateBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "calendar",
+        "Calendar access is disabled in Companion permissions.",
+    )?;
+
+    let request = CreateCalendarEventRequest {
+        title: body.title.unwrap_or_default(),
+        start_at: body.start_at.unwrap_or_default(),
+        end_at: body.end_at.unwrap_or_default(),
+        calendar_name: body.calendar_name,
+        location: body.location,
+        notes: body.notes,
+        all_day: body.all_day.unwrap_or(false),
+    };
+    let preview = request
+        .calendar_name
+        .clone()
+        .map(|calendar_name| format!("{} @ {}", request.title.trim(), calendar_name))
+        .unwrap_or_else(|| request.title.trim().to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "calendar",
+        "create_calendar_event",
+        trim_optional(preview),
+        "Creating calendar event",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = create_calendar_event(&request);
+    match result {
+        Ok(event) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Created calendar event",
+                    None,
+                    app_action_result_meta_calendar(&event),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "event": event,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to create calendar event",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn reminder_lists(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "reminders",
+        "Reminders access is disabled in Companion permissions.",
+    )?;
+
+    let run_id = create_app_action_run(
+        &state,
+        "reminders",
+        "list_reminder_lists",
+        Some("all reminder lists".to_string()),
+        "Listing reminder lists",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_reminder_lists();
+    match result {
+        Ok(lists) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "listCount",
+                    Some(Value::Number(serde_json::Number::from(lists.len() as u64))),
+                )]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed reminder lists",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "lists": lists,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list reminder lists",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn reminder_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ReminderItemsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "reminders",
+        "Reminders access is disabled in Companion permissions.",
+    )?;
+
+    let query = ListRemindersRequest {
+        list_name: params.list_name,
+        include_completed: params.include_completed.unwrap_or(false),
+        limit: params.limit,
+    };
+    let preview = query
+        .list_name
+        .clone()
+        .unwrap_or_else(|| "pending reminders".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "reminders",
+        "list_reminders",
+        Some(preview),
+        "Listing reminders",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_reminders(&query);
+    match result {
+        Ok(reminders) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "reminderCount",
+                    Some(Value::Number(serde_json::Number::from(
+                        reminders.len() as u64
+                    ))),
+                )]);
+                let _ =
+                    finish_app_action_run(&state, &run_id, true, "Listed reminders", None, extra);
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "reminders": reminders,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list reminders",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn reminder_create_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ReminderCreateBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "reminders",
+        "Reminders access is disabled in Companion permissions.",
+    )?;
+
+    let request = CreateReminderRequest {
+        title: body.title.unwrap_or_default(),
+        list_name: body.list_name,
+        due_at: body.due_at,
+        notes: body.notes,
+        priority: body.priority,
+    };
+    let preview = request
+        .list_name
+        .clone()
+        .map(|list_name| format!("{} @ {}", request.title.trim(), list_name))
+        .unwrap_or_else(|| request.title.trim().to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "reminders",
+        "create_reminder",
+        trim_optional(preview),
+        "Creating reminder",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = create_reminder(&request);
+    match result {
+        Ok(reminder) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Created reminder",
+                    None,
+                    app_action_result_meta_reminder(&reminder),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "reminder": reminder,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to create reminder",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn reminder_complete_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(reminder_id): Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "reminders",
+        "Reminders access is disabled in Companion permissions.",
+    )?;
+
+    let request = CompleteReminderRequest { id: reminder_id };
+    let preview = trim_optional(request.id.clone());
+    let run_id = create_app_action_run(
+        &state,
+        "reminders",
+        "complete_reminder",
+        preview,
+        "Completing reminder",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = complete_reminder(&request);
+    match result {
+        Ok(reminder) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Completed reminder",
+                    None,
+                    app_action_result_meta_completion(&reminder),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "reminder": reminder,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to complete reminder",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn contact_groups(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "contacts",
+        "Contacts access is disabled in Companion permissions.",
+    )?;
+
+    let run_id = create_app_action_run(
+        &state,
+        "contacts",
+        "list_contact_groups",
+        Some("all contact groups".to_string()),
+        "Listing contact groups",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_contact_groups();
+    match result {
+        Ok(groups) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "groupCount",
+                    Some(Value::Number(serde_json::Number::from(groups.len() as u64))),
+                )]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed contact groups",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "groups": groups,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list contact groups",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn contact_people(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ContactsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "contacts",
+        "Contacts access is disabled in Companion permissions.",
+    )?;
+
+    let query = ListContactsRequest {
+        query: params.query,
+        group_id: params.group_id,
+        group_name: params.group_name,
+        limit: params.limit,
+    };
+    let preview = query
+        .query
+        .clone()
+        .or_else(|| query.group_name.clone())
+        .or_else(|| query.group_id.clone())
+        .unwrap_or_else(|| "contact search".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "contacts",
+        "list_contacts",
+        Some(preview),
+        "Listing contacts",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_contacts(&query);
+    match result {
+        Ok(people) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "contactCount",
+                    Some(Value::Number(serde_json::Number::from(people.len() as u64))),
+                )]);
+                let _ =
+                    finish_app_action_run(&state, &run_id, true, "Listed contacts", None, extra);
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "people": people,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list contacts",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn note_folders(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "notes",
+        "Notes access is disabled in Companion permissions.",
+    )?;
+
+    let run_id = create_app_action_run(
+        &state,
+        "notes",
+        "list_note_folders",
+        Some("all note folders".to_string()),
+        "Listing note folders",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_note_folders();
+    match result {
+        Ok(folders) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "folderCount",
+                    Some(Value::Number(
+                        serde_json::Number::from(folders.len() as u64),
+                    )),
+                )]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed note folders",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "folders": folders,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list note folders",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn note_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<NotesParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "notes",
+        "Notes access is disabled in Companion permissions.",
+    )?;
+
+    let query = ListNotesRequest {
+        folder_id: params.folder_id,
+        folder_name: params.folder_name,
+        query: params.query,
+        limit: params.limit,
+    };
+    let preview = query
+        .query
+        .clone()
+        .or_else(|| query.folder_name.clone())
+        .or_else(|| query.folder_id.clone())
+        .unwrap_or_else(|| "recent notes".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "notes",
+        "list_notes",
+        Some(preview),
+        "Listing notes",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_notes(&query);
+    match result {
+        Ok(notes) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "noteCount",
+                    Some(Value::Number(serde_json::Number::from(notes.len() as u64))),
+                )]);
+                let _ = finish_app_action_run(&state, &run_id, true, "Listed notes", None, extra);
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "notes": notes,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list notes",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn note_create_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NoteCreateBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "notes",
+        "Notes access is disabled in Companion permissions.",
+    )?;
+
+    let request = CreateNoteRequest {
+        title: body.title.unwrap_or_default(),
+        body: body.body.unwrap_or_default(),
+        folder_id: body.folder_id,
+        folder_name: body.folder_name,
+    };
+    let preview = request
+        .folder_name
+        .clone()
+        .map(|folder_name| format!("{} @ {}", request.title.trim(), folder_name))
+        .unwrap_or_else(|| request.title.trim().to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "notes",
+        "create_note",
+        trim_optional(preview),
+        "Creating note",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = create_note(&request);
+    match result {
+        Ok(note) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Created note",
+                    None,
+                    app_action_result_meta_note(&note),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "note": note,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to create note",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn clipboard_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "clipboard",
+        "Clipboard access is disabled in Companion permissions.",
+    )?;
+
+    let run_id = create_app_action_run(
+        &state,
+        "clipboard",
+        "get_clipboard_text",
+        Some("clipboard text".to_string()),
+        "Reading clipboard text",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = get_clipboard_text();
+    match result {
+        Ok(contents) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Read clipboard text",
+                    None,
+                    app_action_result_meta_clipboard(&contents),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "clipboard": contents,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to read clipboard text",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn clipboard_set_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ClipboardSetBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "clipboard",
+        "Clipboard access is disabled in Companion permissions.",
+    )?;
+
+    let request = SetClipboardTextRequest {
+        text: body.text.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.text.clone());
+    let run_id = create_app_action_run(
+        &state,
+        "clipboard",
+        "set_clipboard_text",
+        preview.clone(),
+        "Writing clipboard text",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = set_clipboard_text(&request);
+    match result {
+        Ok(contents) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Updated clipboard text",
+                    None,
+                    app_action_result_meta_clipboard(&contents),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "clipboard": contents,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to write clipboard text",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn explorer_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ExplorerItemsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "explorer",
+        "File Explorer access is disabled in Companion permissions.",
+    )?;
+
+    let request = ListExplorerItemsRequest {
+        path: params.path,
+        include_hidden: params.include_hidden.unwrap_or(false),
+        limit: params.limit,
+    };
+    let preview = request
+        .path
+        .clone()
+        .unwrap_or_else(|| "home folder".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "explorer",
+        "list_explorer_items",
+        Some(preview.clone()),
+        "Listing Explorer items",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_explorer_items(&request);
+    match result {
+        Ok(items) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "itemCount",
+                        Some(Value::Number(serde_json::Number::from(items.len() as u64))),
+                    ),
+                    ("path", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed Explorer items",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "items": items,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list Explorer items",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn explorer_reveal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ExplorerRevealBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "explorer",
+        "File Explorer access is disabled in Companion permissions.",
+    )?;
+
+    let request = ExplorerRevealRequest {
+        path: body.path.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.path.clone());
+    let run_id = create_app_action_run(
+        &state,
+        "explorer",
+        "reveal_explorer_item",
+        preview,
+        "Revealing Explorer item",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = reveal_explorer_item(&request);
+    match result {
+        Ok(item) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Revealed Explorer item",
+                    None,
+                    app_action_result_meta_explorer_reveal(&item),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "item": item,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to reveal Explorer item",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn process_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ProcessItemsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "process_control",
+        "Process control is disabled in Companion permissions.",
+    )?;
+
+    let request = ListProcessesRequest {
+        query: params.query,
+        limit: params.limit,
+    };
+    let preview = request
+        .query
+        .clone()
+        .unwrap_or_else(|| "all processes".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "process_control",
+        "list_processes",
+        Some(preview.clone()),
+        "Listing local processes",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_processes(&request);
+    match result {
+        Ok(processes) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "processCount",
+                        Some(Value::Number(serde_json::Number::from(
+                            processes.len() as u64
+                        ))),
+                    ),
+                    ("query", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed local processes",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "processes": processes,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list local processes",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn process_terminate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ProcessTerminateBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "process_control",
+        "Process control is disabled in Companion permissions.",
+    )?;
+
+    let request = TerminateProcessRequest {
+        pid: body.pid.unwrap_or_default(),
+        force: body.force.unwrap_or(true),
+    };
+    let run_id = create_app_action_run(
+        &state,
+        "process_control",
+        "terminate_process",
+        Some(format!("pid {}", request.pid)),
+        "Stopping a local process",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = terminate_process(&request);
+    match result {
+        Ok(process) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Stopped local process",
+                    None,
+                    app_action_result_meta_process_termination(&process),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "process": process,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to stop local process",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn screenshot_capture(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ScreenshotCaptureBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "screenshot",
+        "Screenshot capture is disabled in Companion permissions.",
+    )?;
+
+    let request = CaptureScreenshotRequest {
+        display_index: body.display_index,
+    };
+    let preview = request
+        .display_index
+        .map(|index| format!("display {index}"))
+        .unwrap_or_else(|| "primary display".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "screenshot",
+        "capture_screenshot",
+        Some(preview),
+        "Capturing screenshot",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = capture_screenshot(&request);
+    match result {
+        Ok(capture) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Captured screenshot",
+                    None,
+                    app_action_result_meta_screenshot(&capture),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "capture": capture,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to capture screenshot",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn finder_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<FinderItemsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "finder",
+        "Finder access is disabled in Companion permissions.",
+    )?;
+
+    let request = ListFinderItemsRequest {
+        path: params.path,
+        include_hidden: params.include_hidden.unwrap_or(false),
+        limit: params.limit,
+    };
+    let preview = request
+        .path
+        .clone()
+        .unwrap_or_else(|| "home folder".to_string());
+    let run_id = create_app_action_run(
+        &state,
+        "finder",
+        "list_finder_items",
+        Some(preview),
+        "Listing Finder items",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_finder_items(&request);
+    match result {
+        Ok(items) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "itemCount",
+                    Some(Value::Number(serde_json::Number::from(items.len() as u64))),
+                )]);
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Listed Finder items",
+                    None,
+                    extra,
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "items": items,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list Finder items",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn finder_reveal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<FinderRevealBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "finder",
+        "Finder access is disabled in Companion permissions.",
+    )?;
+
+    let request = FinderRevealRequest {
+        path: body.path.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.path.clone());
+    let run_id = create_app_action_run(
+        &state,
+        "finder",
+        "reveal_finder_item",
+        preview,
+        "Revealing Finder item",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = reveal_finder_item(&request);
+    match result {
+        Ok(item) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Revealed Finder item",
+                    None,
+                    app_action_result_meta_finder_reveal(&item),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "item": item,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to reveal Finder item",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn safari_tabs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<SafariTabsParams>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "safari",
+        "Safari access is disabled in Companion permissions.",
+    )?;
+
+    let request = ListSafariTabsRequest {
+        limit: params.limit,
+    };
+    let run_id = create_app_action_run(
+        &state,
+        "safari",
+        "list_safari_tabs",
+        Some("Safari tabs".to_string()),
+        "Listing Safari tabs",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = list_safari_tabs(&request);
+    match result {
+        Ok(tabs) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![(
+                    "tabCount",
+                    Some(Value::Number(serde_json::Number::from(tabs.len() as u64))),
+                )]);
+                let _ =
+                    finish_app_action_run(&state, &run_id, true, "Listed Safari tabs", None, extra);
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "tabs": tabs,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to list Safari tabs",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
+}
+
+async fn safari_open_new_tab(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SafariOpenTabBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    ensure_capability_enabled(
+        &config,
+        "safari",
+        "Safari access is disabled in Companion permissions.",
+    )?;
+
+    let request = OpenSafariTabRequest {
+        url: body.url.unwrap_or_default(),
+        activate: body.activate.unwrap_or(true),
+    };
+    let run_id = create_app_action_run(
+        &state,
+        "safari",
+        "open_safari_tab",
+        trim_optional(request.url.clone()),
+        "Opening Safari tab",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    let result = open_safari_tab(&request);
+    match result {
+        Ok(tab) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    true,
+                    "Opened Safari tab",
+                    None,
+                    app_action_result_meta_safari_tab(&tab),
+                );
+            }
+            Ok(Json(json!({
+                "ok": true,
+                "tab": tab,
+            })))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    &state,
+                    &run_id,
+                    false,
+                    "Failed to open Safari tab",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            Err(map_app_integration_error(error))
+        }
+    }
 }
 
 async fn get_checkpoint_sync_config(
@@ -2348,6 +4042,1596 @@ async fn runtime_session_events(
     Ok(Json(serde_json::to_value(result).unwrap()))
 }
 
+fn builtin_mcp_tools() -> Vec<ListedTool> {
+    if !cfg!(target_os = "windows") {
+        return Vec::new();
+    }
+
+    vec![ListedTool {
+        server: BUILTIN_DESKTOP_TOOL_SERVER.to_string(),
+        name: BUILTIN_DESKTOP_TOOL_NAME.to_string(),
+        description: "Control local Windows desktop features exposed by Ghast AI Companion. Supported actions: clipboard read/write, filesystem text read/write, File Explorer list/reveal, process list/terminate, screenshot capture, window automation, and desktop notifications. Companion permissions still apply.".to_string(),
+        input_schema: builtin_desktop_tool_schema(),
+    }]
+}
+
+fn builtin_desktop_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action"],
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "Desktop action to execute.",
+                "enum": [
+                    "clipboard.read_text",
+                    "clipboard.write_text",
+                    "filesystem.read_text",
+                    "filesystem.write_text",
+                    "explorer.list_items",
+                    "explorer.reveal_item",
+                    "process.list",
+                    "process.terminate",
+                    "screenshot.capture",
+                    "window.list",
+                    "window.activate",
+                    "window.minimize",
+                    "notification.show",
+                    "registry.write_value",
+                    "service.list",
+                    "service.start",
+                    "service.stop",
+                    "service.restart",
+                    "task.list",
+                    "task.run",
+                    "task.delete",
+                    "admin_shell.run"
+                ]
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to write when action=clipboard.write_text or action=filesystem.write_text."
+            },
+            "title": {
+                "type": "string",
+                "description": "Title text when action=notification.show."
+            },
+            "body": {
+                "type": "string",
+                "description": "Optional message body when action=notification.show."
+            },
+            "path": {
+                "type": "string",
+                "description": "Target path for filesystem, explorer, registry, and scheduled-task actions."
+            },
+            "name": {
+                "type": "string",
+                "description": "Value name for action=registry.write_value, service name for action=service.*, or task name for action=task.*."
+            },
+            "value": {
+                "description": "Registry value payload for action=registry.write_value."
+            },
+            "valueType": {
+                "type": "string",
+                "enum": ["string", "expand_string", "dword", "qword"],
+                "description": "Registry value type for action=registry.write_value."
+            },
+            "command": {
+                "type": "string",
+                "description": "Executable or shell entry point for action=admin_shell.run."
+            },
+            "arguments": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional command arguments for action=admin_shell.run."
+            },
+            "workingDirectory": {
+                "type": "string",
+                "description": "Optional working directory for action=admin_shell.run."
+            },
+            "windowHandle": {
+                "type": "string",
+                "description": "Window handle returned by action=window.list."
+            },
+            "includeHidden": {
+                "type": "boolean",
+                "description": "Whether hidden files should be included when action=explorer.list_items."
+            },
+            "includeMinimized": {
+                "type": "boolean",
+                "description": "Whether minimized windows should be included when action=window.list."
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional maximum number of items to return for list actions."
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional filter for action=process.list or action=window.list."
+            },
+            "pid": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Process ID for action=process.terminate."
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Whether to force-stop the process when action=process.terminate. Defaults to true."
+            },
+            "displayIndex": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Display index for action=screenshot.capture. Defaults to 0."
+            }
+        }
+    })
+}
+
+async fn call_builtin_mcp_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    tool_name: &str,
+    arguments: Value,
+) -> ToolCallResult {
+    if tool_name != BUILTIN_DESKTOP_TOOL_NAME {
+        return builtin_tool_error(format!(
+            "Tool \"{tool_name}\" not found on server \"{BUILTIN_DESKTOP_TOOL_SERVER}\""
+        ));
+    }
+
+    if !cfg!(target_os = "windows") {
+        return builtin_tool_error(
+            "The built-in desktop_control tool is currently only available on Windows.",
+        );
+    }
+
+    let args: DesktopControlToolArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => {
+            return builtin_tool_error(format!(
+                "Invalid arguments for {BUILTIN_DESKTOP_TOOL_NAME}: {error}"
+            ))
+        }
+    };
+
+    let Some(action) = args.action.clone().and_then(trim_optional) else {
+        return builtin_tool_error("\"action\" is required.");
+    };
+
+    match action.as_str() {
+        "clipboard.read_text" => builtin_clipboard_read_tool(state, config),
+        "clipboard.write_text" => builtin_clipboard_write_tool(state, config, args),
+        "filesystem.read_text" => builtin_filesystem_read_tool(state, config, args),
+        "filesystem.write_text" => builtin_filesystem_write_tool(state, config, args),
+        "explorer.list_items" => builtin_explorer_list_tool(state, config, args),
+        "explorer.reveal_item" => builtin_explorer_reveal_tool(state, config, args),
+        "process.list" => builtin_process_list_tool(state, config, args),
+        "process.terminate" => builtin_process_terminate_tool(state, config, args),
+        "screenshot.capture" => builtin_screenshot_tool(state, config, args),
+        "window.list" => builtin_window_list_tool(state, config, args),
+        "window.activate" => builtin_window_activate_tool(state, config, args),
+        "window.minimize" => builtin_window_minimize_tool(state, config, args),
+        "notification.show" => builtin_notification_show_tool(state, config, args),
+        "registry.write_value" => builtin_registry_write_tool(state, config, args),
+        "service.list" => builtin_service_list_tool(state, config, args),
+        "service.start" => builtin_service_start_tool(state, config, args),
+        "service.stop" => builtin_service_stop_tool(state, config, args),
+        "service.restart" => builtin_service_restart_tool(state, config, args),
+        "task.list" => builtin_task_list_tool(state, config, args),
+        "task.run" => builtin_task_run_tool(state, config, args),
+        "task.delete" => builtin_task_delete_tool(state, config, args),
+        "admin_shell.run" => builtin_admin_shell_tool(state, config, args),
+        _ => builtin_tool_error(format!(
+            "Unknown action \"{action}\" for {BUILTIN_DESKTOP_TOOL_NAME}."
+        )),
+    }
+}
+
+fn builtin_clipboard_read_tool(state: &AppState, config: &CompanionConfig) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "clipboard",
+        "Clipboard access is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let run_id = create_app_action_run(
+        state,
+        "clipboard",
+        "desktop_control.clipboard.read_text",
+        Some("clipboard text".to_string()),
+        "Reading clipboard text",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match get_clipboard_text() {
+        Ok(contents) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Read clipboard text",
+                    None,
+                    app_action_result_meta_clipboard(&contents),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "clipboard": contents,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to read clipboard text",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_clipboard_write_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "clipboard",
+        "Clipboard access is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = SetClipboardTextRequest {
+        text: args.text.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.text.clone());
+    let run_id = create_app_action_run(
+        state,
+        "clipboard",
+        "desktop_control.clipboard.write_text",
+        preview,
+        "Writing clipboard text",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match set_clipboard_text(&request) {
+        Ok(contents) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Updated clipboard text",
+                    None,
+                    app_action_result_meta_clipboard(&contents),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "clipboard": contents,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to write clipboard text",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_filesystem_read_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "filesystem",
+        "Filesystem access is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ReadTextFileRequest {
+        path: args.path.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.path.clone());
+    let run_id = create_app_action_run(
+        state,
+        "filesystem",
+        "desktop_control.filesystem.read_text",
+        preview,
+        "Reading local text file",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match read_text_file(&request) {
+        Ok(file) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Read local text file",
+                    None,
+                    app_action_result_meta_text_file(&file),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "file": file,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to read local text file",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_filesystem_write_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "filesystem",
+        "Filesystem access is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = companion_app::WriteTextFileRequest {
+        path: args.path.unwrap_or_default(),
+        text: args.text.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.path.clone());
+    let run_id = create_app_action_run(
+        state,
+        "filesystem",
+        "desktop_control.filesystem.write_text",
+        preview,
+        "Writing local text file",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match write_text_file(&request) {
+        Ok(file) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Wrote local text file",
+                    None,
+                    app_action_result_meta_text_file_write(&file),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "file": file,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to write local text file",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_explorer_list_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "explorer",
+        "File Explorer access is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ListExplorerItemsRequest {
+        path: args.path,
+        include_hidden: args.include_hidden.unwrap_or(false),
+        limit: args.limit,
+    };
+    let preview = request
+        .path
+        .clone()
+        .unwrap_or_else(|| "home folder".to_string());
+    let run_id = create_app_action_run(
+        state,
+        "explorer",
+        "desktop_control.explorer.list_items",
+        Some(preview.clone()),
+        "Listing Explorer items",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match list_explorer_items(&request) {
+        Ok(items) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "itemCount",
+                        Some(Value::Number(serde_json::Number::from(items.len() as u64))),
+                    ),
+                    ("path", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Listed Explorer items",
+                    None,
+                    extra,
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "items": items,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to list Explorer items",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_explorer_reveal_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "explorer",
+        "File Explorer access is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ExplorerRevealRequest {
+        path: args.path.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.path.clone());
+    let run_id = create_app_action_run(
+        state,
+        "explorer",
+        "desktop_control.explorer.reveal_item",
+        preview,
+        "Revealing Explorer item",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match reveal_explorer_item(&request) {
+        Ok(item) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Revealed Explorer item",
+                    None,
+                    app_action_result_meta_explorer_reveal(&item),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "item": item,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to reveal Explorer item",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_process_list_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "process_control",
+        "Process control is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ListProcessesRequest {
+        query: args.query,
+        limit: args.limit,
+    };
+    let preview = request
+        .query
+        .clone()
+        .unwrap_or_else(|| "all processes".to_string());
+    let run_id = create_app_action_run(
+        state,
+        "process_control",
+        "desktop_control.process.list",
+        Some(preview.clone()),
+        "Listing local processes",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match list_processes(&request) {
+        Ok(processes) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "processCount",
+                        Some(Value::Number(serde_json::Number::from(
+                            processes.len() as u64
+                        ))),
+                    ),
+                    ("query", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Listed local processes",
+                    None,
+                    extra,
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "processes": processes,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to list local processes",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_process_terminate_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "process_control",
+        "Process control is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = TerminateProcessRequest {
+        pid: args.pid.unwrap_or_default(),
+        force: args.force.unwrap_or(true),
+    };
+    let run_id = create_app_action_run(
+        state,
+        "process_control",
+        "desktop_control.process.terminate",
+        Some(format!("pid {}", request.pid)),
+        "Stopping a local process",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match terminate_process(&request) {
+        Ok(process) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Stopped local process",
+                    None,
+                    app_action_result_meta_process_termination(&process),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "process": process,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to stop local process",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_screenshot_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "screenshot",
+        "Screenshot capture is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = CaptureScreenshotRequest {
+        display_index: args.display_index,
+    };
+    let preview = request
+        .display_index
+        .map(|index| format!("display {index}"))
+        .unwrap_or_else(|| "primary display".to_string());
+    let run_id = create_app_action_run(
+        state,
+        "screenshot",
+        "desktop_control.screenshot.capture",
+        Some(preview),
+        "Capturing screenshot",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match capture_screenshot(&request) {
+        Ok(capture) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Captured screenshot",
+                    None,
+                    app_action_result_meta_screenshot(&capture),
+                );
+            }
+            builtin_tool_image_result(
+                json!({
+                    "ok": true,
+                    "capture": {
+                        "displayIndex": capture.display_index,
+                        "width": capture.width,
+                        "height": capture.height,
+                        "mimeType": capture.mime_type.clone(),
+                    }
+                }),
+                capture,
+            )
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to capture screenshot",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_window_list_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "window_automation",
+        "Window automation is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ListWindowsRequest {
+        query: args.query,
+        include_minimized: args.include_minimized.unwrap_or(false),
+        limit: args.limit,
+    };
+    let preview = request
+        .query
+        .clone()
+        .unwrap_or_else(|| "open windows".to_string());
+    let run_id = create_app_action_run(
+        state,
+        "window_automation",
+        "desktop_control.window.list",
+        Some(preview.clone()),
+        "Listing desktop windows",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match list_windows(&request) {
+        Ok(windows) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "windowCount",
+                        Some(Value::Number(
+                            serde_json::Number::from(windows.len() as u64),
+                        )),
+                    ),
+                    ("query", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Listed desktop windows",
+                    None,
+                    extra,
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "windows": windows,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to list desktop windows",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_window_activate_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "window_automation",
+        "Window automation is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = WindowActionRequest {
+        window_handle: args.window_handle.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.window_handle.clone());
+    let run_id = create_app_action_run(
+        state,
+        "window_automation",
+        "desktop_control.window.activate",
+        preview,
+        "Activating desktop window",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match activate_window(&request) {
+        Ok(result) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Activated desktop window",
+                    None,
+                    app_action_result_meta_window_action(&result),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "window": result,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to activate desktop window",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_window_minimize_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "window_automation",
+        "Window automation is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = WindowActionRequest {
+        window_handle: args.window_handle.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.window_handle.clone());
+    let run_id = create_app_action_run(
+        state,
+        "window_automation",
+        "desktop_control.window.minimize",
+        preview,
+        "Minimizing desktop window",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match minimize_window(&request) {
+        Ok(result) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Minimized desktop window",
+                    None,
+                    app_action_result_meta_window_action(&result),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "window": result,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to minimize desktop window",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_notification_show_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "desktop_notification",
+        "Desktop notifications are disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = DesktopNotificationRequest {
+        title: args.title.unwrap_or_default(),
+        body: args.body,
+    };
+    let preview = trim_optional(request.title.clone());
+    let run_id = create_app_action_run(
+        state,
+        "desktop_notification",
+        "desktop_control.notification.show",
+        preview,
+        "Showing desktop notification",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match show_desktop_notification(&request) {
+        Ok(notification) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Displayed desktop notification",
+                    None,
+                    app_action_result_meta_notification(&notification),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "notification": notification,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to display desktop notification",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_registry_write_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "registry_write",
+        "Registry changes are disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = RegistryWriteRequest {
+        path: args.path.unwrap_or_default(),
+        name: args.name.unwrap_or_default(),
+        value_type: args.value_type.unwrap_or_else(|| "string".to_string()),
+        value: args.value.unwrap_or(Value::Null),
+    };
+    let preview = trim_optional(format!(
+        "{} :: {}",
+        request.path.trim(),
+        request.name.trim()
+    ));
+    let run_id = create_app_action_run(
+        state,
+        "registry_write",
+        "desktop_control.registry.write_value",
+        preview,
+        "Writing Windows registry value",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match write_registry_value(&request) {
+        Ok(entry) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Updated Windows registry value",
+                    None,
+                    app_action_result_meta_registry_write(&entry),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "entry": entry,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to update Windows registry value",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_service_list_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "service_control",
+        "Windows service control is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ListServicesRequest {
+        query: args.query,
+        limit: args.limit,
+    };
+    let preview = request
+        .query
+        .clone()
+        .unwrap_or_else(|| "all services".to_string());
+    let run_id = create_app_action_run(
+        state,
+        "service_control",
+        "desktop_control.service.list",
+        Some(preview.clone()),
+        "Listing Windows services",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match list_services(&request) {
+        Ok(services) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "serviceCount",
+                        Some(Value::Number(serde_json::Number::from(
+                            services.len() as u64
+                        ))),
+                    ),
+                    ("query", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Listed Windows services",
+                    None,
+                    extra,
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "services": services,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to list Windows services",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_service_start_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    builtin_service_action_tool(
+        state,
+        config,
+        args,
+        "desktop_control.service.start",
+        "Starting Windows service",
+        "Started Windows service",
+        "Failed to start Windows service",
+        start_service,
+    )
+}
+
+fn builtin_service_stop_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    builtin_service_action_tool(
+        state,
+        config,
+        args,
+        "desktop_control.service.stop",
+        "Stopping Windows service",
+        "Stopped Windows service",
+        "Failed to stop Windows service",
+        stop_service,
+    )
+}
+
+fn builtin_service_restart_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    builtin_service_action_tool(
+        state,
+        config,
+        args,
+        "desktop_control.service.restart",
+        "Restarting Windows service",
+        "Restarted Windows service",
+        "Failed to restart Windows service",
+        restart_service,
+    )
+}
+
+fn builtin_service_action_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+    action_name: &str,
+    pending_summary: &str,
+    success_summary: &str,
+    failed_summary: &str,
+    action: fn(
+        &ServiceActionRequest,
+    ) -> std::result::Result<ServiceActionResult, AppIntegrationError>,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "service_control",
+        "Windows service control is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ServiceActionRequest {
+        name: args.name.unwrap_or_default(),
+    };
+    let preview = trim_optional(request.name.clone());
+    let run_id = create_app_action_run(
+        state,
+        "service_control",
+        action_name,
+        preview,
+        pending_summary,
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match action(&request) {
+        Ok(service) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    success_summary,
+                    None,
+                    app_action_result_meta_service_action(&service),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "service": service,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    failed_summary,
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_task_list_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "task_scheduler",
+        "Scheduled task control is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ListScheduledTasksRequest {
+        query: args.query,
+        limit: args.limit,
+    };
+    let preview = request
+        .query
+        .clone()
+        .unwrap_or_else(|| "all scheduled tasks".to_string());
+    let run_id = create_app_action_run(
+        state,
+        "task_scheduler",
+        "desktop_control.task.list",
+        Some(preview.clone()),
+        "Listing scheduled tasks",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match list_scheduled_tasks(&request) {
+        Ok(tasks) => {
+            if let Some(run_id) = run_id {
+                let extra = json_object(vec![
+                    (
+                        "taskCount",
+                        Some(Value::Number(serde_json::Number::from(tasks.len() as u64))),
+                    ),
+                    ("query", Some(Value::String(preview))),
+                ]);
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    "Listed scheduled tasks",
+                    None,
+                    extra,
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "tasks": tasks,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to list scheduled tasks",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_task_run_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    builtin_task_action_tool(
+        state,
+        config,
+        args,
+        "desktop_control.task.run",
+        "Starting scheduled task",
+        "Started scheduled task",
+        "Failed to start scheduled task",
+        run_scheduled_task,
+    )
+}
+
+fn builtin_task_delete_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    builtin_task_action_tool(
+        state,
+        config,
+        args,
+        "desktop_control.task.delete",
+        "Deleting scheduled task",
+        "Deleted scheduled task",
+        "Failed to delete scheduled task",
+        delete_scheduled_task,
+    )
+}
+
+fn builtin_task_action_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+    action_name: &str,
+    pending_summary: &str,
+    success_summary: &str,
+    failed_summary: &str,
+    action: fn(
+        &ScheduledTaskActionRequest,
+    ) -> std::result::Result<ScheduledTaskActionResult, AppIntegrationError>,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "task_scheduler",
+        "Scheduled task control is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = ScheduledTaskActionRequest {
+        name: args.name.unwrap_or_default(),
+        task_path: args.path,
+    };
+    let preview = trim_optional(match request.task_path.as_deref() {
+        Some(task_path) => format!("{task_path}{}", request.name.trim()),
+        None => request.name.clone(),
+    });
+    let run_id = create_app_action_run(
+        state,
+        "task_scheduler",
+        action_name,
+        preview,
+        pending_summary,
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match action(&request) {
+        Ok(task) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    true,
+                    success_summary,
+                    None,
+                    app_action_result_meta_task_action(&task),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": true,
+                "task": task,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    failed_summary,
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn builtin_admin_shell_tool(
+    state: &AppState,
+    config: &CompanionConfig,
+    args: DesktopControlToolArgs,
+) -> ToolCallResult {
+    if let Err(result) = ensure_tool_capability_enabled(
+        config,
+        "admin_shell",
+        "Elevated shell is disabled in Companion permissions.",
+    ) {
+        return result;
+    }
+
+    let request = AdminShellRequest {
+        command: args.command.unwrap_or_default(),
+        arguments: args.arguments.unwrap_or_default(),
+        working_directory: args.working_directory,
+    };
+    let preview = trim_optional(if request.arguments.is_empty() {
+        request.command.clone()
+    } else {
+        format!("{} {}", request.command, request.arguments.join(" "))
+    });
+    let run_id = create_app_action_run(
+        state,
+        "admin_shell",
+        "desktop_control.admin_shell.run",
+        preview,
+        "Running elevated shell command",
+    )
+    .ok()
+    .map(|run| run.run_id);
+
+    match run_admin_shell(&request) {
+        Ok(result) => {
+            let command_ok = result.exit_code == 0;
+            if let Some(run_id) = run_id {
+                let error_text = if command_ok {
+                    None
+                } else {
+                    trim_optional(if result.stderr.trim().is_empty() {
+                        format!("Process exited with code {}", result.exit_code)
+                    } else {
+                        format!(
+                            "Process exited with code {}: {}",
+                            result.exit_code,
+                            result.stderr.trim()
+                        )
+                    })
+                };
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    command_ok,
+                    if command_ok {
+                        "Elevated shell command finished"
+                    } else {
+                        "Elevated shell command failed"
+                    },
+                    error_text,
+                    app_action_result_meta_admin_shell(&result),
+                );
+            }
+            builtin_tool_json_result(json!({
+                "ok": command_ok,
+                "result": result,
+            }))
+        }
+        Err(error) => {
+            if let Some(run_id) = run_id {
+                let _ = finish_app_action_run(
+                    state,
+                    &run_id,
+                    false,
+                    "Failed to run elevated shell command",
+                    Some(error.to_string()),
+                    None,
+                );
+            }
+            map_app_integration_error_to_tool(error)
+        }
+    }
+}
+
+fn ensure_tool_capability_enabled(
+    config: &CompanionConfig,
+    capability: &str,
+    message: &str,
+) -> std::result::Result<(), ToolCallResult> {
+    if config
+        .companion_capabilities
+        .get(capability)
+        .copied()
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err(builtin_tool_error(message))
+}
+
+fn map_app_integration_error_to_tool(error: AppIntegrationError) -> ToolCallResult {
+    builtin_tool_error(error.to_string())
+}
+
+fn builtin_tool_json_result(payload: Value) -> ToolCallResult {
+    ToolCallResult {
+        ok: true,
+        content: vec![json!({
+            "type": "text",
+            "text": payload.to_string(),
+        })],
+        is_error: false,
+        error: None,
+    }
+}
+
+fn builtin_tool_image_result(summary: Value, capture: ScreenshotCapture) -> ToolCallResult {
+    ToolCallResult {
+        ok: true,
+        content: vec![
+            json!({
+                "type": "text",
+                "text": summary.to_string(),
+            }),
+            json!({
+                "type": "image",
+                "data": capture.image_base64,
+                "mimeType": capture.mime_type,
+            }),
+        ],
+        is_error: false,
+        error: None,
+    }
+}
+
+fn builtin_tool_error(message: impl Into<String>) -> ToolCallResult {
+    ToolCallResult {
+        ok: false,
+        content: Vec::new(),
+        is_error: false,
+        error: Some(message.into()),
+    }
+}
+
 async fn mcp_servers(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2365,8 +5649,10 @@ async fn mcp_tools(
 ) -> Result<Json<serde_json::Value>, Response> {
     let config = state.snapshot_config().await;
     authorize(&headers, &config)?;
+    let mut tools = state.mcp.get_all_tools().await;
+    tools.extend(builtin_mcp_tools());
     Ok(Json(json!({
-        "tools": state.mcp.get_all_tools().await,
+        "tools": tools,
     })))
 }
 
@@ -2379,15 +5665,20 @@ async fn mcp_call_tool(
     authorize(&headers, &config)?;
     let server = body.server.unwrap_or_default();
     let tool = body.tool.unwrap_or_default();
+    let arguments = body.arguments.unwrap_or_else(|| json!({}));
     if server.trim().is_empty() || tool.trim().is_empty() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
             "\"server\" and \"tool\" are required.",
         ));
     }
+    if server.trim() == BUILTIN_DESKTOP_TOOL_SERVER {
+        let result = call_builtin_mcp_tool(&state, &config, tool.trim(), arguments).await;
+        return Ok(Json(serde_json::to_value(result).unwrap()));
+    }
     let result = state
         .mcp
-        .call_tool(&server, &tool, body.arguments.unwrap_or_else(|| json!({})))
+        .call_tool(server.trim(), tool.trim(), arguments)
         .await;
     Ok(Json(serde_json::to_value(result).unwrap()))
 }
@@ -2879,6 +6170,421 @@ async fn update_security_capabilities(
         "ok": true,
         "capabilities": next_capabilities,
     })))
+}
+
+fn create_app_action_run(
+    state: &AppState,
+    capability: &str,
+    action_name: &str,
+    preview: Option<String>,
+    summary: &str,
+) -> Result<RunRecord> {
+    state.runs.create_run(CreateRunInput {
+        run_type: Some("exec".to_string()),
+        state: Some("running".to_string()),
+        started_at: Some(now_millis()),
+        lane_id: Some("remote:app".to_string()),
+        source: Some("remote".to_string()),
+        contract_version: Some(capabilities_payload().run_contract_version),
+        summary: Some(summary.to_string()),
+        meta: json_object(vec![
+            ("toolName", Some(Value::String(action_name.to_string()))),
+            (
+                "toolPreview",
+                preview.and_then(trim_optional).map(Value::String),
+            ),
+            ("capability", Some(Value::String(capability.to_string()))),
+            ("permissionId", Some(Value::String(capability.to_string()))),
+            ("actionSource", Some(Value::String("extension".to_string()))),
+            ("actionCategory", Some(Value::String("app".to_string()))),
+        ]),
+        ..CreateRunInput::default()
+    })
+}
+
+fn finish_app_action_run(
+    state: &AppState,
+    run_id: &str,
+    ok: bool,
+    summary: &str,
+    error: Option<String>,
+    extra_meta: Option<Map<String, Value>>,
+) -> Result<()> {
+    state
+        .runs
+        .update_run(run_id, |run| {
+            run.state = if ok {
+                "done".to_string()
+            } else {
+                "failed".to_string()
+            };
+            run.finished_at = Some(now_millis());
+            run.summary = Some(summary.to_string());
+            run.error = error.and_then(|value| truncate_text_for_error(&value));
+            run.meta = merge_run_meta(run.meta.clone(), extra_meta);
+        })
+        .map(|_| ())
+}
+
+fn app_action_result_meta_calendar(event: &CalendarEvent) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "calendarName",
+            trim_optional(event.calendar_name.clone()).map(Value::String),
+        ),
+        (
+            "calendarEventId",
+            trim_optional(event.uid.clone()).map(Value::String),
+        ),
+        (
+            "startAt",
+            trim_optional(event.start_at.clone()).map(Value::String),
+        ),
+        (
+            "endAt",
+            event
+                .end_at
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+        (
+            "location",
+            event
+                .location
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+    ])
+}
+
+fn app_action_result_meta_reminder(reminder: &ReminderItem) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "listName",
+            trim_optional(reminder.list_name.clone()).map(Value::String),
+        ),
+        (
+            "reminderId",
+            trim_optional(reminder.id.clone()).map(Value::String),
+        ),
+        (
+            "dueAt",
+            reminder
+                .due_at
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+        (
+            "priority",
+            Some(Value::Number(serde_json::Number::from(reminder.priority))),
+        ),
+    ])
+}
+
+fn app_action_result_meta_note(note: &NoteItem) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("noteId", trim_optional(note.id.clone()).map(Value::String)),
+        (
+            "folderId",
+            note.folder_id
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+        (
+            "folderName",
+            trim_optional(note.folder_name.clone()).map(Value::String),
+        ),
+        (
+            "accountName",
+            note.account_name
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+        (
+            "modifiedAt",
+            note.modified_at
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+    ])
+}
+
+fn app_action_result_meta_clipboard(clipboard: &ClipboardTextResult) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "textLength",
+            Some(Value::Number(serde_json::Number::from(
+                clipboard.text.chars().count() as u64,
+            ))),
+        ),
+        ("hasText", Some(Value::Bool(!clipboard.text.is_empty()))),
+    ])
+}
+
+fn app_action_result_meta_text_file(file: &TextFileContent) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("path", trim_optional(file.path.clone()).map(Value::String)),
+        (
+            "textLength",
+            Some(Value::Number(serde_json::Number::from(
+                file.text.chars().count() as u64,
+            ))),
+        ),
+    ])
+}
+
+fn app_action_result_meta_text_file_write(
+    file: &TextFileWriteResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("path", trim_optional(file.path.clone()).map(Value::String)),
+        (
+            "bytesWritten",
+            Some(Value::Number(serde_json::Number::from(file.bytes_written))),
+        ),
+    ])
+}
+
+fn app_action_result_meta_explorer_reveal(
+    item: &ExplorerRevealResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("path", trim_optional(item.path.clone()).map(Value::String)),
+        ("revealed", Some(Value::Bool(item.revealed))),
+    ])
+}
+
+fn app_action_result_meta_finder_reveal(item: &FinderRevealResult) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("path", trim_optional(item.path.clone()).map(Value::String)),
+        ("revealed", Some(Value::Bool(item.revealed))),
+    ])
+}
+
+fn app_action_result_meta_safari_tab(tab: &SafariTab) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "windowIndex",
+            Some(Value::Number(serde_json::Number::from(
+                tab.window_index as u64,
+            ))),
+        ),
+        (
+            "tabIndex",
+            Some(Value::Number(serde_json::Number::from(
+                tab.tab_index as u64,
+            ))),
+        ),
+        (
+            "title",
+            tab.title.clone().and_then(trim_optional).map(Value::String),
+        ),
+        (
+            "url",
+            tab.url.clone().and_then(trim_optional).map(Value::String),
+        ),
+        ("active", Some(Value::Bool(tab.active))),
+    ])
+}
+
+fn app_action_result_meta_process_termination(
+    process: &ProcessTerminationResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "pid",
+            Some(Value::Number(serde_json::Number::from(process.pid as u64))),
+        ),
+        ("terminated", Some(Value::Bool(process.terminated))),
+    ])
+}
+
+fn app_action_result_meta_screenshot(capture: &ScreenshotCapture) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "displayIndex",
+            Some(Value::Number(serde_json::Number::from(
+                capture.display_index as u64,
+            ))),
+        ),
+        (
+            "width",
+            Some(Value::Number(serde_json::Number::from(
+                capture.width as u64,
+            ))),
+        ),
+        (
+            "height",
+            Some(Value::Number(serde_json::Number::from(
+                capture.height as u64,
+            ))),
+        ),
+        (
+            "mimeType",
+            trim_optional(capture.mime_type.clone()).map(Value::String),
+        ),
+    ])
+}
+
+fn app_action_result_meta_window_action(window: &WindowActionResult) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "windowHandle",
+            trim_optional(window.window_handle.clone()).map(Value::String),
+        ),
+        ("success", Some(Value::Bool(window.success))),
+    ])
+}
+
+fn app_action_result_meta_notification(
+    notification: &DesktopNotificationResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "title",
+            trim_optional(notification.title.clone()).map(Value::String),
+        ),
+        (
+            "bodyLength",
+            notification
+                .body
+                .as_ref()
+                .map(|body| Value::Number(serde_json::Number::from(body.chars().count() as u64))),
+        ),
+        ("delivered", Some(Value::Bool(notification.delivered))),
+    ])
+}
+
+fn app_action_result_meta_registry_write(
+    entry: &RegistryWriteResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("path", trim_optional(entry.path.clone()).map(Value::String)),
+        ("name", trim_optional(entry.name.clone()).map(Value::String)),
+        (
+            "valueType",
+            trim_optional(entry.value_type.clone()).map(Value::String),
+        ),
+        ("updated", Some(Value::Bool(entry.updated))),
+    ])
+}
+
+fn app_action_result_meta_service_action(
+    service: &ServiceActionResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "name",
+            trim_optional(service.name.clone()).map(Value::String),
+        ),
+        (
+            "displayName",
+            trim_optional(service.display_name.clone()).map(Value::String),
+        ),
+        (
+            "status",
+            trim_optional(service.status.clone()).map(Value::String),
+        ),
+    ])
+}
+
+fn app_action_result_meta_task_action(
+    task: &ScheduledTaskActionResult,
+) -> Option<Map<String, Value>> {
+    json_object(vec![
+        ("name", trim_optional(task.name.clone()).map(Value::String)),
+        (
+            "taskPath",
+            trim_optional(task.task_path.clone()).map(Value::String),
+        ),
+        ("success", Some(Value::Bool(task.success))),
+        (
+            "state",
+            task.state
+                .clone()
+                .and_then(trim_optional)
+                .map(Value::String),
+        ),
+    ])
+}
+
+fn app_action_result_meta_admin_shell(result: &AdminShellResult) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "command",
+            trim_optional(result.command.clone()).map(Value::String),
+        ),
+        (
+            "exitCode",
+            Some(Value::Number(serde_json::Number::from(result.exit_code))),
+        ),
+        (
+            "stdoutLength",
+            Some(Value::Number(serde_json::Number::from(
+                result.stdout.chars().count() as u64,
+            ))),
+        ),
+        (
+            "stderrLength",
+            Some(Value::Number(serde_json::Number::from(
+                result.stderr.chars().count() as u64,
+            ))),
+        ),
+        ("elevated", Some(Value::Bool(result.elevated))),
+    ])
+}
+
+fn app_action_result_meta_completion(reminder: &ReminderCompletion) -> Option<Map<String, Value>> {
+    json_object(vec![
+        (
+            "reminderId",
+            trim_optional(reminder.id.clone()).map(Value::String),
+        ),
+        ("completed", Some(Value::Bool(reminder.completed))),
+    ])
+}
+
+fn map_app_integration_error(error: AppIntegrationError) -> Response {
+    match error {
+        AppIntegrationError::InvalidRequest(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": message,
+                "code": "app_invalid_request",
+            })),
+        )
+            .into_response(),
+        AppIntegrationError::PermissionDenied(message) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": message,
+                "code": "app_permission_denied",
+            })),
+        )
+            .into_response(),
+        AppIntegrationError::UnsupportedPlatform => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "app_integration_unsupported",
+            })),
+        )
+            .into_response(),
+        AppIntegrationError::ExecutionFailed(message) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": message,
+                "code": "app_integration_failed",
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4137,6 +7843,228 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn calendar_routes_require_calendar_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/calendar/calendars")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn reminder_routes_require_reminders_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/reminders/lists")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn contact_routes_require_contacts_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/contacts/groups")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn note_routes_require_notes_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/notes/folders")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn finder_routes_require_finder_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/finder/items")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn clipboard_routes_require_clipboard_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/clipboard/text")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn explorer_routes_require_explorer_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/explorer/items")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn process_routes_require_process_control_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/processes")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn screenshot_route_requires_screenshot_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/apps/screenshot/capture")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
+    async fn safari_routes_require_safari_capability() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/apps/safari/tabs")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            payload.get("code").and_then(|value| value.as_str()),
+            Some("companion_capability_disabled")
+        );
+    }
+
+    #[tokio::test]
     async fn mcp_servers_endpoint_lists_configured_servers() {
         let mut config = test_config();
         config.mcp_servers.insert(
@@ -4173,6 +8101,112 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0]["name"].as_str(), Some("demo"));
         assert_eq!(servers[0]["status"].as_str(), Some("stopped"));
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_endpoint_reports_builtin_desktop_tool_by_platform() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mcp/tools")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let tools = payload["tools"].as_array().unwrap();
+        let builtin = tools.iter().find(|item| {
+            item.get("server").and_then(Value::as_str) == Some(BUILTIN_DESKTOP_TOOL_SERVER)
+                && item.get("name").and_then(Value::as_str) == Some(BUILTIN_DESKTOP_TOOL_NAME)
+        });
+
+        if cfg!(target_os = "windows") {
+            assert!(
+                builtin.is_some(),
+                "windows should expose the built-in desktop tool"
+            );
+        } else {
+            assert!(
+                builtin.is_none(),
+                "non-windows builds should not expose the desktop tool"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_desktop_tool_schema_lists_desktop_actions() {
+        let schema = builtin_desktop_tool_schema();
+        let actions = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum should exist");
+        let values = actions.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+
+        assert!(values.contains(&"filesystem.read_text"));
+        assert!(values.contains(&"filesystem.write_text"));
+        assert!(values.contains(&"window.list"));
+        assert!(values.contains(&"window.activate"));
+        assert!(values.contains(&"window.minimize"));
+        assert!(values.contains(&"notification.show"));
+        assert!(values.contains(&"registry.write_value"));
+        assert!(values.contains(&"service.list"));
+        assert!(values.contains(&"service.start"));
+        assert!(values.contains(&"service.stop"));
+        assert!(values.contains(&"service.restart"));
+        assert!(values.contains(&"task.list"));
+        assert!(values.contains(&"task.run"));
+        assert!(values.contains(&"task.delete"));
+        assert!(values.contains(&"admin_shell.run"));
+    }
+
+    #[tokio::test]
+    async fn builtin_desktop_tool_call_respects_platform_gate() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mcp/tools/call")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "server": BUILTIN_DESKTOP_TOOL_SERVER,
+                            "tool": BUILTIN_DESKTOP_TOOL_NAME,
+                            "arguments": {
+                                "action": "clipboard.read_text"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload.get("ok").and_then(Value::as_bool), Some(false));
+
+        let error = payload
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if cfg!(target_os = "windows") {
+            assert!(
+                error.contains("Clipboard access is disabled"),
+                "windows should fail because the capability starts disabled"
+            );
+        } else {
+            assert!(
+                error.contains("only available on Windows"),
+                "non-windows builds should report platform gating"
+            );
+        }
     }
 
     #[tokio::test]

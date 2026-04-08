@@ -100,7 +100,7 @@ enum CommandKind {
     #[command(hide = true)]
     NativeHost {
         #[arg(hide = true)]
-        _origin: Option<String>,
+        origin: Option<String>,
     },
     Stop {
         #[arg(long)]
@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
             ..
         } => bootstrap_command(json, no_autostart, no_start, &mode, &workspace_roots).await,
         CommandKind::Daemon => daemon_command().await,
-        CommandKind::NativeHost { .. } => native_host_command().await,
+        CommandKind::NativeHost { origin } => native_host_command(origin.as_deref()).await,
         CommandKind::Stop { force } => stop_command(force).await,
         CommandKind::Status => status_command().await,
         CommandKind::Config => {
@@ -676,7 +676,12 @@ async fn daemon_command() -> Result<()> {
     serve_with_signals(config).await
 }
 
-async fn native_host_command() -> Result<()> {
+async fn native_host_command(origin: Option<&str>) -> Result<()> {
+    if let Some(payload) = native_host_origin_guard(origin) {
+        write_native_host_message(&mut std::io::stdout().lock(), &payload)?;
+        return Ok(());
+    }
+
     let request = match read_native_host_message(&mut std::io::stdin().lock()) {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
@@ -699,6 +704,24 @@ async fn native_host_command() -> Result<()> {
     };
     write_native_host_message(&mut std::io::stdout().lock(), &payload)?;
     Ok(())
+}
+
+fn native_host_origin_guard(origin: Option<&str>) -> Option<Value> {
+    if native_host_origin_allowed(origin) {
+        return None;
+    }
+
+    Some(json!({
+        "error": "Unauthorized native host origin",
+        "receivedOrigin": origin.map(str::trim).filter(|value| !value.is_empty()),
+    }))
+}
+
+fn native_host_origin_allowed(origin: Option<&str>) -> bool {
+    matches!(
+        origin.map(str::trim).filter(|value| !value.is_empty()),
+        Some(value) if value == FIXED_EXTENSION_ORIGIN || value == format!("{FIXED_EXTENSION_ORIGIN}/")
+    )
 }
 
 async fn stop_command(force: bool) -> Result<()> {
@@ -2249,6 +2272,37 @@ mod tests {
             Cli::try_parse_from(["trapezohe-companion", "native-host", FIXED_EXTENSION_ORIGIN])
                 .expect("native host cli parses browser origin");
 
-        assert!(matches!(cli.command, CommandKind::NativeHost { .. }));
+        assert!(matches!(
+            cli.command,
+            CommandKind::NativeHost { origin: Some(origin) } if origin == FIXED_EXTENSION_ORIGIN
+        ));
+    }
+
+    #[test]
+    fn native_host_origin_guard_accepts_fixed_origin_with_or_without_trailing_slash() {
+        let trailing_slash = format!("{FIXED_EXTENSION_ORIGIN}/");
+        assert_eq!(native_host_origin_guard(Some(FIXED_EXTENSION_ORIGIN)), None);
+        assert_eq!(native_host_origin_guard(Some(&trailing_slash)), None);
+    }
+
+    #[test]
+    fn native_host_origin_guard_rejects_missing_or_unknown_origin() {
+        let missing = native_host_origin_guard(None).expect("missing origin should fail");
+        assert_eq!(
+            missing.get("error").and_then(Value::as_str),
+            Some("Unauthorized native host origin")
+        );
+        assert_eq!(missing.get("receivedOrigin"), Some(&Value::Null));
+
+        let wrong_origin = native_host_origin_guard(Some("chrome-extension://wrong-extension/"))
+            .expect("wrong origin should fail");
+        assert_eq!(
+            wrong_origin.get("error").and_then(Value::as_str),
+            Some("Unauthorized native host origin")
+        );
+        assert_eq!(
+            wrong_origin.get("receivedOrigin").and_then(Value::as_str),
+            Some("chrome-extension://wrong-extension/")
+        );
     }
 }

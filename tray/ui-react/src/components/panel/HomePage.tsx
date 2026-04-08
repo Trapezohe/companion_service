@@ -35,7 +35,7 @@ const HomePage = ({
     health?.version ??
     snapshot?.state?.version ??
     snapshot?.update?.current_version ??
-    "0.1.18";
+    "0.1.19";
   const connectedMcp = diagnostics?.connected_mcp_servers ?? health?.mcp_servers ?? 0;
   const configuredMcp = diagnostics?.configured_mcp_servers ?? health?.mcp_servers ?? 0;
   const totalMcpTools = diagnostics?.total_mcp_tools ?? health?.mcp_tools ?? 0;

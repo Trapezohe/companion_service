@@ -1,172 +1,69 @@
-# GhastAI Companion — One-click installer for Windows
-# Usage: irm https://raw.githubusercontent.com/Trapezohe/companion_service/main/install.ps1 | iex
-
 $ErrorActionPreference = "Stop"
 
-$NonInteractive = $false
-$Mode = "workspace"
-$WorkspaceRoot = ""
-$EnableAutostart = $true
-$StartNow = $true
+$ReleaseMsiUrl = "https://github.com/Trapezohe/companion_service/releases/latest/download/trapezohe-companion-windows.msi"
+$Passive = $true
+$IgnoredOptions = @()
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     $arg = $args[$i]
     switch ($arg) {
-        "--non-interactive" { $NonInteractive = $true; continue }
-        "-y" { $NonInteractive = $true; continue }
-        "--yes" { $NonInteractive = $true; continue }
+        "--non-interactive" { $Passive = $false; continue }
+        "-y" { $Passive = $false; continue }
+        "--yes" { $Passive = $false; continue }
         "--mode" {
-            if ($i + 1 -lt $args.Count) {
-                $i++
-                $Mode = $args[$i]
-            }
+            $IgnoredOptions += "--mode"
+            if ($i + 1 -lt $args.Count) { $i++ }
             continue
         }
         "--workspace" {
-            if ($i + 1 -lt $args.Count) {
-                $i++
-                $WorkspaceRoot = $args[$i]
-            }
+            $IgnoredOptions += "--workspace"
+            if ($i + 1 -lt $args.Count) { $i++ }
             continue
         }
-        "--no-autostart" { $EnableAutostart = $false; continue }
-        "--no-start" { $StartNow = $false; continue }
+        "--no-autostart" {
+            $IgnoredOptions += "--no-autostart"
+            continue
+        }
+        "--no-start" {
+            $IgnoredOptions += "--no-start"
+            continue
+        }
         default { continue }
     }
 }
 
 Write-Host ""
-Write-Host "  ===============================" -ForegroundColor Cyan
-Write-Host "   GhastAI Companion Installer  " -ForegroundColor Cyan
-Write-Host "  ===============================" -ForegroundColor Cyan
+Write-Host "GhastAI Companion installer" -ForegroundColor Cyan
 Write-Host ""
 
-# ── Check Node.js ──
-
-function Check-Node {
-    try {
-        $nodeVersion = & node -v 2>$null
-    } catch {
-        Write-Host "  ERROR: Node.js is not installed." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Install Node.js 18+ from: https://nodejs.org/"
-        Write-Host "  Or using winget: winget install OpenJS.NodeJS.LTS"
-        Write-Host ""
-        exit 1
-    }
-
-    $major = [int]($nodeVersion -replace 'v(\d+)\..*', '$1')
-    if ($major -lt 18) {
-        Write-Host "  ERROR: Node.js 18+ required (found: $nodeVersion)" -ForegroundColor Red
-        exit 1
-    }
-
-    Write-Host "  OK Node.js $nodeVersion detected" -ForegroundColor Green
-}
-
-# ── Install package ──
-
-function Install-Companion {
-    Write-Host "  -> Installing trapezohe-companion globally..." -ForegroundColor Yellow
-    & npm install -g trapezohe-companion 2>&1 | ForEach-Object { Write-Host "    $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: npm install failed" -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "  OK Package installed" -ForegroundColor Green
-}
-
-# ── Initialize config ──
-
-function Init-Config {
-    Write-Host "  -> Initializing configuration..." -ForegroundColor Yellow
-    & trapezohe-companion init 2>&1 | ForEach-Object { Write-Host "    $_" }
-    Write-Host "  OK Config created" -ForegroundColor Green
-}
-
-function Run-Bootstrap {
-    Write-Host "  -> Running one-shot bootstrap..." -ForegroundColor Yellow
-    $bootstrapArgs = @("bootstrap", "--mode", $Mode)
-    if (-not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
-        $bootstrapArgs += @("--workspace", $WorkspaceRoot)
-    }
-    if (-not $EnableAutostart) {
-        $bootstrapArgs += "--no-autostart"
-    }
-    if (-not $StartNow) {
-        $bootstrapArgs += "--no-start"
-    }
-
-    & trapezohe-companion @bootstrapArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
-    Write-Host "  OK Bootstrap complete" -ForegroundColor Green
-}
-
-# ── Register Native Messaging Host ──
-
-function Register-NativeHost {
+if ($IgnoredOptions.Count -gt 0) {
+    Write-Host "Warning: the Windows script now installs the signed MSI package directly." -ForegroundColor Yellow
+    Write-Host "Ignored options: $($IgnoredOptions -join ', ')" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Chrome Native Messaging (auto-pairing)" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  Registering the built-in Ghast extension pairing..."
-    & trapezohe-companion register 2>&1 | ForEach-Object { Write-Host "    $_" }
-    Write-Host "  OK Native messaging host registered for Ghast" -ForegroundColor Green
 }
 
-# ── Auto-start (default: enabled) ──
+$tempMsi = Join-Path $env:TEMP "ghastai-companion-latest.msi"
 
-function Setup-Autostart {
-    Write-Host ""
-    $reply = Read-Host "  Enable auto-start on login? (Y/n)"
-    if ($reply -eq "n" -or $reply -eq "N") {
-        Write-Host "  WARNING: Skipped. You can set it up later manually." -ForegroundColor Yellow
-        return
+try {
+    Write-Host "Downloading latest Windows installer..." -ForegroundColor Yellow
+    Invoke-WebRequest -Uri $ReleaseMsiUrl -OutFile $tempMsi
+
+    $msiArgs = @("/i", "`"$tempMsi`"", "/norestart")
+    if ($Passive) {
+        $msiArgs += "/passive"
+    } else {
+        $msiArgs += "/qn"
     }
 
-    $cliPath = (Get-Command trapezohe-companion -ErrorAction SilentlyContinue).Source
-    if (-not $cliPath) {
-        Write-Host "  WARNING: Could not locate trapezohe-companion. Skipping." -ForegroundColor Yellow
-        return
+    Write-Host "Launching Windows installer..." -ForegroundColor Yellow
+    $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        throw "msiexec exited with code $($proc.ExitCode)"
     }
 
-    $taskName = "TrapezoheCompanion"
-    $action = New-ScheduledTaskAction -Execute $cliPath -Argument "start"
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-    Write-Host "  OK Scheduled task '$taskName' created" -ForegroundColor Green
-}
-
-# ── Main ──
-
-Check-Node
-Install-Companion
-
-if ($NonInteractive) {
-    Run-Bootstrap
     Write-Host ""
-    Write-Host "  Installation complete!" -ForegroundColor Green
-    Write-Host "  Companion has been set up in non-interactive mode."
-    Write-Host ""
-    exit 0
+    Write-Host "GhastAI Companion installation complete." -ForegroundColor Green
+    Write-Host "If the tray does not appear immediately, open GhastAI Companion from the Start menu once." -ForegroundColor Green
+} finally {
+    Remove-Item -Path $tempMsi -Force -ErrorAction SilentlyContinue
 }
-
-Init-Config
-Register-NativeHost
-Setup-Autostart
-
-if ($StartNow) {
-    & trapezohe-companion start -d 2>$null | Out-Null
-}
-
-Write-Host ""
-Write-Host "  Installation complete!" -ForegroundColor Green
-Write-Host ""
-Write-Host "  Quick start:"
-Write-Host "    trapezohe-companion start      # Start in foreground"
-Write-Host "    trapezohe-companion start -d    # Start as daemon"
-Write-Host "    trapezohe-companion status      # Check status"
-Write-Host ""
-Write-Host "  Config: $env:USERPROFILE\.trapezohe\companion.json"
-Write-Host "  Docs:   https://github.com/Trapezohe/companion_service"
-Write-Host ""

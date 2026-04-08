@@ -518,9 +518,8 @@ async fn toggle_companion_permission(
     id: String,
     enabled: bool,
 ) -> Result<permissions::PermissionsSnapshot, String> {
-    permissions::validate_permission_id(&id)?;
-
     let mut flags = load_permission_flags()?;
+    permissions::validate_permission_toggle(&flags, &id, enabled)?;
     permissions::set_companion_capability_flag(&mut flags, &id, enabled)?;
 
     let config = current_or_loaded_config(&app).ok();

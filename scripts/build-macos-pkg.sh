@@ -4,7 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/macos-signing.sh"
 
-VERSION="${1:-$(node -p "JSON.parse(require('fs').readFileSync('${ROOT_DIR}/package.json','utf8')).version")}"
+VERSION="${1:-$(ROOT_DIR_ENV="${ROOT_DIR}" python3 - <<'PY'
+import tomllib
+import os
+from pathlib import Path
+
+root = Path(os.environ["ROOT_DIR_ENV"])
+data = tomllib.loads(root.joinpath("Cargo.toml").read_text())
+print(data["workspace"]["package"]["version"])
+PY
+)}"
 OUT_DIR="${ROOT_DIR}/dist/installers"
 STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray/${VERSION}}"
 WORK_DIR="$(mktemp -d)"
@@ -32,9 +41,10 @@ if [[ ! -d "${TRAY_APP_PATH}" ]]; then
   echo "Tray app bundle not found at ${TRAY_APP_PATH}" >&2
   exit 1
 fi
-cp -R "${TRAY_APP_PATH}" "${APPLICATIONS_DIR}/${TRAY_APP_NAME}"
+COPYFILE_DISABLE=1 /usr/bin/ditto --noextattr --norsrc "${TRAY_APP_PATH}" "${APPLICATIONS_DIR}/${TRAY_APP_NAME}"
+/usr/bin/xattr -cr "${PKG_ROOT}" 2>/dev/null || true
 
-pkgbuild \
+COPYFILE_DISABLE=1 pkgbuild \
   --identifier "ai.trapezohe.companion.installer" \
   --version "${VERSION}" \
   --root "${PKG_ROOT}" \

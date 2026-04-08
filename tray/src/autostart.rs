@@ -17,7 +17,7 @@ fn suppress_console_window(command: &mut Command) {
 }
 
 #[cfg(not(target_os = "windows"))]
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 fn suppress_console_window(_command: &mut Command) {}
 
 const LEGACY_PREFS_FILE_NAME: &str = "companion-tray.json";

@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use companion_shared::{
-    PermissionPolicy, COMPANION_PERMISSION_IDS, DEFAULT_PORT, PERMISSION_MODE_FULL,
-    PERMISSION_MODE_WORKSPACE,
+    companion_capability_default_enabled, PermissionPolicy, COMPANION_PERMISSION_IDS, DEFAULT_PORT,
+    PERMISSION_MODE_FULL, PERMISSION_MODE_WORKSPACE,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,7 @@ impl Default for CompanionConfig {
 pub fn default_companion_capabilities() -> BTreeMap<String, bool> {
     COMPANION_PERMISSION_IDS
         .iter()
-        .map(|id| ((*id).to_string(), false))
+        .map(|id| ((*id).to_string(), companion_capability_default_enabled(id)))
         .collect()
 }
 
@@ -125,7 +125,10 @@ pub fn normalize_companion_capabilities(input: &BTreeMap<String, bool>) -> BTree
         .iter()
         .map(|id| {
             let key = (*id).to_string();
-            let value = input.get(*id).copied().unwrap_or(false);
+            let value = input
+                .get(*id)
+                .copied()
+                .unwrap_or_else(|| companion_capability_default_enabled(id));
             (key, value)
         })
         .collect()
@@ -1094,6 +1097,20 @@ mod tests {
             assert_eq!(
                 config.companion_capabilities,
                 default_companion_capabilities()
+            );
+            assert_eq!(
+                config.companion_capabilities.get("local_command"),
+                Some(&true)
+            );
+            assert_eq!(
+                config.companion_capabilities.get("browser_control"),
+                Some(&true)
+            );
+            assert_eq!(config.companion_capabilities.get("calendar"), Some(&false));
+            assert_eq!(config.companion_capabilities.get("clipboard"), Some(&false));
+            assert_eq!(
+                config.companion_capabilities.get("registry_write"),
+                Some(&false)
             );
         });
     }

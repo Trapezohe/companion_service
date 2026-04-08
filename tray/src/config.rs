@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use companion_shared::{companion_capability_default_enabled, COMPANION_PERMISSION_IDS};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::{
@@ -9,19 +10,6 @@ use std::{
 
 use crate::models::CompanionConfig;
 
-const COMPANION_PERMISSION_IDS: [&str; 10] = [
-    "screen_recording",
-    "accessibility",
-    "automation",
-    "camera",
-    "microphone",
-    "location",
-    "notifications",
-    "local_command",
-    "browser_control",
-    "admin_action",
-];
-
 #[derive(Debug, Deserialize)]
 struct RawCompanionConfig {
     port: Option<u16>,
@@ -31,14 +19,14 @@ struct RawCompanionConfig {
 pub fn default_companion_capabilities() -> HashMap<String, bool> {
     COMPANION_PERMISSION_IDS
         .iter()
-        .map(|id| (id.to_string(), false))
+        .map(|id| (id.to_string(), companion_capability_default_enabled(id)))
         .collect()
 }
 
 fn normalize_companion_capabilities(input: Option<&Map<String, Value>>) -> HashMap<String, bool> {
     let mut normalized = default_companion_capabilities();
     if let Some(input) = input {
-        for id in COMPANION_PERMISSION_IDS {
+        for &id in COMPANION_PERMISSION_IDS {
             if let Some(value) = input.get(id).and_then(Value::as_bool) {
                 normalized.insert(id.to_string(), value);
             }
@@ -195,9 +183,12 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let missing = dir.path().join("missing-companion.json");
         let caps = load_companion_capabilities_from_path(&missing).expect("load caps");
-        assert_eq!(caps.get("local_command"), Some(&false));
-        assert_eq!(caps.get("browser_control"), Some(&false));
+        assert_eq!(caps.get("local_command"), Some(&true));
+        assert_eq!(caps.get("browser_control"), Some(&true));
         assert_eq!(caps.get("admin_action"), Some(&false));
+        assert_eq!(caps.get("calendar"), Some(&false));
+        assert_eq!(caps.get("clipboard"), Some(&false));
+        assert_eq!(caps.get("registry_write"), Some(&false));
     }
 
     #[test]
@@ -216,6 +207,8 @@ mod tests {
         let raw = std::fs::read_to_string(file.path()).expect("read config");
         assert!(raw.contains("\"token\": \"abc\""));
         assert!(raw.contains("\"local_command\": true"));
-        assert!(raw.contains("\"browser_control\": false"));
+        assert!(raw.contains("\"browser_control\": true"));
+        assert!(raw.contains("\"calendar\": false"));
+        assert!(raw.contains("\"clipboard\": false"));
     }
 }

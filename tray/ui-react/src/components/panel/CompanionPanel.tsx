@@ -1,25 +1,12 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { type Lang, useT } from "@/lib/translations";
+import type { StatusSnapshot } from "@/lib/companion";
 import HomePage from "./HomePage";
+import McpPage from "./McpPage";
 import PermissionsPage from "./PermissionsPage";
 import LogsPage from "./LogsPage";
 import SettingsPage from "./SettingsPage";
-
-interface UpdateInfo {
-  available: boolean;
-  can_install: boolean;
-  current_version: string;
-  latest_version: string;
-  release_url: string;
-  status: string;
-}
-
-interface StatusSnapshot {
-  language: Lang;
-  endpoint: string;
-  update?: UpdateInfo;
-}
 
 const CompanionPanel = () => {
   const [page, setPage] = useState("home");
@@ -41,7 +28,6 @@ const CompanionPanel = () => {
   // Initial fetch + hourly update check via check_update invoke
   useEffect(() => {
     fetchSnapshot();
-    // Trigger backend update check on mount, then every hour
     const runUpdateCheck = () => {
       invoke<StatusSnapshot>("check_update")
         .then((s) => {
@@ -52,6 +38,11 @@ const CompanionPanel = () => {
     };
     runUpdateCheck();
     const interval = setInterval(runUpdateCheck, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(fetchSnapshot, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -74,6 +65,7 @@ const CompanionPanel = () => {
           <HomePage
             onNavigate={setPage}
             lang={lang}
+            snapshot={snapshot}
             port={port}
             update={update}
             onInstallUpdate={() => {
@@ -81,6 +73,13 @@ const CompanionPanel = () => {
                 .then((s) => { if (s) setSnapshot(s); })
                 .catch(() => {});
             }}
+          />
+        )}
+        {page === "mcp" && (
+          <McpPage
+            onBack={() => setPage("home")}
+            lang={lang}
+            onAfterAction={fetchSnapshot}
           />
         )}
         {page === "permissions" && (

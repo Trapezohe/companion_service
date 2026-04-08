@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "companion-acp"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "hex",
@@ -776,8 +776,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "companion-app"
+version = "0.1.19"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "companion-automation"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -788,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "companion-browser"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -800,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "companion-checkpoint"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -821,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "companion-cli"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "clap",
@@ -838,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "companion-config"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-shared",
@@ -852,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "companion-control"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -867,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "companion-cron"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -879,11 +888,12 @@ dependencies = [
 
 [[package]]
 name = "companion-daemon"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "axum",
  "companion-acp",
+ "companion-app",
  "companion-automation",
  "companion-browser",
  "companion-checkpoint",
@@ -908,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "companion-mcp"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -923,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "companion-media"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -933,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "companion-memory"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -944,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "companion-runtime"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -964,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "companion-shared"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "serde",
 ]
@@ -6819,9 +6829,11 @@ dependencies = [
 
 [[package]]
 name = "trapezohe-companion-tray"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
+ "companion-config",
+ "companion-shared",
  "dirs 6.0.0",
  "reqwest 0.12.28",
  "serde",
@@ -6831,6 +6843,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
+ "winreg 0.52.0",
 ]
 
 [[package]]
@@ -7911,6 +7924,16 @@ name = "winreg"
 version = "0.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "524e57b2c537c0f9b1e69f1965311ec12182b4122e45035b1508cd24d2adadb1"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "winreg"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a277a57398d4bfa075df44f501a17cfdf8542d224f0d36095a2adc7aee4ef0a5"
 dependencies = [
  "cfg-if",
  "windows-sys 0.48.0",
