@@ -31,26 +31,7 @@ jobs:
             echo "Manual tag push: v${VERSION}"
           else
             # Push to main — check the workspace release version
-            VERSION=$(python3 - <<'PY'
-            import json
-            import tomllib
-            from pathlib import Path
-
-            cargo = tomllib.loads(Path("Cargo.toml").read_text())
-            tray_cargo = tomllib.loads(Path("tray/Cargo.toml").read_text())
-            tauri = json.loads(Path("tray/tauri.conf.json").read_text())
-            version = cargo["workspace"]["package"]["version"]
-            if tray_cargo["package"]["version"] != version:
-                raise SystemExit(
-                    f"Version mismatch: Cargo.toml={version} tray/Cargo.toml={tray_cargo['package']['version']}"
-                )
-            if tauri["version"] != version:
-                raise SystemExit(
-                    f"Version mismatch: Cargo.toml={version} tray/tauri.conf.json={tauri['version']}"
-                )
-            print(version)
-            PY
-            )
+            VERSION="$(python3 scripts/read_release_version.py)"
             if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               echo "Tag v${VERSION} already exists — skipping release"
