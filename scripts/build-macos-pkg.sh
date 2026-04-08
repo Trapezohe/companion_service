@@ -19,6 +19,7 @@ STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray/${VE
 WORK_DIR="$(mktemp -d)"
 PKG_ROOT="${WORK_DIR}/root"
 PKG_SCRIPTS="${WORK_DIR}/scripts"
+COMPONENT_PLIST="${WORK_DIR}/component.plist"
 APPLICATIONS_DIR="${PKG_ROOT}/Applications"
 PACKAGE_FILE="${OUT_DIR}/trapezohe-companion-macos.pkg"
 SIGNED_PACKAGE_FILE="${OUT_DIR}/trapezohe-companion-macos-signed.pkg"
@@ -43,11 +44,14 @@ if [[ ! -d "${TRAY_APP_PATH}" ]]; then
 fi
 COPYFILE_DISABLE=1 /usr/bin/ditto --noextattr --norsrc "${TRAY_APP_PATH}" "${APPLICATIONS_DIR}/${TRAY_APP_NAME}"
 /usr/bin/xattr -cr "${PKG_ROOT}" 2>/dev/null || true
+pkgbuild --analyze --root "${PKG_ROOT}" "${COMPONENT_PLIST}" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "${COMPONENT_PLIST}"
 
 COPYFILE_DISABLE=1 pkgbuild \
   --identifier "ai.trapezohe.companion.installer" \
   --version "${VERSION}" \
   --root "${PKG_ROOT}" \
+  --component-plist "${COMPONENT_PLIST}" \
   --scripts "${PKG_SCRIPTS}" \
   "${PACKAGE_FILE}"
 

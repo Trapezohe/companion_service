@@ -7,6 +7,9 @@ export interface UpdateInfo {
   latest_version: string;
   release_url: string;
   status: string;
+  downloaded_bytes?: number;
+  total_bytes?: number | null;
+  last_error?: string | null;
 }
 
 export interface ShellState {

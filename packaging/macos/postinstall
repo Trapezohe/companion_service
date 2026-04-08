@@ -4,15 +4,45 @@ set -euo pipefail
 VERSION="__COMPANION_VERSION__"
 LOG_FILE="/Users/Shared/trapezohe-companion-installer.log"
 CONSOLE_USER="$(stat -f %Su /dev/console 2>/dev/null || true)"
+CONSOLE_HOME="$(dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+SYSTEM_TRAY_APP_PATH="/Applications/GhastAI Companion.app"
+LEGACY_SYSTEM_TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
+CONSOLE_APPLICATIONS_DIR="${CONSOLE_HOME}/Applications"
+CONSOLE_TRAY_APP_PATH="${CONSOLE_APPLICATIONS_DIR}/GhastAI Companion.app"
 
 {
   echo "[$(date)] Companion macOS installer started (version=${VERSION})"
   echo "[$(date)] Console user: ${CONSOLE_USER:-unknown}"
+  echo "[$(date)] Console home: ${CONSOLE_HOME:-unknown}"
 } >> "${LOG_FILE}" 2>&1
 
 if [[ -z "${CONSOLE_USER}" || "${CONSOLE_USER}" == "root" ]]; then
   echo "[$(date)] No valid console user found; skipping bootstrap." >> "${LOG_FILE}" 2>&1
   exit 0
+fi
+
+if [[ -z "${CONSOLE_HOME}" || ! -d "${CONSOLE_HOME}" ]]; then
+  echo "[$(date)] Console home could not be resolved; skipping bootstrap." >> "${LOG_FILE}" 2>&1
+  exit 0
+fi
+
+relocate_tray_app_for_console_user() {
+  if [[ ! -d "${SYSTEM_TRAY_APP_PATH}" ]]; then
+    echo "[$(date)] System tray app not found at ${SYSTEM_TRAY_APP_PATH}; skipping relocation." >> "${LOG_FILE}" 2>&1
+    return 0
+  fi
+
+  mkdir -p "${CONSOLE_APPLICATIONS_DIR}"
+  rm -rf "${CONSOLE_TRAY_APP_PATH}"
+  COPYFILE_DISABLE=1 /usr/bin/ditto --noextattr --norsrc "${SYSTEM_TRAY_APP_PATH}" "${CONSOLE_TRAY_APP_PATH}"
+  chown -R "${CONSOLE_USER}:staff" "${CONSOLE_TRAY_APP_PATH}"
+  rm -rf "${SYSTEM_TRAY_APP_PATH}"
+  rm -rf "${LEGACY_SYSTEM_TRAY_APP_PATH}"
+  echo "[$(date)] Relocated tray app to ${CONSOLE_TRAY_APP_PATH}" >> "${LOG_FILE}" 2>&1
+}
+
+if ! relocate_tray_app_for_console_user; then
+  echo "[$(date)] Failed to relocate tray app for ${CONSOLE_USER}; installation will continue with system path fallback." >> "${LOG_FILE}" 2>&1
 fi
 
 # The postinstall runs as root, so mktemp -t lands under a root-only temp directory.
@@ -23,7 +53,8 @@ cat > "${TMP_SCRIPT}" <<'EOS'
 set -euo pipefail
 
 TRAPEZOHE_DIR="$HOME/.trapezohe"
-TRAY_APP_PATH="/Applications/GhastAI Companion.app"
+TRAY_APP_PATH="$HOME/Applications/GhastAI Companion.app"
+SYSTEM_TRAY_APP_PATH="/Applications/GhastAI Companion.app"
 LEGACY_TRAY_APP_PATH="/Applications/Trapezohe Companion.app"
 TRAY_BIN_PATH="${TRAY_APP_PATH}/Contents/MacOS/trapezohe-companion-tray"
 APP_RUNTIME_DIR="${TRAY_APP_PATH}/Contents/Resources/companion"
@@ -35,6 +66,24 @@ LEGACY_TRAY_PREFS_PATH="$TRAPEZOHE_DIR/companion-tray.json"
 
 log() {
   echo "[$(date)] $*"
+}
+
+resolve_tray_app_path() {
+  if [[ -d "${TRAY_APP_PATH}" ]]; then
+    return 0
+  fi
+
+  if [[ -d "${SYSTEM_TRAY_APP_PATH}" ]]; then
+    TRAY_APP_PATH="${SYSTEM_TRAY_APP_PATH}"
+    TRAY_BIN_PATH="${TRAY_APP_PATH}/Contents/MacOS/trapezohe-companion-tray"
+    APP_RUNTIME_DIR="${TRAY_APP_PATH}/Contents/Resources/companion"
+    APP_CLI_PATH="${APP_RUNTIME_DIR}/bin/trapezohe-companion"
+    log "Using system Applications tray path fallback at ${TRAY_APP_PATH}"
+    return 0
+  fi
+
+  log "Tray app bundle was not found in either ${TRAY_APP_PATH} or ${SYSTEM_TRAY_APP_PATH}"
+  return 1
 }
 
 write_startup_policy() {
@@ -147,6 +196,7 @@ launch_tray_once() {
   log "Launched tray panel once for current user"
 }
 
+resolve_tray_app_path || true
 bootstrap_companion_runtime || true
 write_startup_policy
 remove_legacy_daemon_login_item

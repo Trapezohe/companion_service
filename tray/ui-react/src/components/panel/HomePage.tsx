@@ -1,5 +1,5 @@
 import { ArrowDownCircle, ScrollText, Settings, Shield } from "lucide-react";
-import type { StatusSnapshot } from "@/lib/companion";
+import type { StatusSnapshot, UpdateInfo } from "@/lib/companion";
 import { type Lang, useT } from "@/lib/translations";
 import StatusBadge from "./StatusBadge";
 import MenuRow from "./MenuRow";
@@ -9,13 +9,28 @@ interface HomePageProps {
   lang: Lang;
   snapshot: StatusSnapshot | null;
   port?: string;
-  update?: {
-    available: boolean;
-    latest_version: string;
-    can_install: boolean;
-  };
+  update?: UpdateInfo;
   onInstallUpdate?: () => void;
+  onOpenReleasePage?: () => void;
 }
+
+const formatBytes = (value?: number | null) => {
+  if (value == null || value <= 0) {
+    return null;
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const digits = size >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+};
 
 const HomePage = ({
   onNavigate,
@@ -24,6 +39,7 @@ const HomePage = ({
   port,
   update,
   onInstallUpdate,
+  onOpenReleasePage,
 }: HomePageProps) => {
   const tr = useT(lang);
   const stateKind = snapshot?.state?.kind ?? "checking";
@@ -35,13 +51,56 @@ const HomePage = ({
     health?.version ??
     snapshot?.state?.version ??
     snapshot?.update?.current_version ??
-    "0.1.20";
+    "0.1.21";
   const connectedMcp = diagnostics?.connected_mcp_servers ?? health?.mcp_servers ?? 0;
   const configuredMcp = diagnostics?.configured_mcp_servers ?? health?.mcp_servers ?? 0;
   const totalMcpTools = diagnostics?.total_mcp_tools ?? health?.mcp_tools ?? 0;
   const mcpServers = diagnostics?.servers ?? [];
   const visibleMcpServers = mcpServers.slice(0, 3);
   const recentAction = diagnostics?.action_logs?.[0];
+  const updateStatus = update?.status ?? "";
+  const isUpdateBannerVisible = Boolean(
+    update &&
+      (update.available ||
+        updateStatus === "downloading" ||
+        updateStatus === "installing" ||
+        updateStatus === "error"),
+  );
+  const updateProgressDone = formatBytes(update?.downloaded_bytes);
+  const updateProgressTotal = formatBytes(update?.total_bytes);
+  const updateProgressText =
+    updateProgressDone && updateProgressTotal
+      ? tr.updateDownloadingProgress(updateProgressDone, updateProgressTotal)
+      : tr.updateDownloading;
+  const updateTitle =
+    updateStatus === "downloading"
+      ? updateProgressText
+      : updateStatus === "installing"
+        ? tr.updateInstalling
+        : updateStatus === "error"
+          ? tr.updateFailed
+          : update?.latest_version
+            ? tr.updateAvailable(update.latest_version)
+            : tr.updatePreparing;
+  const updateDetail =
+    updateStatus === "error" || (update?.available && !update?.can_install)
+      ? update?.last_error ?? null
+      : null;
+  const updateButtonLabel =
+    update?.can_install && updateStatus === "error"
+      ? tr.retryUpdate
+      : update?.can_install && update?.available
+        ? tr.updateNow
+        : update?.available && !update?.can_install
+          ? tr.downloadUpdate
+        : null;
+  const handleUpdateAction = () => {
+    if (update?.available && !update?.can_install) {
+      onOpenReleasePage?.();
+      return;
+    }
+    onInstallUpdate?.();
+  };
 
   const badgeStatus =
     stateKind === "healthy"
@@ -71,20 +130,27 @@ const HomePage = ({
   return (
     <div className="flex flex-col">
       {/* Update Banner */}
-      {update?.available && (
+      {isUpdateBannerVisible && (
         <div className="mx-3 mt-3 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <ArrowDownCircle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span className="text-[12px] text-amber-300 font-medium truncate">
-              {tr.updateAvailable(update.latest_version)}
-            </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <ArrowDownCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="text-[12px] text-amber-300 font-medium truncate">
+                {updateTitle}
+              </span>
+            </div>
+            {updateDetail && (
+              <div className="mt-1 text-[11px] text-amber-200/80 leading-4 break-words">
+                {updateDetail}
+              </div>
+            )}
           </div>
-          {update.can_install && (
+          {updateButtonLabel && (
             <button
-              onClick={onInstallUpdate}
+              onClick={handleUpdateAction}
               className="text-[11px] px-2.5 py-1 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-medium transition-colors shrink-0"
             >
-              {tr.updateNow}
+              {updateButtonLabel}
             </button>
           )}
         </div>

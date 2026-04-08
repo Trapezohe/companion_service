@@ -88,7 +88,12 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, postinstall, r'mktemp "\/Users\/Shared\/trapezohe-companion-bootstrap\.XXXXXX"')
         assert_not_matches(self, postinstall, r"mktemp -t trapezohe-companion-bootstrap")
         assert_not_matches(self, postinstall, r"mktemp /tmp/trapezohe-companion-bootstrap\.XXXXXX\.sh")
-        assert_matches(self, postinstall, r'TRAY_APP_PATH="/Applications/GhastAI Companion\.app"')
+        assert_matches(self, postinstall, r'CONSOLE_HOME="\$\(dscl \. -read "/Users/\$\{CONSOLE_USER\}" NFSHomeDirectory')
+        assert_matches(self, postinstall, r'CONSOLE_TRAY_APP_PATH="\$\{CONSOLE_APPLICATIONS_DIR\}/GhastAI Companion\.app"')
+        assert_matches(self, postinstall, r'COPYFILE_DISABLE=1 /usr/bin/ditto --noextattr --norsrc "\$\{SYSTEM_TRAY_APP_PATH\}" "\$\{CONSOLE_TRAY_APP_PATH\}"')
+        assert_matches(self, postinstall, r'TRAY_APP_PATH="\$HOME/Applications/GhastAI Companion\.app"')
+        assert_matches(self, postinstall, r'SYSTEM_TRAY_APP_PATH="/Applications/GhastAI Companion\.app"')
+        assert_matches(self, postinstall, r'resolve_tray_app_path\(\)')
         assert_matches(self, postinstall, r'TRAY_BIN_PATH="\$\{TRAY_APP_PATH\}/Contents/MacOS/trapezohe-companion-tray"')
 
     def test_macos_installer_registers_fixed_production_extension_origin(self) -> None:
@@ -155,6 +160,9 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, pkg_script, r'macos_notarize_artifact "\$\{PACKAGE_FILE\}"')
         assert_matches(self, pkg_script, r'COPYFILE_DISABLE=1 /usr/bin/ditto --noextattr --norsrc "\$\{TRAY_APP_PATH\}" "\$\{APPLICATIONS_DIR\}/\$\{TRAY_APP_NAME\}"')
         assert_matches(self, pkg_script, r'/usr/bin/xattr -cr "\$\{PKG_ROOT\}" 2>/dev/null \|\| true')
+        assert_matches(self, pkg_script, r'pkgbuild --analyze --root "\$\{PKG_ROOT\}" "\$\{COMPONENT_PLIST\}"')
+        assert_matches(self, pkg_script, r'PlistBuddy -c "Set :0:BundleIsRelocatable false" "\$\{COMPONENT_PLIST\}"')
+        assert_matches(self, pkg_script, r'--component-plist "\$\{COMPONENT_PLIST\}"')
         assert_matches(self, pkg_script, r'COPYFILE_DISABLE=1 pkgbuild \\')
 
         assert_matches(self, signing_lib, r"APPLE_DEVELOPER_ID_APP_IDENTITY")
@@ -348,9 +356,9 @@ class InstallerSurfaceTests(unittest.TestCase):
         tray_cargo = tomllib.loads((ROOT / "tray/Cargo.toml").read_text(encoding="utf-8"))
         tauri_config = read_json("tray/tauri.conf.json")
 
-        self.assertEqual(workspace["workspace"]["package"]["version"], "0.1.20")
-        self.assertEqual(tray_cargo["package"]["version"], "0.1.20")
-        self.assertEqual(tauri_config["version"], "0.1.20")
+        self.assertEqual(workspace["workspace"]["package"]["version"], "0.1.21")
+        self.assertEqual(tray_cargo["package"]["version"], "0.1.21")
+        self.assertEqual(tauri_config["version"], "0.1.21")
 
     def test_readme_and_release_copy_describe_signed_macos_flow_without_unsigned_claim(self) -> None:
         readme = read("README.md")
@@ -385,16 +393,18 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, tray_lib, r"tauri_plugin_updater::Builder")
         assert_matches(self, tray_lib, r"install_update")
         assert_matches(self, updater_rs, r"download_and_install")
-        assert_matches(self, updater_rs, r"Automatic updates only work for the packaged app installed in /Applications or ~/Applications")
+        assert_matches(self, updater_rs, r"Automatic updates currently only work for GhastAI Companion installed in ~/Applications")
 
         assert_matches(self, panel, r'invoke<StatusSnapshot>\("check_update"\)')
         assert_matches(self, panel, r'invoke<StatusSnapshot>\("install_update"\)')
-        assert_matches(self, home_page, r"update\?\.available")
-        assert_matches(self, home_page, r"update\.can_install")
+        assert_matches(self, home_page, r"isUpdateBannerVisible")
+        assert_matches(self, home_page, r"updateButtonLabel")
         assert_matches(self, home_page, r"onInstallUpdate")
         assert_matches(self, settings_page, r'invoke\("open_release_page"\)')
         assert_matches(self, translations, r"updateAvailable:")
         assert_matches(self, translations, r"updateNow:")
+        assert_matches(self, translations, r"retryUpdate:")
+        assert_matches(self, translations, r"updateInstalling:")
 
     def test_tray_panel_surface_is_narrow_react_dashboard_with_language_switching(self) -> None:
         app = read("tray/ui-react/src/App.tsx")

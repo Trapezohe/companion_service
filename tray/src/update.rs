@@ -157,6 +157,16 @@ fn with_error(mut info: UpdateInfo, message: impl Into<String>) -> UpdateInfo {
 }
 
 #[cfg(target_os = "macos")]
+fn current_install_retryability() -> bool {
+    macos_update_installability().0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn current_install_retryability() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
 fn macos_bundle_path_from_executable(exe_path: &Path) -> Option<PathBuf> {
     let macos_dir = exe_path.parent()?;
     if macos_dir.file_name()?.to_str()? != "MacOS" {
@@ -177,19 +187,17 @@ fn macos_installability_reason_for_bundle(
     home_dir: Option<&Path>,
 ) -> Option<String> {
     let parent_dir = bundle_path.parent()?;
-    let system_applications_dir = Path::new("/Applications");
     let user_applications_dir = home_dir.map(|home| home.join("Applications"));
-    let in_supported_location = parent_dir == system_applications_dir
-        || user_applications_dir
-            .as_deref()
-            .is_some_and(|expected| parent_dir == expected);
+    let in_supported_location = user_applications_dir
+        .as_deref()
+        .is_some_and(|expected| parent_dir == expected);
 
     if in_supported_location {
         return None;
     }
 
     Some(
-        "Automatic updates only work for the packaged app installed in /Applications or ~/Applications. Open the release page and install the latest package."
+        "Automatic updates currently only work for GhastAI Companion installed in ~/Applications. Install the latest package once, then future updates can be completed inside the app."
             .to_string(),
     )
 }
@@ -384,15 +392,31 @@ pub async fn install_update(
     }
 }
 
-pub fn install_failure_info(
+fn install_failure_info_with_retryability(
     previous: Option<UpdateInfo>,
     current_version: &str,
     error: &str,
+    retryable_install: bool,
 ) -> UpdateInfo {
     match previous {
-        Some(info) => with_error(info, error),
+        Some(mut info) => {
+            info.status = UpdateStatus::Error.as_str().to_string();
+            info.last_error = Some(error.to_string());
+            info.checked_at_ms = now_ms();
+            info.can_install = info.available && retryable_install;
+            info
+        }
         None => with_error(checking_update_info(current_version), error),
     }
+}
+
+pub fn install_failure_info(previous: Option<UpdateInfo>, current_version: &str, error: &str) -> UpdateInfo {
+    install_failure_info_with_retryability(
+        previous,
+        current_version,
+        error,
+        current_install_retryability(),
+    )
 }
 
 #[cfg(test)]
@@ -429,6 +453,31 @@ mod tests {
         assert!(!info.can_install);
     }
 
+    #[test]
+    fn install_failure_keeps_retry_available_when_update_is_still_available() {
+        let previous = UpdateInfo {
+            available: true,
+            can_install: false,
+            current_version: "0.1.19".to_string(),
+            latest_version: "0.1.20".to_string(),
+            release_url: release_url_for_version("0.1.20"),
+            download_url: Some("https://example.com/update".to_string()),
+            release_notes: Some("notes".to_string()),
+            checked_at_ms: 1,
+            status: UpdateStatus::Downloading.as_str().to_string(),
+            downloaded_bytes: 128,
+            total_bytes: Some(1024),
+            last_error: None,
+        };
+
+        let info =
+            install_failure_info_with_retryability(Some(previous), "0.1.19", "install failed", true);
+        assert_eq!(info.status, "error");
+        assert_eq!(info.last_error.as_deref(), Some("install failed"));
+        assert!(info.available);
+        assert!(info.can_install);
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn parses_valid_versions() {
@@ -455,16 +504,9 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_installability_accepts_standard_applications_locations() {
+    fn macos_installability_accepts_user_applications_location() {
         let home = Path::new("/Users/tester");
 
-        assert_eq!(
-            macos_installability_reason_for_bundle(
-                Path::new("/Applications/GhastAI Companion.app"),
-                Some(home),
-            ),
-            None,
-        );
         assert_eq!(
             macos_installability_reason_for_bundle(
                 Path::new("/Users/tester/Applications/GhastAI Companion.app"),
@@ -484,7 +526,20 @@ mod tests {
         );
 
         assert!(reason.is_some());
-        assert!(reason.unwrap().contains("/Applications or ~/Applications"));
+        assert!(reason.unwrap().contains("~/Applications"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_installability_rejects_system_applications_location() {
+        let home = Path::new("/Users/tester");
+        let reason = macos_installability_reason_for_bundle(
+            Path::new("/Applications/GhastAI Companion.app"),
+            Some(home),
+        );
+
+        assert!(reason.is_some());
+        assert!(reason.unwrap().contains("~/Applications"));
     }
 
     #[cfg(target_os = "macos")]

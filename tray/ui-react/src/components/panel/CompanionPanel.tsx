@@ -56,7 +56,53 @@ const CompanionPanel = () => {
     ? snapshot.endpoint.split(":").pop()
     : undefined;
 
-  const update = snapshot?.update?.available ? snapshot.update : undefined;
+  const update = snapshot?.update;
+
+  const handleInstallUpdate = () => {
+    setSnapshot((prev) => {
+      if (!prev?.update) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        update: {
+          ...prev.update,
+          status: "downloading",
+          can_install: false,
+          last_error: null,
+        },
+      };
+    });
+
+    invoke<StatusSnapshot>("install_update")
+      .then((s) => {
+        if (s) {
+          setSnapshot(s);
+        }
+      })
+      .catch((error) => {
+        setSnapshot((prev) => {
+          if (!prev?.update) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            update: {
+              ...prev.update,
+              status: "error",
+              can_install: true,
+              last_error: error instanceof Error ? error.message : String(error),
+            },
+          };
+        });
+      });
+  };
+
+  const handleOpenReleasePage = () => {
+    invoke("open_release_page").catch(() => {});
+  };
 
   return (
     <div className="p-[5px] h-screen box-border">
@@ -68,11 +114,8 @@ const CompanionPanel = () => {
             snapshot={snapshot}
             port={port}
             update={update}
-            onInstallUpdate={() => {
-              invoke<StatusSnapshot>("install_update")
-                .then((s) => { if (s) setSnapshot(s); })
-                .catch(() => {});
-            }}
+            onInstallUpdate={handleInstallUpdate}
+            onOpenReleasePage={handleOpenReleasePage}
           />
         )}
         {page === "mcp" && (
