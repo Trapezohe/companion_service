@@ -145,6 +145,7 @@ class InstallerSurfaceTests(unittest.TestCase):
 
         assert_matches(self, tray_script, r'source "\$\{ROOT_DIR\}/scripts/lib/macos-signing\.sh"')
         assert_matches(self, tray_script, r"TRAPEZOHE_MACOS_STAGE_ROOT")
+        assert_matches(self, tray_script, r'macos_sign_binary "\$\{COMPANION_DIR\}/bin/trapezohe-companion"')
         assert_matches(self, tray_script, r'macos_sign_app_bundle "\$\{APP_DIR\}"')
 
         assert_matches(self, pkg_script, r'source "\$\{ROOT_DIR\}/scripts/lib/macos-signing\.sh"')
@@ -159,7 +160,12 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, signing_lib, r"APPLE_DEVELOPER_ID_APP_IDENTITY")
         assert_matches(self, signing_lib, r"APPLE_DEVELOPER_ID_INSTALLER_IDENTITY")
         assert_matches(self, signing_lib, r"TRAPEZOHE_MACOS_SIGNING_ENV_FILE")
+        assert_matches(self, signing_lib, r"macos_sign_binary\(\)")
         assert_matches(self, signing_lib, r"codesign --force --sign")
+        assert_matches(self, signing_lib, r"--options runtime --timestamp")
+        assert_matches(self, signing_lib, r"macos_require_notary_acceptance")
+        assert_matches(self, signing_lib, r"--output-format json")
+        assert_matches(self, signing_lib, r"xcrun notarytool log")
         assert_matches(self, signing_lib, r"productsign --sign")
         assert_matches(self, signing_lib, r"xcrun notarytool submit")
         assert_matches(self, signing_lib, r"xcrun stapler staple")

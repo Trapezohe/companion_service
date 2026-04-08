@@ -59,6 +59,8 @@ cp "${CLI_BUILD_DIR}/trapezohe-companion" "${COMPANION_DIR}/bin/trapezohe-compan
 chmod 755 \
   "${COMPANION_DIR}/bin/trapezohe-companion"
 
+macos_sign_binary "${COMPANION_DIR}/bin/trapezohe-companion"
+
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
