@@ -484,6 +484,7 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, updater_script, r"latest\.json")
         assert_matches(self, updater_script, r"\.app\.tar\.gz")
         assert_matches(self, updater_script, r"\.sig")
+        assert_matches(self, updater_script, r'TRAPEZOHE_MACOS_STAGE_ROOT:-\$\{ROOT_DIR\}/dist/stage/macos-tray/\$\{VERSION\}')
         assert_matches(self, updater_script, r"github\.com/Trapezohe/companion_service/releases/download/v\$\{VERSION\}")
         assert_matches(self, updater_script, r'macos_notarize_app_bundle "\$\{APP_PATH\}"')
         assert_not_matches(self, updater_script, r'macos_notarize_artifact "\$\{APP_PATH\}"')

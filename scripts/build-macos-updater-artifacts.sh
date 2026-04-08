@@ -16,7 +16,7 @@ print(data["workspace"]["package"]["version"])
 PY
 )}"
 OUT_DIR="${ROOT_DIR}/dist/installers"
-STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray}"
+STAGE_ROOT="${TRAPEZOHE_MACOS_STAGE_ROOT:-${ROOT_DIR}/dist/stage/macos-tray/${VERSION}}"
 APP_NAME="GhastAI Companion.app"
 APP_PATH="${STAGE_ROOT}/${APP_NAME}"
 ARCHIVE_NAME="trapezohe-companion-macos.app.tar.gz"
