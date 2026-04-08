@@ -56,9 +56,9 @@ function Get-WindowsTrayBuildPlan {
     }
 
     $exeRelativePath = if ($finalTarget) {
-        "tray/target/$finalTarget/release/$TrayExeName"
+        "target/$finalTarget/release/$TrayExeName"
     } else {
-        "tray/target/release/$TrayExeName"
+        "target/release/$TrayExeName"
     }
 
     return @{

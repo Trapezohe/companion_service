@@ -514,7 +514,8 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, tray_script, r'\$TargetTriple = \$env:TRAPEZOHE_WINDOWS_TARGET')
         assert_matches(self, tray_script, r'\$DefaultWindowsTarget = "x86_64-pc-windows-msvc"')
         assert_matches(self, tray_script, r'@\("xwin"\) \+ \$cargoArgs \+ @\("--target", \$finalTarget\)')
-        assert_matches(self, tray_script, r'"tray/target/\$finalTarget/release/\$TrayExeName"')
+        assert_matches(self, tray_script, r'"target/\$finalTarget/release/\$TrayExeName"')
+        assert_matches(self, tray_script, r'"target/release/\$TrayExeName"')
         assert_not_matches(self, tray_script, r'& node ')
 
         assert_matches(self, msi_script, r"function Get-WindowsMsiBuildPlan")
