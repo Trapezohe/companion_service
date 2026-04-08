@@ -320,13 +320,14 @@ jobs:
           test -f dist/installers/trapezohe-companion-macos.app.tar.gz.sig
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           latest = json.loads(Path("dist/installers/latest.json").read_text())
           platform = next(iter(latest["platforms"].values()))
           assert latest["version"] == "${{ needs.check-version.outputs.version }}"
           assert platform["url"].endswith("/trapezohe-companion-macos.app.tar.gz")
-          expected_base = "${TRAPEZOHE_UPDATER_BASE_URL:-}"
+          expected_base = os.environ.get("TRAPEZOHE_UPDATER_BASE_URL", "")
           if expected_base:
               assert platform["url"].startswith(expected_base + "/")
           assert platform["signature"]
