@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "companion-acp"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "hex",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "companion-app"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "serde",
  "serde_json",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "companion-automation"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "companion-browser"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "companion-checkpoint"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "companion-cli"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "clap",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "companion-config"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-shared",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "companion-control"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "companion-cron"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "companion-daemon"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "axum",
@@ -918,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "companion-mcp"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "companion-media"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "companion-memory"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "companion-runtime"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -974,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "companion-shared"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "serde",
 ]
@@ -6829,7 +6829,7 @@ dependencies = [
 
 [[package]]
 name = "trapezohe-companion-tray"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "companion-config",
