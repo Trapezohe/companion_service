@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import subprocess
@@ -485,16 +486,23 @@ class InstallerSurfaceTests(unittest.TestCase):
 
     def test_release_workflow_publishes_macos_updater_archive_signature_and_manifest(self) -> None:
         workflow = read(".github/workflows/release-installers.yml")
+        installers_manifest_script = read("scripts/build-installers-manifest.py")
         updater_script = read("scripts/build-macos-updater-artifacts.sh")
         updater_lib = read("scripts/lib/tauri-updater.sh")
         signing_lib = read("scripts/lib/macos-signing.sh")
 
+        assert_matches(self, workflow, r"build-installers-manifest\.py")
         assert_matches(self, workflow, r"build-macos-updater-artifacts\.sh")
         assert_matches(self, workflow, r"trapezohe-companion-macos\.app\.tar\.gz")
         assert_matches(self, workflow, r"trapezohe-companion-macos\.app\.tar\.gz\.sig")
         assert_matches(self, workflow, r"latest\.json")
+        assert_matches(self, workflow, r"installers\.json")
         assert_matches(self, workflow, r"TAURI_SIGNING_PRIVATE_KEY|TRAPEZOHE_UPDATER_PRIVATE_KEY")
 
+        assert_matches(self, installers_manifest_script, r"manifest_version")
+        assert_matches(self, installers_manifest_script, r"primary_url")
+        assert_matches(self, installers_manifest_script, r"fallback_url")
+        assert_matches(self, installers_manifest_script, r"sha256")
         assert_matches(self, updater_script, r"latest\.json")
         assert_matches(self, updater_script, r"\.app\.tar\.gz")
         assert_matches(self, updater_script, r"\.sig")
@@ -531,6 +539,61 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_not_matches(self, workflow, r"CLOUDFLARE_OAUTH_REFRESH_TOKEN")
         assert_not_matches(self, workflow, r'default\.toml')
         assert_matches(self, workflow, r'npx --yes wrangler@4\.63\.0 r2 object put "\$\{bucket_root\}/latest\.json" --remote --file dist/release/latest\.json')
+
+    def test_installer_manifest_script_prefers_r2_urls_and_keeps_github_fallback(self) -> None:
+        script_path = ROOT / "scripts/build-installers-manifest.py"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            sha_path = temp_root / "SHA256SUMS.txt"
+            out_path = temp_root / "installers.json"
+            sha_path.write_text(
+                "\n".join(
+                    [
+                        "macdigest trapezohe-companion-macos.pkg",
+                        "windigest trapezohe-companion-windows.msi",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(
+                [
+                    "python3",
+                    str(script_path),
+                    "--version",
+                    "0.1.22",
+                    "--sha256-file",
+                    str(sha_path),
+                    "--output",
+                    str(out_path),
+                    "--fallback-root",
+                    "https://github.com/Trapezohe/companion_service/releases/download/v0.1.22",
+                    "--release-page",
+                    "https://github.com/Trapezohe/companion_service/releases/tag/v0.1.22",
+                    "--primary-root",
+                    "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.22",
+                ],
+                check=True,
+                cwd=ROOT,
+            )
+
+            manifest = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], "0.1.22")
+            self.assertEqual(
+                manifest["platforms"]["macos"]["primary_url"],
+                "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.22/trapezohe-companion-macos.pkg",
+            )
+            self.assertEqual(
+                manifest["platforms"]["macos"]["fallback_url"],
+                "https://github.com/Trapezohe/companion_service/releases/download/v0.1.22/trapezohe-companion-macos.pkg",
+            )
+            self.assertEqual(manifest["platforms"]["macos"]["sha256"], "macdigest")
+            self.assertEqual(
+                manifest["platforms"]["windows"]["primary_url"],
+                "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.22/trapezohe-companion-windows.msi",
+            )
+            self.assertEqual(manifest["platforms"]["windows"]["sha256"], "windigest")
 
     def test_windows_build_scripts_no_longer_shell_out_to_node_for_plan_generation(self) -> None:
         tray_script = read("scripts/build-tray-windows.ps1")

@@ -441,6 +441,37 @@ jobs:
           sha256sum trapezohe-companion-windows.msi >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Generate installer download manifest
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          public_root="${CLOUDFLARE_R2_PUBLIC_BASE_URL:-}"
+          prefix="${CLOUDFLARE_R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+
+          if [[ -n "${public_root}" ]]; then
+            public_root="${public_root%/}"
+            if [[ -n "${prefix}" ]]; then
+              public_root="${public_root}/${prefix}"
+            fi
+          fi
+
+          manifest_args=(
+            --version "${VERSION}"
+            --sha256-file dist/release/SHA256SUMS.txt
+            --output dist/release/installers.json
+            --fallback-root "https://github.com/Trapezohe/companion_service/releases/download/v${VERSION}"
+            --release-page "https://github.com/Trapezohe/companion_service/releases/tag/v${VERSION}"
+          )
+
+          if [[ -n "${public_root}" ]]; then
+            manifest_args+=(--primary-root "${public_root}/v${VERSION}")
+          fi
+
+          python3 scripts/build-installers-manifest.py "${manifest_args[@]}"
+          cat dist/release/installers.json
+
       - name: Setup Node.js for Wrangler
         uses: actions/setup-node@v4
         with:
@@ -532,6 +563,7 @@ jobs:
           npx --yes wrangler@4.63.0 r2 object put "${version_root}/trapezohe-companion-windows.msi" --remote --file dist/release/trapezohe-companion-windows.msi --content-type application/x-msi --cache-control "public, max-age=31536000, immutable"
           npx --yes wrangler@4.63.0 r2 object put "${version_root}/SHA256SUMS.txt" --remote --file dist/release/SHA256SUMS.txt --content-type text/plain --cache-control "public, max-age=31536000, immutable"
           npx --yes wrangler@4.63.0 r2 object put "${bucket_root}/latest.json" --remote --file dist/release/latest.json --content-type application/json --cache-control "no-store, max-age=0"
+          npx --yes wrangler@4.63.0 r2 object put "${bucket_root}/installers.json" --remote --file dist/release/installers.json --content-type application/json --cache-control "no-store, max-age=0"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -543,6 +575,7 @@ jobs:
             dist/release/trapezohe-companion-macos.app.tar.gz
             dist/release/trapezohe-companion-macos.app.tar.gz.sig
             dist/release/latest.json
+            dist/release/installers.json
             dist/release/trapezohe-companion-windows.msi
             dist/release/SHA256SUMS.txt
           body: |
@@ -559,6 +592,7 @@ jobs:
             | macOS | `trapezohe-companion-macos.pkg` | Installer for daemon + tray app |
             | macOS | `trapezohe-companion-macos.app.tar.gz` + `latest.json` | In-app updater feed for installed tray apps |
             | Windows | `trapezohe-companion-windows.msi` | Installer for daemon + tray app |
+            | All platforms | `installers.json` | Public install manifest used by onboarding download links |
 
             ---
 
