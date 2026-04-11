@@ -8,6 +8,9 @@ use tempfile::TempDir;
 
 const HEIC_MIME_TYPES: &[&str] = &["image/heic", "image/heif"];
 const GENERIC_MIME_TYPES: &[&str] = &["application/octet-stream"];
+const SWIFT_BINARY_PATH: &str = "/usr/bin/swift";
+const COMPANION_OCR_ENGINE: &str = "apple_vision";
+const OCR_NO_TEXT_NOTE: &str = "OCR found no readable text in the image.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +62,26 @@ pub struct NormalizeImageResponse {
     pub pipeline_hints: Option<ImagePipelineHints>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOcrRequest {
+    pub name: String,
+    pub mime_type: String,
+    pub bytes_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOcrResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConvertRequest {
     pub input_path: PathBuf,
@@ -75,6 +98,21 @@ pub struct ConvertResponse {
     pub mime_type: Option<String>,
     pub name: Option<String>,
     pub engine: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OcrCommandRequest {
+    input_path: PathBuf,
+    work_dir: PathBuf,
+    support: MediaSupport,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OcrCommandResponse {
+    text: Option<String>,
+    engine: Option<String>,
+    status: Option<String>,
+    note: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -197,6 +235,30 @@ pub fn probe_media_normalization_support() -> MediaSupport {
     }
 }
 
+pub fn probe_media_ocr_support() -> MediaSupport {
+    if !cfg!(target_os = "macos") {
+        return MediaSupport {
+            available: false,
+            engine: None,
+            reason: Some("ocr_only_supported_on_macos".to_string()),
+        };
+    }
+
+    if file_exists(Path::new(SWIFT_BINARY_PATH)) {
+        return MediaSupport {
+            available: true,
+            engine: Some(COMPANION_OCR_ENGINE.to_string()),
+            reason: None,
+        };
+    }
+
+    MediaSupport {
+        available: false,
+        engine: None,
+        reason: Some("swift_runtime_unavailable".to_string()),
+    }
+}
+
 fn convert_with_sips(input_path: &Path, output_path: &Path) -> Result<ConvertResponse> {
     let input = input_path.to_string_lossy().to_string();
     let output = output_path.to_string_lossy().to_string();
@@ -218,6 +280,142 @@ fn convert_with_magick(input_path: &Path, output_path: &Path) -> Result<ConvertR
         engine: Some("magick".to_string()),
         ..ConvertResponse::default()
     })
+}
+
+fn run_process_capture(command: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to spawn {command}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err(anyhow!("{command} exited with code {}", output.status))
+    } else {
+        Err(anyhow!(
+            "{command} exited with code {}: {stderr}",
+            output.status
+        ))
+    }
+}
+
+fn normalize_ocr_text(value: &str) -> String {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn run_vision_ocr(request: OcrCommandRequest) -> Result<OcrCommandResponse> {
+    let script_path = request.work_dir.join("vision_ocr.swift");
+    fs::write(&script_path, SWIFT_VISION_OCR_SCRIPT)
+        .with_context(|| format!("Failed to write OCR script: {}", script_path.display()))?;
+
+    let script = script_path.to_string_lossy().to_string();
+    let input = request.input_path.to_string_lossy().to_string();
+    let stdout = run_process_capture(SWIFT_BINARY_PATH, &[&script, &input])?;
+    let payload: SwiftVisionOcrPayload =
+        serde_json::from_str(stdout.trim()).context("invalid_vision_ocr_response")?;
+
+    Ok(OcrCommandResponse {
+        text: Some(payload.text),
+        engine: request
+            .support
+            .engine
+            .clone()
+            .or_else(|| Some(COMPANION_OCR_ENGINE.to_string())),
+        status: Some("completed".to_string()),
+        note: None,
+    })
+}
+
+const SWIFT_VISION_OCR_SCRIPT: &str = r#"import Foundation
+import Vision
+import ImageIO
+
+struct OCRPayload: Encodable {
+    let text: String
+}
+
+enum OCRScriptError: LocalizedError {
+    case missingPath
+    case loadFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingPath:
+            return "missing_input_path"
+        case let .loadFailed(reason):
+            return reason
+        }
+    }
+}
+
+func loadImage(at url: URL) throws -> CGImage {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        throw OCRScriptError.loadFailed("image_source_unavailable")
+    }
+    guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        throw OCRScriptError.loadFailed("image_decode_failed")
+    }
+    return image
+}
+
+let args = CommandLine.arguments
+if args.count < 2 {
+    throw OCRScriptError.missingPath
+}
+
+let image = try loadImage(at: URL(fileURLWithPath: args[1]))
+let request = VNRecognizeTextRequest()
+request.recognitionLevel = .accurate
+request.usesLanguageCorrection = true
+if #available(macOS 13.0, *) {
+    request.automaticallyDetectsLanguage = true
+}
+
+do {
+    let supported = try request.supportedRecognitionLanguages()
+    let preferred = ["zh-Hans", "zh-Hant", "en-US"]
+    let languages = preferred.filter { supported.contains($0) }
+    if !languages.isEmpty {
+        request.recognitionLanguages = languages
+    }
+} catch {
+}
+
+let handler = VNImageRequestHandler(cgImage: image, options: [:])
+try handler.perform([request])
+
+let observations = request.results ?? []
+let sorted = observations.sorted { left, right in
+    let leftMidY = left.boundingBox.midY
+    let rightMidY = right.boundingBox.midY
+    if abs(leftMidY - rightMidY) > 0.02 {
+        return leftMidY > rightMidY
+    }
+    return left.boundingBox.minX < right.boundingBox.minX
+}
+
+let text = sorted
+    .compactMap { $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+    .joined(separator: "\n")
+
+let payload = OCRPayload(text: text)
+let data = try JSONEncoder().encode(payload)
+FileHandle.standardOutput.write(data)
+"#;
+
+#[derive(Debug, Clone, Deserialize)]
+struct SwiftVisionOcrPayload {
+    text: String,
 }
 
 fn build_image_pipeline_hints(
@@ -433,6 +631,139 @@ where
     })
 }
 
+pub fn extract_image_text_payload(request: &ImageOcrRequest) -> Result<ImageOcrResponse> {
+    extract_image_text_payload_with::<fn(OcrCommandRequest) -> Result<OcrCommandResponse>>(
+        request, None, None,
+    )
+}
+
+fn build_image_ocr_result(
+    status: &str,
+    support: &MediaSupport,
+    engine_override: Option<String>,
+    text: Option<String>,
+    note: Option<String>,
+) -> ImageOcrResponse {
+    ImageOcrResponse {
+        status: status.to_string(),
+        text,
+        engine: engine_override.or_else(|| support.engine.clone()),
+        note,
+    }
+}
+
+fn extract_image_text_payload_with<F>(
+    request: &ImageOcrRequest,
+    support_override: Option<MediaSupport>,
+    runner: Option<F>,
+) -> Result<ImageOcrResponse>
+where
+    F: FnOnce(OcrCommandRequest) -> Result<OcrCommandResponse>,
+{
+    let name = request.name.trim();
+    let name = if name.is_empty() { "attachment" } else { name }.to_string();
+    let bytes_base64 = request.bytes_base64.trim().to_string();
+    if bytes_base64.is_empty() {
+        anyhow::bail!("bytesBase64 is required.");
+    }
+
+    let support = support_override.unwrap_or_else(probe_media_ocr_support);
+    if !support.available {
+        return Ok(build_image_ocr_result(
+            "skipped",
+            &support,
+            None,
+            None,
+            Some(
+                support
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "companion_ocr_unavailable".to_string()),
+            ),
+        ));
+    }
+
+    let temp_dir = TempDir::new().context("Failed to create OCR temp dir")?;
+    let input_path = temp_dir.path().join(sanitize_file_name(&name));
+    let input_bytes = STANDARD
+        .decode(&bytes_base64)
+        .context("bytesBase64 must be valid base64.")?;
+    fs::write(&input_path, &input_bytes)
+        .with_context(|| format!("Failed to write OCR image: {}", input_path.display()))?;
+
+    let command_result = if let Some(custom_runner) = runner {
+        custom_runner(OcrCommandRequest {
+            input_path,
+            work_dir: temp_dir.path().to_path_buf(),
+            support: support.clone(),
+        })
+    } else {
+        run_vision_ocr(OcrCommandRequest {
+            input_path,
+            work_dir: temp_dir.path().to_path_buf(),
+            support: support.clone(),
+        })
+    };
+
+    let command_result = match command_result {
+        Ok(result) => result,
+        Err(error) => {
+            return Ok(build_image_ocr_result(
+                "failed",
+                &support,
+                Some(COMPANION_OCR_ENGINE.to_string()),
+                None,
+                Some(error.to_string()),
+            ))
+        }
+    };
+
+    let status = command_result
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("completed");
+    let engine = command_result
+        .engine
+        .clone()
+        .or_else(|| Some(COMPANION_OCR_ENGINE.to_string()));
+    let note = command_result.note.clone();
+
+    match status {
+        "skipped" => Ok(build_image_ocr_result(
+            "skipped", &support, engine, None, note,
+        )),
+        "failed" => Ok(build_image_ocr_result(
+            "failed",
+            &support,
+            engine,
+            None,
+            Some(note.unwrap_or_else(|| "companion_ocr_failed".to_string())),
+        )),
+        _ => {
+            let text = normalize_ocr_text(command_result.text.as_deref().unwrap_or_default());
+            if text.is_empty() {
+                Ok(build_image_ocr_result(
+                    "completed",
+                    &support,
+                    engine,
+                    None,
+                    Some(note.unwrap_or_else(|| OCR_NO_TEXT_NOTE.to_string())),
+                ))
+            } else {
+                Ok(build_image_ocr_result(
+                    "completed",
+                    &support,
+                    engine,
+                    Some(text),
+                    None,
+                ))
+            }
+        }
+    }
+}
+
 fn sanitize_file_name(name: &str) -> String {
     let candidate = name.trim();
     if candidate.is_empty() {
@@ -630,6 +961,133 @@ mod tests {
                 summary: "Image normalization failed (no_supported_image_converter); retained as image/heic. OCR hook not enabled yet.".to_string(),
                 ocr_ready: false,
             })
+        );
+    }
+
+    #[test]
+    fn ocr_returns_completed_text_from_runner() {
+        let payload = extract_image_text_payload_with(
+            &ImageOcrRequest {
+                name: "receipt.png".to_string(),
+                mime_type: "image/png".to_string(),
+                bytes_base64: STANDARD.encode("png-binary"),
+            },
+            Some(MediaSupport {
+                available: true,
+                engine: Some("apple_vision".to_string()),
+                reason: None,
+            }),
+            Some(|_| {
+                Ok(OcrCommandResponse {
+                    text: Some(" total: 42 \n\n wallet  ".to_string()),
+                    engine: Some("apple_vision".to_string()),
+                    status: Some("completed".to_string()),
+                    note: None,
+                })
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            ImageOcrResponse {
+                status: "completed".to_string(),
+                text: Some("total: 42\nwallet".to_string()),
+                engine: Some("apple_vision".to_string()),
+                note: None,
+            }
+        );
+    }
+
+    #[test]
+    fn ocr_returns_completed_without_text_when_runner_finds_nothing() {
+        let payload = extract_image_text_payload_with(
+            &ImageOcrRequest {
+                name: "blank.png".to_string(),
+                mime_type: "image/png".to_string(),
+                bytes_base64: STANDARD.encode("png-binary"),
+            },
+            Some(MediaSupport {
+                available: true,
+                engine: Some("apple_vision".to_string()),
+                reason: None,
+            }),
+            Some(|_| {
+                Ok(OcrCommandResponse {
+                    text: Some("   \n".to_string()),
+                    engine: Some("apple_vision".to_string()),
+                    status: Some("completed".to_string()),
+                    note: None,
+                })
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            ImageOcrResponse {
+                status: "completed".to_string(),
+                text: None,
+                engine: Some("apple_vision".to_string()),
+                note: Some(OCR_NO_TEXT_NOTE.to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn ocr_returns_skipped_when_support_is_unavailable() {
+        let payload =
+            extract_image_text_payload_with::<fn(OcrCommandRequest) -> Result<OcrCommandResponse>>(
+                &ImageOcrRequest {
+                    name: "receipt.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    bytes_base64: STANDARD.encode("png-binary"),
+                },
+                Some(MediaSupport {
+                    available: false,
+                    engine: None,
+                    reason: Some("swift_runtime_unavailable".to_string()),
+                }),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            payload,
+            ImageOcrResponse {
+                status: "skipped".to_string(),
+                text: None,
+                engine: None,
+                note: Some("swift_runtime_unavailable".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn ocr_returns_failed_when_runner_errors() {
+        let payload = extract_image_text_payload_with(
+            &ImageOcrRequest {
+                name: "receipt.png".to_string(),
+                mime_type: "image/png".to_string(),
+                bytes_base64: STANDARD.encode("png-binary"),
+            },
+            Some(MediaSupport {
+                available: true,
+                engine: Some("apple_vision".to_string()),
+                reason: None,
+            }),
+            Some(|_| Err(anyhow!("vision_request_failed"))),
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            ImageOcrResponse {
+                status: "failed".to_string(),
+                text: None,
+                engine: Some(COMPANION_OCR_ENGINE.to_string()),
+                note: Some("vision_request_failed".to_string()),
+            }
         );
     }
 }

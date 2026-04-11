@@ -55,7 +55,8 @@ use companion_control::{
 use companion_cron::CronStore;
 use companion_mcp::{ListedTool, McpManager, ToolCallResult};
 use companion_media::{
-    normalize_image_payload, probe_media_normalization_support, NormalizeImageRequest,
+    extract_image_text_payload, normalize_image_payload, probe_media_normalization_support,
+    ImageOcrRequest, NormalizeImageRequest,
 };
 use companion_memory::{ShadowRefreshManager, ShadowStore};
 use companion_runtime::{
@@ -853,6 +854,7 @@ pub fn build_router(state: AppState) -> Router {
             get(safari_tabs).post(safari_open_new_tab),
         )
         .route("/api/media/normalize", post(media_normalize))
+        .route("/api/media/ocr", post(media_ocr))
         .route(
             "/api/checkpoint-sync/config",
             get(get_checkpoint_sync_config).post(update_checkpoint_sync_config),
@@ -3050,6 +3052,23 @@ async fn media_normalize(
             "name": body.name,
             "mimeType": body.mime_type,
             "bytesBase64": body.bytes_base64,
+        })
+    })))
+}
+
+async fn media_ocr(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ImageOcrRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+    let payload = extract_image_text_payload(&body)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error.to_string()))?;
+    Ok(Json(serde_json::to_value(payload).unwrap_or_else(|_| {
+        json!({
+            "status": "failed",
+            "note": "ocr_response_encode_failed",
         })
     })))
 }
@@ -8240,6 +8259,35 @@ mod tests {
             payload["normalization"]["status"].as_str(),
             Some("unchanged")
         );
+    }
+
+    #[tokio::test]
+    async fn media_ocr_route_returns_structured_status() {
+        let (app, _temp_dir) = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/ocr")
+                    .header("authorization", "Bearer secret-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": "tiny.png",
+                            "mimeType": "image/png",
+                            "bytesBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2P8z8DwHwAFAAH/e+m+7wAAAABJRU5ErkJggg==",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let status = payload["status"].as_str().unwrap_or_default();
+        assert!(matches!(status, "completed" | "skipped" | "failed"));
     }
 
     #[tokio::test]
