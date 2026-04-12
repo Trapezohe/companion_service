@@ -371,9 +371,9 @@ class InstallerSurfaceTests(unittest.TestCase):
         tray_cargo = tomllib.loads((ROOT / "tray/Cargo.toml").read_text(encoding="utf-8"))
         tauri_config = read_json("tray/tauri.conf.json")
 
-        self.assertEqual(workspace["workspace"]["package"]["version"], "0.1.23")
-        self.assertEqual(tray_cargo["package"]["version"], "0.1.23")
-        self.assertEqual(tauri_config["version"], "0.1.23")
+        self.assertEqual(workspace["workspace"]["package"]["version"], "0.1.24")
+        self.assertEqual(tray_cargo["package"]["version"], "0.1.24")
+        self.assertEqual(tauri_config["version"], "0.1.24")
 
     def test_readme_and_release_copy_describe_signed_macos_flow_without_unsigned_claim(self) -> None:
         readme = read("README.md")
@@ -583,36 +583,36 @@ class InstallerSurfaceTests(unittest.TestCase):
                     "python3",
                     str(script_path),
                     "--version",
-                    "0.1.23",
+                    "0.1.24",
                     "--sha256-file",
                     str(sha_path),
                     "--output",
                     str(out_path),
                     "--fallback-root",
-                    "https://github.com/Trapezohe/companion_service/releases/download/v0.1.23",
+                    "https://github.com/Trapezohe/companion_service/releases/download/v0.1.24",
                     "--release-page",
-                    "https://github.com/Trapezohe/companion_service/releases/tag/v0.1.23",
+                    "https://github.com/Trapezohe/companion_service/releases/tag/v0.1.24",
                     "--primary-root",
-                    "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.23",
+                    "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.24",
                 ],
                 check=True,
                 cwd=ROOT,
             )
 
             manifest = json.loads(out_path.read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "0.1.23")
+            self.assertEqual(manifest["version"], "0.1.24")
             self.assertEqual(
                 manifest["platforms"]["macos"]["primary_url"],
-                "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.23/trapezohe-companion-macos.pkg",
+                "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.24/trapezohe-companion-macos.pkg",
             )
             self.assertEqual(
                 manifest["platforms"]["macos"]["fallback_url"],
-                "https://github.com/Trapezohe/companion_service/releases/download/v0.1.23/trapezohe-companion-macos.pkg",
+                "https://github.com/Trapezohe/companion_service/releases/download/v0.1.24/trapezohe-companion-macos.pkg",
             )
             self.assertEqual(manifest["platforms"]["macos"]["sha256"], "macdigest")
             self.assertEqual(
                 manifest["platforms"]["windows"]["primary_url"],
-                "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.23/trapezohe-companion-windows.msi",
+                "https://pub-6c87d0ddc0de485caf0c5695e4b922db.r2.dev/v0.1.24/trapezohe-companion-windows.msi",
             )
             self.assertEqual(manifest["platforms"]["windows"]["sha256"], "windigest")
 
