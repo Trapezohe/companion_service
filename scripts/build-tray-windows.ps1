@@ -44,7 +44,7 @@ function Get-WindowsTrayBuildPlan {
     }
     $needsCrossTarget = $normalizedPlatform -ne "win32"
     $finalTarget = $null
-    $cargoArgs = @("build", "--manifest-path", $TrayManifestPath, "--release")
+    $cargoArgs = @("build", "--manifest-path", $TrayManifestPath, "--release", "--features", "custom-protocol")
 
     if ($needsCrossTarget) {
         $finalTarget = if ([string]::IsNullOrWhiteSpace($normalizedTarget)) {

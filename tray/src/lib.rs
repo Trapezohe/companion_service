@@ -614,7 +614,23 @@ fn should_open_status_panel_for_tray_event(
         && matches!(button, MouseButton::Left | MouseButton::Right)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayLaunchSurface {
+    Background,
+    ShowPanel,
+}
+
+fn resolve_tray_launch_surface(args: &[String]) -> TrayLaunchSurface {
+    if args.iter().any(|arg| arg == "--show-panel") {
+        TrayLaunchSurface::ShowPanel
+    } else {
+        TrayLaunchSurface::Background
+    }
+}
+
 pub fn run() {
+    let launch_args = std::env::args().skip(1).collect::<Vec<_>>();
+    let launch_surface = resolve_tray_launch_surface(&launch_args);
     let app = tauri::Builder::default()
         .plugin(UpdaterPluginBuilder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -639,7 +655,7 @@ pub fn run() {
             enable_mcp_server,
             disable_mcp_server,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let config_result = config::load_config();
             let loaded_config = config_result.as_ref().ok().cloned();
             let preferences = preferences::load_preferences().unwrap_or_default();
@@ -670,6 +686,12 @@ pub fn run() {
             window::ensure_status_window(&app.handle())?;
             window::sync_status_window_title(&app.handle(), preferences.language)?;
             tray::build_tray(&app.handle(), &initial_snapshot)?;
+            if matches!(launch_surface, TrayLaunchSurface::ShowPanel) {
+                let _ = window::apply_status_window_intent(
+                    &app.handle(),
+                    window::StatusWindowTrigger::MenuCommand,
+                );
+            }
             spawn_status_poller(app.handle().clone());
             spawn_update_checker(app.handle().clone());
 
@@ -863,5 +885,21 @@ mod tests {
             None,
             true
         ));
+    }
+
+    #[test]
+    fn tray_launch_surface_defaults_to_background() {
+        assert_eq!(
+            resolve_tray_launch_surface(&[]),
+            TrayLaunchSurface::Background
+        );
+    }
+
+    #[test]
+    fn tray_launch_surface_honors_show_panel_flag() {
+        assert_eq!(
+            resolve_tray_launch_surface(&["--show-panel".into()]),
+            TrayLaunchSurface::ShowPanel
+        );
     }
 }

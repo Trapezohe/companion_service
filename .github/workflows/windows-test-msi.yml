@@ -1,0 +1,96 @@
+name: Windows Test MSI
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_suffix:
+        description: Optional label appended to the uploaded artifact name
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-test-msi:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve workspace version
+        id: version
+        shell: pwsh
+        run: |
+          $version = python ./scripts/read_release_version.py
+          if (-not $version) {
+            throw "Failed to resolve companion version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Resolve artifact name
+        id: artifact
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACT_SUFFIX: ${{ inputs.artifact_suffix }}
+        run: |
+          $artifactName = "companion-windows-msi-test-$env:VERSION"
+          if ($env:ARTIFACT_SUFFIX) {
+            $artifactName = "$artifactName-$($env:ARTIFACT_SUFFIX)"
+          }
+          "name=$artifactName" >> $env:GITHUB_OUTPUT
+
+      - name: Install tray UI dependencies
+        shell: pwsh
+        run: npm ci --prefix tray/ui-react
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run companion surface tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -p '*_test.py'
+
+      - name: Run tray Rust test suite
+        shell: pwsh
+        run: cargo test --manifest-path tray/Cargo.toml --locked
+
+      - name: Build Windows MSI
+        shell: pwsh
+        run: ./scripts/build-windows-msi.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Compute SHA256
+        id: hash
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\installers\trapezohe-companion-windows.msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: dist/installers/trapezohe-companion-windows.msi
+          retention-days: 7
+
+      - name: Append workflow summary
+        shell: pwsh
+        run: |
+          @"
+          ## Windows Test MSI
+
+          - Version: `${{ steps.version.outputs.version }}`
+          - SHA256: `${{ steps.hash.outputs.sha256 }}`
+          - Artifact: `${{ steps.artifact.outputs.name }}`
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

@@ -16,6 +16,7 @@ $startupPolicyPath = Join-Path $trapezoheDir "companion-startup.json"
 $legacyTrayPrefsPath = Join-Path $trapezoheDir "companion-tray.json"
 $bundledCompanionCliPath = Join-Path $PSScriptRoot "trapezohe-companion.exe"
 $trayExePath = Join-Path $PSScriptRoot "trapezohe-companion-tray.exe"
+$trayForegroundArgs = @("--show-panel")
 $logDir = Join-Path $env:ProgramData "TrapezoheCompanion"
 $logFile = Join-Path $logDir "installer.log"
 
@@ -351,6 +352,7 @@ function Create-DesktopShortcut {
     $shortcutPath = Join-Path $desktopPath "GhastAI Companion.lnk"
     $shortcut = $WshShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $trayExePath
+    $shortcut.Arguments = ($trayForegroundArgs -join " ")
     $shortcut.WorkingDirectory = Split-Path $trayExePath
     $shortcut.IconLocation = "$trayExePath,0"
     $shortcut.Save()
@@ -380,6 +382,7 @@ function Create-StartMenuShortcut {
     $shortcutPath = Join-Path $folderPath "GhastAI Companion.lnk"
     $shortcut = $WshShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $trayExePath
+    $shortcut.Arguments = ($trayForegroundArgs -join " ")
     $shortcut.WorkingDirectory = Split-Path $trayExePath
     $shortcut.IconLocation = "$trayExePath,0"
     $shortcut.Save()
@@ -400,16 +403,16 @@ function Launch-TrayOnce {
     # Processes launched directly from here cannot show system tray icons.
     # Use schtasks to launch the tray in the user's interactive desktop session.
     $taskName = "TrapezoheCompanionTrayOnce"
-    $escapedExe = '"' + $trayExePath + '"'
+    $trayLaunchCommand = ((@($trayExePath) + $trayForegroundArgs) | ForEach-Object { ConvertTo-CmdArgument $_ }) -join " "
 
     $createExitCode = Invoke-LoggedProcess -FilePath "schtasks.exe" -ArgumentList @(
       "/Create", "/TN", $taskName, "/SC", "ONCE", "/ST", "00:00",
-      "/TR", $escapedExe, "/RL", "LIMITED", "/F"
+      "/TR", $trayLaunchCommand, "/RL", "LIMITED", "/F"
     ) -LogPrefix "schtasks-create"
 
     if ($createExitCode -ne 0) {
       Write-InstallerLog "Warning: failed to create scheduled task for tray launch (exit=$createExitCode); falling back to detached launch"
-      Start-DetachedInstallerCommand -FilePath $trayExePath -ArgumentList @()
+      Start-DetachedInstallerCommand -FilePath $trayExePath -ArgumentList $trayForegroundArgs
       return
     }
 
@@ -419,7 +422,7 @@ function Launch-TrayOnce {
 
     if ($runExitCode -ne 0) {
       Write-InstallerLog "Warning: scheduled task run failed (exit=$runExitCode); falling back to detached launch"
-      Start-DetachedInstallerCommand -FilePath $trayExePath -ArgumentList @()
+      Start-DetachedInstallerCommand -FilePath $trayExePath -ArgumentList $trayForegroundArgs
     }
 
     # Give the task a moment to launch, then clean up the one-shot task
