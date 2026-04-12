@@ -12,6 +12,16 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+#[cfg(target_os = "windows")]
+fn suppress_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_console_window(_command: &mut Command) {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListedTool {
@@ -199,6 +209,7 @@ impl McpManager {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
+        suppress_console_window(&mut command);
 
         #[cfg(unix)]
         {

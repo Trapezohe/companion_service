@@ -425,6 +425,13 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, translations, r"retryUpdate:")
         assert_matches(self, translations, r"updateInstalling:")
 
+    def test_windows_mcp_processes_are_spawned_without_console_windows(self) -> None:
+        mcp_rs = read("crates/companion-mcp/src/lib.rs")
+
+        assert_matches(self, mcp_rs, r'fn suppress_console_window\(command: &mut Command\)')
+        assert_matches(self, mcp_rs, r'CREATE_NO_WINDOW')
+        assert_matches(self, mcp_rs, r'suppress_console_window\(&mut command\)')
+
     def test_tray_panel_surface_is_narrow_react_dashboard_with_language_switching(self) -> None:
         app = read("tray/ui-react/src/App.tsx")
         panel = read("tray/ui-react/src/components/panel/CompanionPanel.tsx")
