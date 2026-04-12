@@ -101,6 +101,8 @@ enum CommandKind {
     NativeHost {
         #[arg(hide = true)]
         origin: Option<String>,
+        #[arg(long = "parent-window", hide = true)]
+        _parent_window: Option<String>,
     },
     Stop {
         #[arg(long)]
@@ -136,7 +138,10 @@ async fn main() -> Result<()> {
             ..
         } => bootstrap_command(json, no_autostart, no_start, &mode, &workspace_roots).await,
         CommandKind::Daemon => daemon_command().await,
-        CommandKind::NativeHost { origin } => native_host_command(origin.as_deref()).await,
+        CommandKind::NativeHost {
+            origin,
+            _parent_window,
+        } => native_host_command(origin.as_deref()).await,
         CommandKind::Stop { force } => stop_command(force).await,
         CommandKind::Status => status_command().await,
         CommandKind::Config => {
@@ -2274,7 +2279,29 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            CommandKind::NativeHost { origin: Some(origin) } if origin == FIXED_EXTENSION_ORIGIN
+            CommandKind::NativeHost {
+                origin: Some(origin),
+                ..
+            } if origin == FIXED_EXTENSION_ORIGIN
+        ));
+    }
+
+    #[test]
+    fn native_host_cli_accepts_windows_parent_window_argument() {
+        let cli = Cli::try_parse_from([
+            "trapezohe-companion",
+            "native-host",
+            FIXED_EXTENSION_ORIGIN,
+            "--parent-window=123456",
+        ])
+        .expect("native host cli parses Windows parent window");
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::NativeHost {
+                origin: Some(origin),
+                _parent_window: Some(parent_window),
+            } if origin == FIXED_EXTENSION_ORIGIN && parent_window == "123456"
         ));
     }
 
