@@ -309,11 +309,18 @@ class InstallerSurfaceTests(unittest.TestCase):
         assert_matches(self, wxs, r'Execute="deferred"')
         assert_matches(self, wxs, r'Impersonate="yes"')
         assert_matches(self, wxs, r'REMOVE~=&quot;ALL&quot;')
+        assert_matches(self, wxs, r'Name="GhastAI companion"')
+        assert_matches(self, wxs, r'Manufacturer="GhastAI"')
+        assert_matches(self, wxs, r'ARPPRODUCTICON')
+        assert_matches(self, wxs, r'companion-icon\.ico')
         assert_matches(self, run_install, r'install-companion\.ps1" %\*')
         assert_matches(self, installer, r'\$trayForegroundArgs = @\("--show-panel"\)')
         assert_matches(self, installer, r'\.Arguments = \(\$trayForegroundArgs -join " "\)')
         assert_matches(self, installer, r'@\(\$trayExePath\) \+ \$trayForegroundArgs')
         assert_matches(self, installer, r'Start-DetachedInstallerCommand -FilePath \$trayExePath -ArgumentList \$trayForegroundArgs')
+        assert_matches(self, installer, r'Write-FileUtf8NoBom')
+        assert_matches(self, installer, r'UTF8Encoding\(\$false\)')
+        assert_not_matches(self, installer, r'ConvertTo-Json \| Set-Content -Path \$startupPolicyPath -Encoding UTF8')
 
     def test_readme_cli_help_and_install_scripts_no_longer_ask_for_ext_id(self) -> None:
         readme = read("README.md")

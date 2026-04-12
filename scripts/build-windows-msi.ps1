@@ -5,8 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$WindowsInstallerProductName = "GhastAI Companion Installer"
-$WindowsInstallerManufacturer = "Trapezohe"
+$WindowsInstallerProductName = "GhastAI companion"
+$WindowsInstallerManufacturer = "GhastAI"
 $WindowsInstallerUpgradeCode = "4AF4D4EF-2C1D-4FB9-99EB-387DABEE6D20"
 $WindowsInstallerFolderName = "TrapezoheCompanion"
 $WindowsMsiFiles = @(
@@ -83,7 +83,8 @@ function Render-WindowsMsiSource {
     [Parameter(Mandatory = $true)]
     [string]$SchemaVersion,
     [string]$ProductVersion = "",
-    [string]$InstallerSourceDir = ""
+    [string]$InstallerSourceDir = "",
+    [string]$InstallerIconPath = ""
   )
 
   if ($SchemaVersion -eq "wix4") {
@@ -107,6 +108,7 @@ function Render-WindowsMsiSource {
     "      <ComponentRef Id=""$($_.componentId)"" />"
   }) -join "`n"
   $escapedVersion = ConvertTo-EscapedXmlAttribute $ProductVersion
+  $escapedIconPath = ConvertTo-EscapedXmlAttribute (Convert-ToPosixPath $InstallerIconPath)
 
 @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -115,6 +117,8 @@ function Render-WindowsMsiSource {
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
     <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer $WindowsInstallerProductName is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="AppIcon" SourceFile="$escapedIconPath" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFilesFolder">
         <Directory Id="INSTALLFOLDER" Name="$WindowsInstallerFolderName">
@@ -163,12 +167,14 @@ $trayStageDir = Join-Path $trayStageRoot "windows-tray"
 $bundledCliPath = Join-Path $sourceDir "trapezohe-companion.exe"
 $msiPath = Join-Path $outDir "trapezohe-companion-windows.msi"
 $generatedWxsPath = Join-Path $workDir "installer.generated.wxs"
+$installerIconPath = Join-Path $sourceDir "companion-icon.ico"
 
 New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 Copy-Item (Join-Path $root "packaging/windows/run-install.cmd") (Join-Path $sourceDir "run-install.cmd")
 Copy-Item (Join-Path $root "packaging/windows/license.rtf") (Join-Path $sourceDir "license.rtf")
+Copy-Item (Join-Path $root "tray/icons/icon.ico") $installerIconPath
 $psTemplate = Get-Content (Join-Path $root "packaging/windows/install-companion.ps1") -Raw
 $psRendered = $psTemplate -replace "__COMPANION_VERSION__", $Version
 Set-Content -Path (Join-Path $sourceDir "install-companion.ps1") -Value $psRendered -Encoding UTF8
@@ -192,7 +198,7 @@ Copy-Item (Join-Path $trayStageDir "trapezohe-companion-tray.exe") (Join-Path $s
 Copy-Item (Join-Path $trayStageDir "README.txt") (Join-Path $sourceDir "tray.README.txt")
 
 $plan = Get-WindowsMsiBuildPlan
-$renderedWxs = Render-WindowsMsiSource -SchemaVersion $plan.schemaVersion -ProductVersion $Version -InstallerSourceDir $sourceDir
+$renderedWxs = Render-WindowsMsiSource -SchemaVersion $plan.schemaVersion -ProductVersion $Version -InstallerSourceDir $sourceDir -InstallerIconPath $installerIconPath
 Set-Content -Path $generatedWxsPath -Value $renderedWxs -Encoding UTF8
 
 if ($plan.builder -eq "wix") {

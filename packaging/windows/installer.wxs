@@ -2,8 +2,8 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
-    Name="GhastAI Companion Installer"
-    Manufacturer="Trapezohe"
+    Name="GhastAI companion"
+    Manufacturer="GhastAI"
     Language="1033"
     Version="$(var.ProductVersion)"
     UpgradeCode="{4AF4D4EF-2C1D-4FB9-99EB-387DABEE6D20}">
@@ -12,8 +12,10 @@
          StopTrayBeforeInstall can execute the old run-install.cmd to stop the tray,
          then InstallFiles overwrites them (tray is stopped, no file lock), and finally
          RemoveExistingProducts cleans up old registry entries. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer GhastAI Companion Installer is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallExecute" DowngradeErrorMessage="A newer GhastAI companion is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="AppIcon" SourceFile="$(var.InstallerSourceDir)/companion-icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
 
     <WixVariable Id="WixUILicenseRtf" Value="$(var.InstallerSourceDir)/license.rtf" />
     <ui:WixUI Id="WixUI_Minimal" />

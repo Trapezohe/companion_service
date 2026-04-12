@@ -79,7 +79,7 @@ pub fn resolve_policy_path() -> Result<PathBuf> {
 pub fn load_preferences_from_path(path: &Path) -> Result<TrayPreferences> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("Failed to read tray preferences: {}", path.display()))?;
-    serde_json::from_str(&raw)
+    serde_json::from_str(strip_utf8_bom(&raw))
         .with_context(|| format!("Failed to parse tray preferences: {}", path.display()))
 }
 
@@ -101,7 +101,7 @@ pub fn save_preferences_to_path(path: &Path, prefs: &TrayPreferences) -> Result<
 pub fn load_startup_policy_from_path(path: &Path) -> Result<StartupPolicy> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("Failed to read startup policy: {}", path.display()))?;
-    serde_json::from_str(&raw)
+    serde_json::from_str(strip_utf8_bom(&raw))
         .with_context(|| format!("Failed to parse startup policy: {}", path.display()))
 }
 
@@ -236,6 +236,10 @@ fn enabled_startup_policy() -> StartupPolicy {
         login_item: LoginItemMode::Tray,
         ensure_daemon_on_tray_launch: true,
     }
+}
+
+fn strip_utf8_bom(raw: &str) -> &str {
+    raw.strip_prefix('\u{feff}').unwrap_or(raw)
 }
 
 fn is_login_item_enabled(policy: &StartupPolicy) -> bool {
@@ -718,6 +722,27 @@ mod tests {
             "migration should persist unified policy"
         );
         assert!(!legacy_path.exists(), "legacy tray prefs should be retired");
+    }
+
+    #[test]
+    fn loads_startup_policy_written_with_utf8_bom() {
+        let temp = tempdir().expect("temp dir");
+        let policy_path = temp.path().join("companion-startup.json");
+        fs::write(
+            &policy_path,
+            b"\xEF\xBB\xBF{\"loginItem\":\"tray\",\"ensureDaemonOnTrayLaunch\":true}",
+        )
+        .expect("write startup policy");
+
+        let policy = load_startup_policy_from_path(&policy_path).expect("load startup policy");
+
+        assert_eq!(
+            policy,
+            StartupPolicy {
+                login_item: LoginItemMode::Tray,
+                ensure_daemon_on_tray_launch: true,
+            }
+        );
     }
 
     #[test]

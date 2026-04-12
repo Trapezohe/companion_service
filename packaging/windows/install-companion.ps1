@@ -52,6 +52,18 @@ function Write-InstallerStep([int]$step, [int]$total, [string]$message) {
   Write-InstallerStatus ("Step {0}/{1}: {2}" -f $step, $total, $message)
 }
 
+function Write-FileUtf8NoBom {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+    [Parameter(Mandatory = $true)]
+    [string]$Contents
+  )
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Contents, $utf8NoBom)
+}
+
 function Resolve-InstallerCommand {
   param(
     [Parameter(Mandatory = $true)]
@@ -195,10 +207,13 @@ function Invoke-LoggedProcess {
 function Write-StartupPolicy {
   try {
     New-Item -ItemType Directory -Force -Path $trapezoheDir | Out-Null
-    @{
+    # Windows PowerShell writes a UTF-8 BOM by default, which breaks the
+    # Rust tray JSON parser and prevents automatic daemon startup.
+    $policyJson = @{
       loginItem = 'tray'
       ensureDaemonOnTrayLaunch = $true
-    } | ConvertTo-Json | Set-Content -Path $startupPolicyPath -Encoding UTF8
+    } | ConvertTo-Json
+    Write-FileUtf8NoBom -Path $startupPolicyPath -Contents ($policyJson + [Environment]::NewLine)
     Remove-Item -Path $legacyTrayPrefsPath -Force -ErrorAction SilentlyContinue
     Write-InstallerLog "Wrote unified startup policy to $startupPolicyPath"
   } catch {
