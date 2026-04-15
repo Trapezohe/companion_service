@@ -28,6 +28,7 @@ repository = "https://github.com/Trapezohe/companion_service.git"
 [workspace.dependencies]
 aes-gcm = "0.10"
 anyhow = "1"
+async-stream = "0.3"
 axum = { version = "0.8", features = ["macros"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }

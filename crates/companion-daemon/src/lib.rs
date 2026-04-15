@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{serve, Json, Router};
@@ -475,6 +476,14 @@ struct SessionLogParams {
     stream: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionLogStreamParams {
+    stream: Option<String>,
+    offset: Option<usize>,
+    #[serde(alias = "pollIntervalMs")]
+    poll_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -954,6 +963,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/local-runtime/sessions/{session_id}/log",
             get(runtime_session_log),
+        )
+        .route(
+            "/api/runtime/sessions/{session_id}/log/stream",
+            get(runtime_session_log_stream),
+        )
+        .route(
+            "/api/local-runtime/sessions/{session_id}/log/stream",
+            get(runtime_session_log_stream),
         )
         .route(
             "/api/runtime/session/{session_id}",
@@ -3967,6 +3984,138 @@ async fn runtime_session_log(
         .await
         .map_err(map_runtime_error)?;
     Ok(Json(serde_json::to_value(result).unwrap()))
+}
+
+async fn runtime_session_log_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<SessionLogStreamParams>,
+) -> Result<impl IntoResponse, Response> {
+    let config = state.snapshot_config().await;
+    authorize(&headers, &config)?;
+
+    // SSE only supports single stream (stdout or stderr), not both.
+    let log_stream = match query
+        .stream
+        .as_deref()
+        .unwrap_or("stdout")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
+        "stdout" => LogStream::Stdout,
+        "stderr" => LogStream::Stderr,
+        _ => {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "SSE stream must be stdout or stderr",
+            ));
+        }
+    };
+    let stream_name = match &log_stream {
+        LogStream::Stdout => "stdout",
+        LogStream::Stderr => "stderr",
+        LogStream::Both => unreachable!(),
+    };
+    let poll_ms = query.poll_interval_ms.unwrap_or(500).clamp(100, 5_000);
+    let start_offset = query.offset.unwrap_or(0);
+
+    // Pre-flight: verify session exists before opening SSE connection.
+    let initial = state
+        .runtime
+        .get_session_log(
+            &session_id,
+            SessionLogQuery {
+                stream: log_stream.clone(),
+                limit: Some(4096),
+                offset: Some(start_offset),
+            },
+        )
+        .await
+        .map_err(map_runtime_error)?;
+    let initial_offset = initial.next_offset.unwrap_or(start_offset);
+
+    let event_stream = async_stream::stream! {
+        // Emit initial chunk if non-empty.
+        let mut offset = initial_offset;
+        if let Some(output) = initial.output.as_deref() {
+            if !output.is_empty() {
+                let payload = serde_json::json!({
+                    "stream": stream_name,
+                    "output": output,
+                    "offset": start_offset,
+                    "nextOffset": offset,
+                    "hasMore": initial.has_more.unwrap_or(false),
+                });
+                yield Ok::<_, std::convert::Infallible>(
+                    SseEvent::default().event("log").data(payload.to_string()).id(offset.to_string())
+                );
+            }
+        }
+
+        if initial.status != "running" && !initial.has_more.unwrap_or(false) {
+            yield Ok(SseEvent::default().event("done").data(
+                serde_json::json!({"status": initial.status}).to_string()
+            ));
+            return;
+        }
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(poll_ms));
+        interval.tick().await; // skip first immediate tick
+
+        loop {
+            interval.tick().await;
+
+            let result = match state.runtime.get_session_log(
+                &session_id,
+                SessionLogQuery {
+                    stream: log_stream.clone(),
+                    limit: Some(4096),
+                    offset: Some(offset),
+                },
+            ).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(%session_id, error = %e, "stopping session log SSE");
+                    yield Ok(SseEvent::default().event("error").data(
+                        serde_json::json!({"error": "session_lost"}).to_string()
+                    ));
+                    break;
+                }
+            };
+
+            // Always sync offset from server to handle out-of-range start values.
+            let next = result.next_offset.unwrap_or(offset);
+
+            if let Some(output) = result.output.as_deref() {
+                if !output.is_empty() {
+                    let payload = serde_json::json!({
+                        "stream": stream_name,
+                        "output": output,
+                        "offset": offset,
+                        "nextOffset": next,
+                        "hasMore": result.has_more.unwrap_or(false),
+                    });
+                    yield Ok(SseEvent::default().event("log").data(payload.to_string()).id(next.to_string()));
+                }
+            }
+            offset = next;
+
+            if result.status != "running" && !result.has_more.unwrap_or(false) {
+                yield Ok(SseEvent::default().event("done").data(
+                    serde_json::json!({"status": result.status}).to_string()
+                ));
+                break;
+            }
+        }
+    };
+
+    Ok(Sse::new(event_stream).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("keepalive"),
+    ))
 }
 
 async fn runtime_session_status(
