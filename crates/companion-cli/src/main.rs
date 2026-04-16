@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 const NATIVE_HOST_NAMES: &[&str] = &["com.ghast.companion", "com.trapezohe.companion"];
 const NATIVE_HOST_DESCRIPTION: &str =
     "GhastAI Companion — local runtime bridge for the Ghast browser extension";
+// Cold starts can take several seconds while MCP servers reconnect. Keep the
+// CLI wait long enough to avoid reporting a false startup failure.
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(target_os = "linux")]
 const AUTOSTART_SERVICE_NAME: &str = "trapezohe-companion";
 #[cfg(windows)]
@@ -183,7 +186,7 @@ async fn start_command(daemon: bool) -> Result<()> {
 
     if daemon {
         spawn_detached_daemon()?;
-        wait_for_ready(&config, Duration::from_secs(5)).await?;
+        wait_for_ready(&config, DAEMON_READY_TIMEOUT).await?;
         println!("Companion daemon started on 127.0.0.1:{}", config.port);
         return Ok(());
     }
@@ -210,7 +213,7 @@ async fn restart_command(force: bool) -> Result<()> {
     }
 
     spawn_detached_daemon()?;
-    wait_for_ready(&config, Duration::from_secs(5)).await?;
+    wait_for_ready(&config, DAEMON_READY_TIMEOUT).await?;
     println!("Companion daemon restarted on 127.0.0.1:{}", config.port);
     Ok(())
 }

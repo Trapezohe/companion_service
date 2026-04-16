@@ -6,7 +6,7 @@ use crate::{
     daemon,
     models::{
         ActionLogEntry, CompanionConfig, CompanionShellState, DiagnosticsSnapshot, HealthSnapshot,
-        McpServerSnapshot, RecentFailure, StatusActions, StatusViewModel,
+        McpServerSnapshot, RecentFailure, SelfCheckSnapshot, StatusActions, StatusViewModel,
     },
 };
 
@@ -232,7 +232,9 @@ pub async fn collect_status_snapshot(
     };
 
     let previous_self_check = previous.and_then(|snapshot| snapshot.self_check.clone());
-    let self_check = if force_self_check || previous_self_check.is_none() {
+    let should_refresh_self_check =
+        should_refresh_self_check(previous_self_check.as_ref(), force_self_check);
+    let self_check = if should_refresh_self_check {
         match daemon::run_self_check() {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
@@ -276,6 +278,14 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn should_refresh_self_check(previous: Option<&SelfCheckSnapshot>, force_self_check: bool) -> bool {
+    if force_self_check || previous.is_none() {
+        return true;
+    }
+
+    previous.is_some_and(|snapshot| !snapshot.ok)
 }
 
 #[cfg(test)]
@@ -379,5 +389,38 @@ mod tests {
             }
             _ => panic!("expected misconfigured state"),
         }
+    }
+
+    #[test]
+    fn refreshes_self_check_when_previous_result_failed() {
+        let previous = SelfCheckSnapshot {
+            ok: false,
+            failing_checks: vec!["mcp_executables".into()],
+            repair_actions: Vec::new(),
+        };
+
+        assert!(should_refresh_self_check(Some(&previous), false));
+    }
+
+    #[test]
+    fn keeps_cached_self_check_when_previous_result_passed() {
+        let previous = SelfCheckSnapshot {
+            ok: true,
+            failing_checks: Vec::new(),
+            repair_actions: Vec::new(),
+        };
+
+        assert!(!should_refresh_self_check(Some(&previous), false));
+    }
+
+    #[test]
+    fn force_refresh_overrides_cached_self_check() {
+        let previous = SelfCheckSnapshot {
+            ok: true,
+            failing_checks: Vec::new(),
+            repair_actions: Vec::new(),
+        };
+
+        assert!(should_refresh_self_check(Some(&previous), true));
     }
 }
