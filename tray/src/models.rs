@@ -105,12 +105,6 @@ pub struct RecentFailure {
     pub error: String,
 }
 
-impl RecentFailure {
-    fn is_actionable(&self) -> bool {
-        self.error.trim() != "companion_restart_recovery"
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DiagnosticsSnapshot {
     pub connected_mcp_servers: u32,
@@ -314,19 +308,10 @@ fn derive_state(
                 };
             }
         }
-        if let Some(diag) = diagnostics {
-            let actionable_failure_count = diag
-                .recent_failures
-                .iter()
-                .filter(|failure| failure.is_actionable())
-                .count();
-            if actionable_failure_count > 0 {
+        if diagnostics.is_none() {
+            if let Some(error) = last_error {
                 return CompanionShellState::Degraded {
-                    reason: format!(
-                        "{} recent runtime {}",
-                        actionable_failure_count,
-                        pluralize(actionable_failure_count, "failure", "failures"),
-                    ),
+                    reason: error.to_string(),
                 };
             }
         } else if let Some(error) = last_error {
@@ -540,18 +525,11 @@ mod tests {
     }
 
     #[test]
-    fn ignores_restart_recovery_failures_when_runtime_is_otherwise_healthy() {
-        let mut diagnostics = sample_diagnostics();
-        diagnostics.recent_failures = vec![RecentFailure {
-            run_id: "run_recovery".into(),
-            summary: "Session orphaned after companion restart".into(),
-            error: "companion_restart_recovery".into(),
-        }];
-
+    fn keeps_runtime_healthy_when_only_recent_failures_are_present() {
         let snapshot = StatusViewModel::from_probe_results(
             &sample_config(),
             Some(sample_health()),
-            Some(diagnostics),
+            Some(sample_diagnostics()),
             Some(SelfCheckSnapshot {
                 ok: true,
                 failing_checks: Vec::new(),
