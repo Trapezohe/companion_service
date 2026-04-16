@@ -10,6 +10,7 @@ use companion_shared::{
     PERMISSION_MODE_FULL, PERMISSION_MODE_WORKSPACE,
 };
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -120,6 +121,7 @@ enum CommandKind {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+    initialize_process_path();
     let cli = Cli::parse();
     match cli.command {
         CommandKind::Start { daemon } => start_command(daemon).await,
@@ -1023,12 +1025,12 @@ fn command_resolves_on_path(command: &str) -> bool {
         return command_path.exists();
     }
 
-    let Some(path_var) = std::env::var_os("PATH") else {
-        return false;
-    };
+    command_resolves_in_directories(trimmed, &command_search_directories())
+}
 
-    for directory in std::env::split_paths(&path_var) {
-        let candidate = directory.join(trimmed);
+fn command_resolves_in_directories(command: &str, directories: &[PathBuf]) -> bool {
+    for directory in directories {
+        let candidate = directory.join(command);
         if candidate.exists() {
             return true;
         }
@@ -1042,7 +1044,7 @@ fn command_resolves_on_path(command: &str) -> bool {
                 if extension.is_empty() {
                     continue;
                 }
-                let candidate = directory.join(format!("{trimmed}{extension}"));
+                let candidate = directory.join(format!("{command}{extension}"));
                 if candidate.exists() {
                     return true;
                 }
@@ -1051,6 +1053,98 @@ fn command_resolves_on_path(command: &str) -> bool {
     }
 
     false
+}
+
+fn initialize_process_path() {
+    #[cfg(not(windows))]
+    {
+        if let Ok(path_var) = std::env::join_paths(command_search_directories()) {
+            std::env::set_var("PATH", path_var);
+        }
+    }
+}
+
+fn command_search_directories() -> Vec<PathBuf> {
+    build_command_search_directories(
+        dirs::home_dir().as_deref(),
+        std::env::var_os("PATH").as_deref(),
+    )
+}
+
+fn build_command_search_directories(
+    home: Option<&Path>,
+    path_var: Option<&std::ffi::OsStr>,
+) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(path_var) = path_var {
+        push_split_paths(&mut directories, &mut seen, path_var);
+    }
+
+    if let Some(home) = home {
+        push_common_user_bin_dirs(&mut directories, &mut seen, home);
+    }
+
+    directories
+}
+
+fn push_split_paths(
+    directories: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+    path_var: &std::ffi::OsStr,
+) {
+    for directory in std::env::split_paths(path_var) {
+        if !directory.as_os_str().is_empty() && seen.insert(directory.clone()) {
+            directories.push(directory);
+        }
+    }
+}
+
+fn push_common_user_bin_dirs(
+    directories: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+    home: &Path,
+) {
+    let static_candidates = [
+        home.join(".cargo").join("bin"),
+        home.join(".local").join("bin"),
+        home.join(".bun").join("bin"),
+        home.join(".pyenv").join("shims"),
+        home.join(".asdf").join("shims"),
+        home.join(".volta").join("bin"),
+        home.join("Library").join("pnpm"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+
+    for candidate in static_candidates {
+        push_existing_dir(directories, seen, candidate);
+    }
+
+    let nvm_versions_dir = home.join(".nvm").join("versions").join("node");
+    if let Ok(entries) = fs::read_dir(&nvm_versions_dir) {
+        let mut version_dirs = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("bin"))
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        version_dirs.sort();
+        version_dirs.reverse();
+        for candidate in version_dirs {
+            push_existing_dir(directories, seen, candidate);
+        }
+    }
+}
+
+fn push_existing_dir(
+    directories: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+    candidate: PathBuf,
+) {
+    if candidate.is_dir() && seen.insert(candidate.clone()) {
+        directories.push(candidate);
+    }
 }
 
 fn register_native_host(quiet: bool) -> Result<Value> {
@@ -2248,6 +2342,29 @@ mod tests {
                 vec![expected_workspace.display().to_string()]
             );
             assert!(!config.token.is_empty());
+        });
+    }
+
+    #[test]
+    fn command_search_directories_include_nvm_bins() {
+        with_temp_env(|temp_home, _config_dir| {
+            let nvm_bin = temp_home
+                .path()
+                .join(".nvm")
+                .join("versions")
+                .join("node")
+                .join("v22.12.0")
+                .join("bin");
+            fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+            fs::write(nvm_bin.join("npx"), "#!/bin/sh\n").expect("write npx");
+
+            let dirs = build_command_search_directories(
+                Some(temp_home.path()),
+                Some(std::ffi::OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+            );
+
+            assert!(dirs.contains(&nvm_bin));
+            assert!(command_resolves_in_directories("npx", &dirs));
         });
     }
 
