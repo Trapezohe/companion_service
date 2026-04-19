@@ -1,8 +1,11 @@
+mod persist;
+
 use anyhow::{anyhow, bail, Context, Result};
 use companion_config::{get_config_dir, is_path_within_roots};
 use companion_shared::{
     PermissionPolicy, RunTier, DEFAULT_TIER_RUNTIME_MAX_TIMEOUT_MS,
 };
+pub use persist::{PersistedRuntimeSession, RuntimePersistence, ORPHAN_REASON};
 use rand::RngCore;
 use regex::Regex;
 use serde::Serialize;
@@ -241,6 +244,16 @@ struct RuntimeInner {
     next_event_cursor: AtomicU64,
     session_ttl_ms: u64,
     max_session_count: usize,
+    /// Disk-backed metadata. When Some, every session state transition
+    /// flushes the full session map to disk so a daemon restart can
+    /// orphan-recover cleanly. When None (tests, no-config-dir path) the
+    /// manager runs memory-only.
+    persistence: Option<Arc<RuntimePersistence>>,
+    /// Terminal-state sessions recovered from disk + live sessions that
+    /// have exited and been pruned. Looked up by `get_session` so a
+    /// daemon-restart orphan answers `exited+orphan_reason` instead of
+    /// 404, and long-finished sessions remain queryable for diagnostics.
+    history: RwLock<HashMap<String, PersistedRuntimeSession>>,
 }
 
 #[derive(Debug)]
@@ -281,8 +294,46 @@ struct SpawnedProcess {
 
 impl RuntimeManager {
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// Disk-backed variant. On construction we load any persisted
+    /// sessions from the previous daemon run, flip any still-`running`
+    /// record to `exited+orphan` (the process died with the previous
+    /// daemon process), and re-seed the live session map with those
+    /// orphan placeholders so `/api/runtime/sessions/:id` answers with a
+    /// clean "exited daemon_restart_orphan" instead of 404.
+    pub fn new_in<P: Into<PathBuf>>(config_dir: P) -> Self {
+        let persistence = Arc::new(RuntimePersistence::new(config_dir.into()));
+        Self::build(Some(persistence))
+    }
+
+    fn build(persistence: Option<Arc<RuntimePersistence>>) -> Self {
         let session_ttl_ms = read_u64_env("TRAPEZOHE_SESSION_TTL_MS", DEFAULT_SESSION_TTL_MS);
         let max_session_count = read_usize_env("TRAPEZOHE_MAX_SESSIONS", DEFAULT_MAX_SESSION_COUNT);
+
+        let recovered: Vec<PersistedRuntimeSession> = match persistence.as_ref() {
+            None => Vec::new(),
+            Some(persistence) => {
+                let now = now_millis();
+                let loaded = persistence.load();
+                let cleaned = persist::mark_orphans(loaded, now);
+                if let Err(err) = persistence.save(&cleaned) {
+                    tracing::warn!(
+                        target: "companion_runtime",
+                        error = %err,
+                        "Failed to persist orphan recovery snapshot"
+                    );
+                }
+                cleaned
+            }
+        };
+
+        let mut history = HashMap::new();
+        for session in recovered {
+            history.insert(session.id.clone(), session);
+        }
+
         Self {
             inner: Arc::new(RuntimeInner {
                 sessions: RwLock::new(HashMap::new()),
@@ -290,6 +341,8 @@ impl RuntimeManager {
                 next_event_cursor: AtomicU64::new(1),
                 session_ttl_ms,
                 max_session_count,
+                persistence,
+                history: RwLock::new(history),
             }),
         }
     }
@@ -379,13 +432,25 @@ impl RuntimeManager {
             .await
             .insert(session_id.clone(), handle.clone());
 
+        // Flush the new session to disk immediately so orphan recovery
+        // can find it if the daemon crashes before the child exits.
+        persist_runtime_snapshot(&self.inner).await;
+
         spawn_exit_watchdog(self.inner.clone(), handle.clone());
         Ok(self.make_session_snapshot(&handle).await)
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<SessionSnapshot> {
-        let handle = self.inner.sessions.read().await.get(session_id).cloned()?;
-        Some(self.make_session_snapshot(&handle).await)
+        if let Some(handle) = self.inner.sessions.read().await.get(session_id).cloned() {
+            return Some(self.make_session_snapshot(&handle).await);
+        }
+        // Live map miss — consult history (orphan-recovered or long-
+        // finished). Returns a minimal snapshot: no stdout/stderr, no
+        // writable child, but enough for the caller to stop polling.
+        let history = self.inner.history.read().await;
+        history
+            .get(session_id)
+            .map(|session| snapshot_from_persisted(session))
     }
 
     pub async fn stop_session(
@@ -689,6 +754,12 @@ impl RuntimeManager {
             finished_at,
             duration_ms: finished_at.unwrap_or_else(now_millis) - state.started_at,
         }
+    }
+
+    /// Diagnostic/test hook — count of sessions recovered from disk and
+    /// seeded into history on construction.
+    pub async fn history_count(&self) -> usize {
+        self.inner.history.read().await.len()
     }
 
     async fn make_session_list_item(&self, handle: &Arc<SessionHandle>) -> SessionListItem {
@@ -1282,8 +1353,17 @@ async fn finalize_session(inner: Arc<RuntimeInner>, handle: Arc<SessionHandle>, 
             .unwrap_or_else(now_millis)
             .saturating_sub(state.started_at),
     };
+    let persisted = session_to_persisted(&state);
     drop(state);
     inner.session_events.write().await.push(event);
+    // Seed history before flushing so the on-disk snapshot captures the
+    // terminal state even if the live session is pruned seconds later.
+    inner
+        .history
+        .write()
+        .await
+        .insert(persisted.id.clone(), persisted);
+    persist_runtime_snapshot(&inner).await;
 }
 
 async fn finalize_session_with_error(
@@ -1398,6 +1478,79 @@ fn make_log_slice(text: &str, offset: usize, limit: usize) -> LogSlice {
     }
 }
 
+fn session_to_persisted(state: &SessionState) -> PersistedRuntimeSession {
+    PersistedRuntimeSession {
+        id: state.id.clone(),
+        command: state.command.clone(),
+        cwd: state.cwd.clone(),
+        status: state.status.clone(),
+        started_at: state.started_at,
+        finished_at: state.finished_at,
+        exit_code: state.exit_code,
+        timed_out: state.timed_out,
+        tier: state.tier,
+        effective_ttl_ms: state.effective_ttl_ms,
+        orphan_reason: None,
+    }
+}
+
+fn snapshot_from_persisted(session: &PersistedRuntimeSession) -> SessionSnapshot {
+    SessionSnapshot {
+        ok: true,
+        session_id: session.id.clone(),
+        status: session.status.clone(),
+        command: session.command.clone(),
+        cwd: session.cwd.clone(),
+        // Neither is persisted — there's no live PTY output to replay.
+        stdout: String::new(),
+        stderr: session
+            .orphan_reason
+            .as_ref()
+            .map(|reason| format!("[companion-runtime] {reason}"))
+            .unwrap_or_default(),
+        timed_out: session.timed_out,
+        exit_code: session.exit_code,
+        started_at: session.started_at,
+        finished_at: session.finished_at,
+        duration_ms: session
+            .finished_at
+            .unwrap_or_else(now_millis)
+            .saturating_sub(session.started_at),
+    }
+}
+
+/// Serialize the combined live + history set and flush to disk. Called
+/// after every session insert / state transition. No-op when the manager
+/// was constructed without a config dir.
+async fn persist_runtime_snapshot(inner: &Arc<RuntimeInner>) {
+    let Some(persistence) = inner.persistence.as_ref() else {
+        return;
+    };
+    let mut combined: Vec<PersistedRuntimeSession> = Vec::new();
+    {
+        let sessions = inner.sessions.read().await;
+        for handle in sessions.values() {
+            let state = handle.state.lock().await;
+            combined.push(session_to_persisted(&state));
+        }
+    }
+    {
+        let history = inner.history.read().await;
+        for (id, persisted) in history.iter() {
+            if !combined.iter().any(|item| item.id == *id) {
+                combined.push(persisted.clone());
+            }
+        }
+    }
+    if let Err(err) = persistence.save(&combined) {
+        tracing::warn!(
+            target: "companion_runtime",
+            error = %err,
+            "Failed to persist runtime session snapshot"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1425,6 +1578,70 @@ mod tests {
         assert_eq!(
             clamp_timeout(Some(LONG_TASK_TIER_MAX_TIMEOUT_MS + 60_000), RunTier::LongTask),
             LONG_TASK_TIER_MAX_TIMEOUT_MS
+        );
+    }
+
+    #[tokio::test]
+    async fn persistence_recovers_in_flight_session_as_orphan() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Round 1: start a session, then let it exit cleanly. The store
+        // should snapshot its terminal state to disk.
+        let runtime_a = RuntimeManager::new_in(dir.path());
+        let command = if cfg!(windows) {
+            "echo hi".to_string()
+        } else {
+            "printf hi".to_string()
+        };
+        let session = runtime_a
+            .start_session(SessionStartRequest {
+                command,
+                cwd: None,
+                timeout_ms: Some(5_000),
+                env: None,
+                permission_policy: full_policy(),
+                tier: RunTier::Default,
+            })
+            .await
+            .unwrap();
+        // Wait for it to exit so the terminal state gets written.
+        let mut snapshot = runtime_a.get_session(&session.session_id).await.unwrap();
+        for _ in 0..20 {
+            if snapshot.status == "exited" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            snapshot = runtime_a.get_session(&session.session_id).await.unwrap();
+        }
+        assert_eq!(snapshot.status, "exited");
+        drop(runtime_a);
+
+        // Round 2: simulate an in-flight session at shutdown by hand-
+        // writing a "running" record to disk. Constructing a new
+        // RuntimeManager should mark it as exited+orphan.
+        let persist_path = dir.path().join("runtime-sessions.json");
+        let raw = std::fs::read_to_string(&persist_path).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        snapshot["sessions"].as_array_mut().unwrap().push(serde_json::json!({
+            "id": "fake-orphan",
+            "command": "sleep 9999",
+            "cwd": "/tmp",
+            "status": "running",
+            "startedAt": 12345,
+            "timedOut": false,
+            "tier": "default",
+            "effectiveTtlMs": 3600000,
+        }));
+        std::fs::write(&persist_path, serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
+
+        let runtime_b = RuntimeManager::new_in(dir.path());
+        let recovered = runtime_b.get_session("fake-orphan").await.unwrap();
+        assert_eq!(recovered.status, "exited");
+        assert_eq!(recovered.exit_code, Some(-1));
+        assert!(
+            recovered.stderr.contains(ORPHAN_REASON),
+            "orphan marker should appear in stderr: {}",
+            recovered.stderr
         );
     }
 

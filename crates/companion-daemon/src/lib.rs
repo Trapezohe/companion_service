@@ -127,7 +127,10 @@ impl AppState {
             config: Arc::new(RwLock::new(config.clone())),
             store_dir: checkpoint_store_dir,
             mcp: McpManager::from_config(&config),
-            runtime: RuntimeManager::new(),
+            runtime: store_dir
+                .as_ref()
+                .map(|value| RuntimeManager::new_in(value.clone()))
+                .unwrap_or_else(RuntimeManager::new),
             browser: store_dir
                 .as_ref()
                 .map(|value| BrowserLedger::new_in(value.clone()))
@@ -149,7 +152,10 @@ impl AppState {
                 .map(|value| ShadowRefreshManager::new_in(value.clone()))
                 .unwrap_or_else(ShadowRefreshManager::new),
             checkpoint_jobs: Arc::new(RwLock::new(checkpoint_jobs)),
-            acp: AcpManager::new(),
+            acp: store_dir
+                .as_ref()
+                .map(|value| AcpManager::new_in(value.clone()))
+                .unwrap_or_else(AcpManager::new),
             runs: store_dir
                 .as_ref()
                 .map(|value| RunStore::new_in(value.clone()))

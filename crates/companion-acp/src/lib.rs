@@ -1,9 +1,13 @@
+mod persist;
+
 use anyhow::{anyhow, bail, Context, Result};
 use companion_shared::{RunTier, DEFAULT_TIER_ACP_MAX_TIMEOUT_MS};
+pub use persist::{AcpPersistence, PersistedAcpSession, ORPHAN_REASON};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -176,6 +180,13 @@ struct AcpInner {
     sessions: RwLock<HashMap<String, Arc<SessionHandle>>>,
     events: RwLock<Vec<AcpEvent>>,
     next_cursor: AtomicU64,
+    /// Same pattern as companion-runtime + companion-agent: disk-backed
+    /// metadata so daemon restart can fall back to "the session existed
+    /// and was orphaned" instead of 404.
+    persistence: Option<Arc<AcpPersistence>>,
+    /// Terminal-state + orphan-recovered sessions. `get_session` and
+    /// `list_sessions` consult this after the live map misses.
+    history: RwLock<HashMap<String, PersistedAcpSession>>,
 }
 
 #[derive(Debug)]
@@ -211,13 +222,48 @@ struct SessionState {
 
 impl AcpManager {
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    pub fn new_in<P: Into<PathBuf>>(config_dir: P) -> Self {
+        Self::build(Some(Arc::new(AcpPersistence::new(config_dir.into()))))
+    }
+
+    fn build(persistence: Option<Arc<AcpPersistence>>) -> Self {
+        let recovered = match persistence.as_ref() {
+            None => Vec::new(),
+            Some(persistence) => {
+                let now = now_millis();
+                let loaded = persistence.load();
+                let cleaned = persist::mark_orphans(loaded, now);
+                if let Err(err) = persistence.save(&cleaned) {
+                    tracing::warn!(
+                        target: "companion_acp",
+                        error = %err,
+                        "Failed to persist orphan recovery snapshot"
+                    );
+                }
+                cleaned
+            }
+        };
+        let mut history = HashMap::new();
+        for session in recovered {
+            history.insert(session.session_id.clone(), session);
+        }
         Self {
             inner: Arc::new(AcpInner {
                 sessions: RwLock::new(HashMap::new()),
                 events: RwLock::new(Vec::new()),
                 next_cursor: AtomicU64::new(1),
+                persistence,
+                history: RwLock::new(history),
             }),
         }
+    }
+
+    /// Diagnostic + test hook.
+    pub async fn history_count(&self) -> usize {
+        self.inner.history.read().await.len()
     }
 
     pub async fn create_session(&self, input: CreateSessionInput) -> AcpSessionSnapshot {
@@ -252,12 +298,21 @@ impl AcpManager {
             .write()
             .await
             .insert(session_id, handle.clone());
+        persist_acp_snapshot(&self.inner).await;
         self.snapshot(&handle).await
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<AcpSessionSnapshot> {
-        let handle = self.inner.sessions.read().await.get(session_id).cloned()?;
-        Some(self.snapshot(&handle).await)
+        if let Some(handle) = self.inner.sessions.read().await.get(session_id).cloned() {
+            return Some(self.snapshot(&handle).await);
+        }
+        // Live miss: answer from history so a daemon-restart orphan shows
+        // up as `state='error', orphanReason='daemon_restart_orphan'`
+        // instead of disappearing entirely.
+        let history = self.inner.history.read().await;
+        history
+            .get(session_id)
+            .map(|persisted| snapshot_from_persisted(persisted))
     }
 
     pub async fn attach_run_id(
@@ -629,8 +684,15 @@ impl AcpManager {
             state.state = next_state.to_string();
             state.finished_at = Some(now_millis());
             state.terminal_emitted = true;
+            let persisted = state_to_persisted(&state);
+            self.inner
+                .history
+                .write()
+                .await
+                .insert(persisted.session_id.clone(), persisted);
             state.current_turn_id.clone()
         };
+        persist_acp_snapshot(&self.inner).await;
         self.push_event(
             handle,
             AcpEvent {
@@ -908,8 +970,15 @@ async fn finalize_inner(
         state.state = next_state.to_string();
         state.finished_at = Some(now_millis());
         state.terminal_emitted = true;
+        let persisted = state_to_persisted(&state);
+        inner
+            .history
+            .write()
+            .await
+            .insert(persisted.session_id.clone(), persisted);
         state.current_turn_id.clone()
     };
+    persist_acp_snapshot(&inner).await;
     push_event_inner(
         inner,
         handle,
@@ -989,6 +1058,76 @@ fn clamp_timeout(value: Option<u64>, tier: RunTier) -> u64 {
     value
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .clamp(1_000, tier.max_timeout_ms(MAX_TIMEOUT_MS))
+}
+
+fn state_to_persisted(state: &SessionState) -> PersistedAcpSession {
+    PersistedAcpSession {
+        session_id: state.session_id.clone(),
+        agent_type: state.agent_type.clone(),
+        state: state.state.clone(),
+        cwd: state.cwd.clone(),
+        command: state.command.clone(),
+        origin: state.origin.clone(),
+        input_provenance: state.input_provenance.clone(),
+        created_at: state.created_at,
+        started_at: state.started_at,
+        finished_at: state.finished_at,
+        current_turn_id: state.current_turn_id.clone(),
+        run_id: state.run_id.clone(),
+        runtime_session_id: state.runtime_session_id.clone(),
+        tier: state.tier,
+        timed_out: state.timed_out,
+        orphan_reason: None,
+    }
+}
+
+fn snapshot_from_persisted(session: &PersistedAcpSession) -> AcpSessionSnapshot {
+    AcpSessionSnapshot {
+        session_id: session.session_id.clone(),
+        agent_type: session.agent_type.clone(),
+        state: session.state.clone(),
+        cwd: session.cwd.clone(),
+        command: session.command.clone(),
+        origin: session.origin.clone(),
+        input_provenance: session.input_provenance.clone(),
+        created_at: session.created_at,
+        started_at: session.started_at,
+        finished_at: session.finished_at,
+        current_turn_id: session.current_turn_id.clone(),
+        run_id: session.run_id.clone(),
+        queue_depth: 0,
+        terminal_emitted: true,
+        runtime_session_id: session.runtime_session_id.clone(),
+    }
+}
+
+async fn persist_acp_snapshot(inner: &Arc<AcpInner>) {
+    let Some(persistence) = inner.persistence.as_ref() else {
+        return;
+    };
+    let mut combined: Vec<PersistedAcpSession> = Vec::new();
+    {
+        let sessions = inner.sessions.read().await;
+        for handle in sessions.values() {
+            let state = handle.state.lock().await;
+            combined.push(state_to_persisted(&state));
+        }
+    }
+    {
+        let history = inner.history.read().await;
+        for (id, persisted) in history.iter() {
+            if !combined.iter().any(|item| item.session_id == *id) {
+                combined.push(persisted.clone());
+            }
+        }
+    }
+    if let Err(err) = persistence.save(&combined) {
+        tracing::warn!(
+            target: "companion_acp",
+            error = %err,
+            "Failed to persist ACP session snapshot"
+        );
+    }
 }
 
 fn normalize_object(value: Option<Value>) -> Option<Value> {
