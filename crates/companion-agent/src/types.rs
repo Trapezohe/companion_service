@@ -154,7 +154,7 @@ pub struct AgentCompleteEventPayload {
     pub result: SerializedRunPiAgentLoopResult,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTurnErrorDetail {
     pub code: AgentTurnErrorCode,
@@ -163,7 +163,7 @@ pub struct AgentTurnErrorDetail {
     pub retryable: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTurnErrorCode {
     BadRequest,
@@ -194,7 +194,7 @@ pub enum AgentTurnSseEvent {
     Error(AgentErrorEventPayload),
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTurnStatus {
     Running,

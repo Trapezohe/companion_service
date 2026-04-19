@@ -3,7 +3,10 @@
 // off orchestrator → stream events back. State (run store, http client) is
 // shared via AgentState and constructed once at daemon startup.
 use crate::orchestrator::AgentRunOrchestrator;
-use crate::store::{AgentRunStore, DeliverToolResult, ToolResultPayload};
+use crate::persist::AgentRunPersistence;
+use crate::store::{
+    AgentRunStore, CreateRunMetadata, DeliverToolResult, ToolResultPayload,
+};
 use crate::types::{
     AgentToolResultAck, AgentToolResultRequest, AgentTurnSseEvent, RunAgentTurnRequest,
     RunAgentTurnStatusResponse,
@@ -33,9 +36,23 @@ pub struct AgentState {
 }
 
 impl AgentState {
+    /// In-memory only. Daemon restart loses all run history. Useful for
+    /// tests + the no-config-dir code path.
     pub fn new(http_client: Client) -> Self {
         Self {
             store: AgentRunStore::new(),
+            http_client,
+        }
+    }
+
+    /// Disk-backed run history. On creation, replays orphan recovery so
+    /// any run that was running/waiting at the previous shutdown gets
+    /// marked failed with reason='daemon_restart_orphan'. Extension
+    /// clients calling /status on those run_ids see the failed state and
+    /// fall back to the local loop instead of waiting on a dead stream.
+    pub fn new_with_persistence(http_client: Client, persistence: AgentRunPersistence) -> Self {
+        Self {
+            store: AgentRunStore::new_with_persistence(persistence),
             http_client,
         }
     }
@@ -93,7 +110,14 @@ async fn start_agent_turn(
         );
     }
 
-    let run = state.agent.store.create().await;
+    let run = state
+        .agent
+        .store
+        .create_with_metadata(CreateRunMetadata {
+            conversation_id: request.conversation_id.clone(),
+            model: Some(request.model.clone()),
+        })
+        .await;
     let run_id = run.run_id.clone();
     let event_rx = AgentRunOrchestrator::spawn(
         run.clone(),
@@ -215,10 +239,11 @@ async fn get_agent_turn_status(
     if let Err(response) = (state.auth)(&headers) {
         return response;
     }
-    let Some(handle) = state.agent.store.get(&run_id).await else {
+    // Consults the terminal-history map too, so orphan-recovered runs and
+    // runs that have already been removed from the live map still answer.
+    let Some(snapshot) = state.agent.store.snapshot_for(&run_id).await else {
         return json_error(StatusCode::NOT_FOUND, "Unknown agent run id.");
     };
-    let snapshot = handle.snapshot().await;
     Json(RunAgentTurnStatusResponse {
         ok: true,
         run_id: snapshot.run_id,

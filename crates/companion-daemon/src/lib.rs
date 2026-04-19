@@ -11,7 +11,9 @@ use companion_acp::{
     PromptInput as AcpPromptInput, SessionEventsQuery as AcpEventsQuery,
     SessionListQuery as AcpListQuery, SteerInput as AcpSteerInput,
 };
-use companion_agent::{agent_routes, AgentAuthFn, AgentRouterState, AgentState};
+use companion_agent::{
+    agent_routes, AgentAuthFn, AgentRouterState, AgentRunPersistence, AgentState,
+};
 use companion_app::{
     activate_window, capture_screenshot, complete_reminder, create_calendar_event, create_note,
     create_reminder, delete_scheduled_task, get_clipboard_text, list_calendar_events,
@@ -101,8 +103,9 @@ pub struct AppState {
     checkpoint_jobs: Arc<RwLock<CheckpointJobRunner>>,
     /// Hosts the `/api/agent/turn` LLM-loop endpoints. Lives here so the
     /// run store survives across HTTP requests within a single daemon
-    /// process. Restart loses the in-flight runs by design (phase 4 will
-    /// add persistence).
+    /// process. With a config dir, metadata is also persisted to disk so
+    /// run history + orphan recovery survive daemon restarts; without one
+    /// the store falls back to memory-only mode.
     agent: AgentState,
     shutdown_tx: watch::Sender<bool>,
 }
@@ -155,7 +158,15 @@ impl AppState {
                 .as_ref()
                 .map(|value| ApprovalStore::new_in(value.clone()))
                 .unwrap_or_else(ApprovalStore::new),
-            agent: AgentState::new(reqwest::Client::new()),
+            agent: store_dir
+                .as_ref()
+                .map(|value| {
+                    AgentState::new_with_persistence(
+                        reqwest::Client::new(),
+                        AgentRunPersistence::new(value.clone()),
+                    )
+                })
+                .unwrap_or_else(|| AgentState::new(reqwest::Client::new())),
             shutdown_tx,
         }
     }

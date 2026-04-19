@@ -27,9 +27,11 @@
 mod handlers;
 mod llm;
 mod orchestrator;
+mod persist;
 mod store;
 mod types;
 
 pub use handlers::{agent_routes, AgentAuthFn, AgentRouterState, AgentState};
-pub use store::AgentRunStore;
+pub use persist::{AgentRunPersistence, PersistedAgentRun, PersistedRunResultSummary};
+pub use store::{AgentRunStore, CreateRunMetadata};
 pub use types::*;
