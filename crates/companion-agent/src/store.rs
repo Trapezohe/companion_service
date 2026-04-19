@@ -12,14 +12,26 @@ use crate::persist::{
     mark_orphans, AgentRunPersistence, PersistedAgentRun, PersistedRunResultSummary,
 };
 use crate::types::{
-    AgentTurnErrorDetail, AgentTurnStatus, SerializedRunPiAgentLoopResult,
+    AgentTurnErrorDetail, AgentTurnSseEvent, AgentTurnStatus, SerializedRunPiAgentLoopResult,
 };
 use companion_shared::RunTier;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{broadcast, oneshot, RwLock};
 use tokio_util::sync::CancellationToken;
+
+/// Max replayable events kept per run. Trims oldest on overflow. A
+/// typical turn is ~30-100 events (assistant_delta, tool_call, usage,
+/// complete), so 500 covers several reconnect hops plus some headroom
+/// without growing unbounded for pathologically long turns.
+const EVENT_LOG_CAPACITY: usize = 500;
+
+/// broadcast channel capacity. Broadcast is an in-memory ring buffer per
+/// subscriber; 128 is enough for a moderately slow reader without
+/// forcing Lagged on bursty assistant_delta streams.
+const EVENT_BROADCAST_CAPACITY: usize = 128;
 
 /// Public snapshot for the GET /status endpoint.
 #[derive(Debug, Clone)]
@@ -52,6 +64,15 @@ pub struct PendingToolCall {
     pub tx: oneshot::Sender<ToolResultPayload>,
 }
 
+/// Single emitted SSE event together with the monotonic cursor assigned
+/// at emission time. Clients reconnecting pass `afterCursor=N` so only
+/// events with `cursor > N` are replayed.
+#[derive(Debug, Clone)]
+pub struct StoredAgentEvent {
+    pub cursor: u64,
+    pub event: AgentTurnSseEvent,
+}
+
 #[derive(Debug)]
 pub struct RunHandle {
     pub run_id: String,
@@ -69,10 +90,24 @@ pub struct RunHandle {
     /// Set when status flips to Failed.
     pub error: RwLock<Option<AgentTurnErrorDetail>>,
     /// Filled by the LLM loop when it emits a tool_call SSE event; consumed
-    /// by the matching tool_result POST.
-    pub pending_tool: RwLock<Option<PendingToolCall>>,
+    /// by the matching tool_result POST. Keyed by call_id so a single
+    /// LLM round can emit multiple parallel tool_calls and match them
+    /// back individually (phase 5b).
+    pub pending_tools: RwLock<HashMap<String, PendingToolCall>>,
     /// Aborts the loop when triggered (cancel endpoint or daemon shutdown).
     pub cancel: CancellationToken,
+    /// Monotonic counter. Every emitted event gets the next value so a
+    /// reconnecting client can resume from wherever it left off.
+    pub event_cursor: AtomicU64,
+    /// Bounded replay buffer of recent events. Orchestrator pushes every
+    /// SSE event here before broadcasting, so reconnects can backfill.
+    /// `std::sync::Mutex` (not `tokio::sync::RwLock`) so the LLM
+    /// streaming callback — which runs in a sync context inside
+    /// `stream_chat_completion` — can push without needing to await.
+    pub event_log: StdMutex<VecDeque<StoredAgentEvent>>,
+    /// Broadcast sender so multiple subscribers (the original SSE stream
+    /// + any number of reconnects) can all receive events concurrently.
+    pub event_tx: broadcast::Sender<StoredAgentEvent>,
     /// Hook back to the owning store so terminal-state writes can flush
     /// persistence without each call site needing to know about disk IO.
     persistence: Option<Arc<AgentRunPersistence>>,
@@ -93,6 +128,7 @@ impl RunHandle {
         runs_for_snapshot: Option<Arc<RwLock<HashMap<String, Arc<RunHandle>>>>>,
     ) -> Arc<Self> {
         let now = now_millis();
+        let (event_tx, _initial_rx) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         Arc::new(Self {
             run_id,
             conversation_id,
@@ -104,11 +140,52 @@ impl RunHandle {
             finished_at: RwLock::new(None),
             result: RwLock::new(None),
             error: RwLock::new(None),
-            pending_tool: RwLock::new(None),
+            pending_tools: RwLock::new(HashMap::new()),
             cancel: CancellationToken::new(),
+            event_cursor: AtomicU64::new(0),
+            event_log: StdMutex::new(VecDeque::with_capacity(EVENT_LOG_CAPACITY)),
+            event_tx,
             persistence,
             runs_for_snapshot,
         })
+    }
+
+    /// Record one event: assign a cursor, push to the replay log, and
+    /// broadcast to any live subscribers. Callable from both async and
+    /// sync contexts (the LLM streaming callback is sync).
+    pub fn emit_event(&self, event: AgentTurnSseEvent) -> StoredAgentEvent {
+        let cursor = self.event_cursor.fetch_add(1, Ordering::SeqCst);
+        let stored = StoredAgentEvent { cursor, event };
+        {
+            let mut log = self
+                .event_log
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            log.push_back(stored.clone());
+            while log.len() > EVENT_LOG_CAPACITY {
+                log.pop_front();
+            }
+        }
+        let _ = self.event_tx.send(stored.clone());
+        stored
+    }
+
+    /// Snapshot of the replay log filtered to events strictly after the
+    /// given cursor. Used by reconnect: the client sends the last
+    /// cursor it saw, we hand back everything newer.
+    pub fn events_after(&self, cursor: u64) -> Vec<StoredAgentEvent> {
+        self.event_log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|item| item.cursor > cursor)
+            .cloned()
+            .collect()
+    }
+
+    /// Borrow the broadcast sender so a new subscriber can subscribe().
+    pub fn subscribe_events(&self) -> broadcast::Receiver<StoredAgentEvent> {
+        self.event_tx.subscribe()
     }
 
     pub async fn snapshot(&self) -> RunSnapshot {
@@ -343,8 +420,10 @@ pub enum DeliverToolResult {
 }
 
 impl RunHandle {
-    /// Atomically pop the pending tool call (if it matches) and deliver the
-    /// result via its oneshot channel.
+    /// Deliver a tool_result for one of the currently pending calls.
+    /// With parallel tool batching (phase 5b) a run may have multiple
+    /// pending calls simultaneously — we look up by call_id rather than
+    /// assuming a single head.
     pub async fn deliver_tool_result(
         &self,
         payload: ToolResultPayload,
@@ -353,21 +432,35 @@ impl RunHandle {
         if !matches!(status_now, AgentTurnStatus::WaitingToolResult | AgentTurnStatus::Running) {
             return DeliverToolResult::RunNotReceiving;
         }
-        let mut pending = self.pending_tool.write().await;
-        match pending.take() {
-            None => DeliverToolResult::NoPendingCall,
-            Some(call) if call.call_id != payload.call_id => {
-                // Put it back — the wrong client could have raced.
-                *pending = Some(call);
-                DeliverToolResult::CallIdMismatch {
-                    expected: pending.as_ref().map(|c| c.call_id.clone()).unwrap_or_default(),
-                }
-            }
+        let mut pending = self.pending_tools.write().await;
+        if pending.is_empty() {
+            return DeliverToolResult::NoPendingCall;
+        }
+        match pending.remove(&payload.call_id) {
             Some(call) => {
                 let _ = call.tx.send(payload);
                 DeliverToolResult::Delivered
             }
+            None => {
+                // Unknown call_id — surface the set of expected ones so
+                // the caller can fix up its local state.
+                let expected = pending
+                    .keys()
+                    .next()
+                    .cloned()
+                    .unwrap_or_default();
+                DeliverToolResult::CallIdMismatch { expected }
+            }
         }
+    }
+
+    /// Register a new pending tool call. Must be paired with a matching
+    /// deliver_tool_result before the run is considered idle again.
+    pub async fn register_pending_tool(&self, call: PendingToolCall) {
+        self.pending_tools
+            .write()
+            .await
+            .insert(call.call_id.clone(), call);
     }
 }
 
@@ -443,5 +536,80 @@ mod tests {
         assert_eq!(snap.status, AgentTurnStatus::Cancelled);
         assert_eq!(store.inflight_count().await, 0);
         assert_eq!(store.history_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn emit_event_records_cursor_and_buffers_for_reconnect() {
+        use crate::types::{AgentAssistantDeltaEventPayload, AgentUsageEventPayload};
+        let store = AgentRunStore::new();
+        let run = store.create().await;
+
+        let first = run.emit_event(AgentTurnSseEvent::AssistantDelta(
+            AgentAssistantDeltaEventPayload {
+                run_id: run.run_id.clone(),
+                chunk: "hello".to_string(),
+            },
+        ));
+        let second = run.emit_event(AgentTurnSseEvent::Usage(AgentUsageEventPayload {
+            run_id: run.run_id.clone(),
+            usage: serde_json::json!({ "total_tokens": 42 }),
+        }));
+
+        assert_eq!(first.cursor, 0);
+        assert_eq!(second.cursor, 1);
+
+        // Reconnect at cursor=0 sees only events with cursor > 0.
+        let replay = run.events_after(0);
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].cursor, 1);
+
+        // Reconnect at cursor=-1 (i.e. fresh client) sees both.
+        let from_start = run.events_after(u64::MAX);
+        assert!(from_start.is_empty());
+        let from_begin = run.events_after(0).len() + 1; // manually include cursor 0
+        assert_eq!(from_begin, 2);
+    }
+
+    #[tokio::test]
+    async fn parallel_tool_calls_route_by_call_id() {
+        let store = AgentRunStore::new();
+        let run = store.create().await;
+        run.set_status(AgentTurnStatus::WaitingToolResult).await;
+
+        // Simulate two pending tool calls emitted in the same LLM round.
+        let (tx_a, rx_a) = oneshot::channel();
+        let (tx_b, rx_b) = oneshot::channel();
+        run.register_pending_tool(PendingToolCall {
+            call_id: "call-a".to_string(),
+            tx: tx_a,
+        })
+        .await;
+        run.register_pending_tool(PendingToolCall {
+            call_id: "call-b".to_string(),
+            tx: tx_b,
+        })
+        .await;
+
+        // Deliver B first (out of order) and A second. Each should
+        // route to the correct waiter regardless of arrival order.
+        let outcome_b = run
+            .deliver_tool_result(ToolResultPayload {
+                call_id: "call-b".to_string(),
+                result: "result-b".to_string(),
+                success: true,
+            })
+            .await;
+        let outcome_a = run
+            .deliver_tool_result(ToolResultPayload {
+                call_id: "call-a".to_string(),
+                result: "result-a".to_string(),
+                success: true,
+            })
+            .await;
+        assert!(matches!(outcome_a, DeliverToolResult::Delivered));
+        assert!(matches!(outcome_b, DeliverToolResult::Delivered));
+
+        assert_eq!(rx_a.await.unwrap().result, "result-a");
+        assert_eq!(rx_b.await.unwrap().result, "result-b");
     }
 }

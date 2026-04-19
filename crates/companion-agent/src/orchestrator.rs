@@ -15,16 +15,16 @@ use crate::types::{
     SerializedRunPiAgentLoopResult,
 };
 use anyhow::Result;
+use futures::future::join_all;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MAX_TURNS: u32 = 32;
-const EVENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Outcome of one turn — either a final assistant message or a list of pending
 /// tool calls that need extension-side execution.
@@ -41,28 +41,26 @@ enum RoundOutcome {
 
 pub struct AgentRunOrchestrator {
     pub run: Arc<RunHandle>,
-    pub event_tx: mpsc::Sender<AgentTurnSseEvent>,
     pub http_client: Client,
 }
 
 impl AgentRunOrchestrator {
-    /// Spawn a task driving the loop. Returns the receiver end of the event
-    /// channel that the SSE handler reads.
+    /// Spawn a task driving the loop. All events go through the
+    /// broadcast channel on the RunHandle, so the HTTP handlers don't
+    /// need a dedicated receiver — they just `subscribe_events()` off
+    /// the handle whenever a client connects or reconnects.
     pub fn spawn(
         run: Arc<RunHandle>,
         request: RunAgentTurnRequest,
         http_client: Client,
-    ) -> mpsc::Receiver<AgentTurnSseEvent> {
-        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+    ) {
         let orchestrator = AgentRunOrchestrator {
             run: run.clone(),
-            event_tx: tx,
             http_client,
         };
         tokio::spawn(async move {
             orchestrator.run(request).await;
         });
-        rx
     }
 
     async fn run(self, request: RunAgentTurnRequest) {
@@ -74,10 +72,7 @@ impl AgentRunOrchestrator {
                     result: result.clone(),
                 };
                 self.run.record_result(result).await;
-                let _ = self
-                    .event_tx
-                    .send(AgentTurnSseEvent::Complete(payload))
-                    .await;
+                self.run.emit_event(AgentTurnSseEvent::Complete(payload));
             }
             Err(error) => {
                 let detail = AgentTurnErrorDetail {
@@ -94,10 +89,7 @@ impl AgentRunOrchestrator {
                 } else {
                     self.run.record_error(detail).await;
                 }
-                let _ = self
-                    .event_tx
-                    .send(AgentTurnSseEvent::Error(payload))
-                    .await;
+                self.run.emit_event(AgentTurnSseEvent::Error(payload));
             }
         }
     }
@@ -175,46 +167,54 @@ impl AgentRunOrchestrator {
                     messages.push(assistant_msg);
 
                     self.run.set_status(AgentTurnStatus::WaitingToolResult).await;
-                    for call in tool_calls {
-                        if cancel.is_cancelled() {
-                            return Err(OrchestratorError::cancelled());
-                        }
+                    if cancel.is_cancelled() {
+                        return Err(OrchestratorError::cancelled());
+                    }
+
+                    // Phase 5b: emit every tool_call up front + register
+                    // its pending slot, then await all oneshots
+                    // concurrently. Extension-side batching (parallel
+                    // wallet sigs, concurrent fetches, etc.) now finishes
+                    // in max(tool_i) instead of sum(tool_i).
+                    let mut await_futures = Vec::with_capacity(tool_calls.len());
+                    let mut call_meta: Vec<(String, String)> =
+                        Vec::with_capacity(tool_calls.len());
+                    for call in &tool_calls {
                         let call_id = call.id.clone();
+                        let (tx, rx) = oneshot::channel();
+                        self.run
+                            .register_pending_tool(PendingToolCall {
+                                call_id: call_id.clone(),
+                                tx,
+                            })
+                            .await;
                         let payload = AgentToolCallEventPayload {
                             run_id: self.run.run_id.clone(),
                             call_id: call_id.clone(),
                             name: call.name.clone(),
                             arguments: call.parsed_arguments(),
                         };
-                        let (tx, rx) = oneshot::channel();
-                        {
-                            let mut pending = self.run.pending_tool.write().await;
-                            *pending = Some(PendingToolCall {
-                                call_id: call_id.clone(),
-                                tx,
-                            });
-                        }
-                        self.event_tx
-                            .send(AgentTurnSseEvent::ToolCall(payload))
-                            .await
-                            .map_err(|_| OrchestratorError::internal("event channel closed"))?;
+                        self.run.emit_event(AgentTurnSseEvent::ToolCall(payload));
+                        call_meta.push((call_id, call.name.clone()));
+                        await_futures.push(self.await_tool_result(rx, &cancel));
+                    }
 
-                        let result = self.await_tool_result(rx, &cancel).await?;
-                        invoked_tools.push(call.name.clone());
-                        tool_outputs.push(result.result.clone());
-
-                        // Tool result message goes back into the history for
-                        // the next round, matching OpenAI's tool-message shape.
+                    let results = join_all(await_futures).await;
+                    for ((call_id, tool_name), result) in
+                        call_meta.into_iter().zip(results.into_iter())
+                    {
+                        let payload = result?;
+                        invoked_tools.push(tool_name.clone());
+                        tool_outputs.push(payload.result.clone());
                         messages.push(json!({
                             "role": "tool",
                             "tool_call_id": call_id,
-                            "name": call.name,
-                            "content": result.result,
+                            "name": tool_name,
+                            "content": payload.result,
                         }));
                     }
+
                     self.run.set_status(AgentTurnStatus::Running).await;
-                    // Loop again — the next round may produce more tool calls
-                    // or a final answer.
                     let _ = turn_index;
                     continue;
                 }
@@ -236,13 +236,15 @@ impl AgentRunOrchestrator {
         spec: &LlmCallSpec,
         cancel: &CancellationToken,
     ) -> Result<RoundOutcome, OrchestratorError> {
-        let event_tx = self.event_tx.clone();
+        let run = self.run.clone();
         let run_id = self.run.run_id.clone();
 
-        // The streaming callback runs synchronously inside stream_chat_completion's
-        // poll loop. We forward via try_send so a slow SSE consumer never
-        // blocks the upstream LLM stream — capacity is bounded so this is
-        // bounded-loss behavior, not OOM risk.
+        // The streaming callback runs synchronously inside
+        // stream_chat_completion's poll loop. `RunHandle::emit_event`
+        // is itself sync (std::sync::Mutex + broadcast::send), so we
+        // can forward directly without worrying about backpressure
+        // from a slow SSE consumer — the replay buffer bounds memory
+        // and broadcast drops lagged subscribers.
         let snapshot = tokio::select! {
             _ = cancel.cancelled() => return Err(OrchestratorError::cancelled()),
             result = stream_chat_completion(&self.http_client, spec, move |event| {
@@ -252,14 +254,14 @@ impl AgentRunOrchestrator {
                             run_id: run_id.clone(),
                             chunk,
                         };
-                        let _ = event_tx.try_send(AgentTurnSseEvent::AssistantDelta(payload));
+                        run.emit_event(AgentTurnSseEvent::AssistantDelta(payload));
                     }
                     LlmStreamEvent::Usage(usage) => {
                         let payload = AgentUsageEventPayload {
                             run_id: run_id.clone(),
                             usage,
                         };
-                        let _ = event_tx.try_send(AgentTurnSseEvent::Usage(payload));
+                        run.emit_event(AgentTurnSseEvent::Usage(payload));
                     }
                 }
             }) => result.map_err(|err| OrchestratorError {

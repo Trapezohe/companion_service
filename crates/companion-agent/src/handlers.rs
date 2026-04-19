@@ -5,14 +5,15 @@
 use crate::orchestrator::AgentRunOrchestrator;
 use crate::persist::AgentRunPersistence;
 use crate::store::{
-    AgentRunStore, CreateRunMetadata, DeliverToolResult, ToolResultPayload,
+    AgentRunStore, CreateRunMetadata, DeliverToolResult, RunHandle, StoredAgentEvent,
+    ToolResultPayload,
 };
 use crate::types::{
     AgentToolResultAck, AgentToolResultRequest, AgentTurnSseEvent, RunAgentTurnRequest,
     RunAgentTurnStatusResponse,
 };
 use async_stream::stream;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -20,12 +21,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::Stream;
 use reqwest::Client;
+use serde::Deserialize;
 use serde_json::json;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
+use tokio::sync::broadcast;
 
 pub const COMPANION_AGENT_RUN_ID_HEADER: &str = "x-companion-agent-run-id";
 
@@ -79,6 +80,7 @@ pub fn agent_routes(state: AgentRouterState) -> Router {
         )
         .route("/api/agent/turn/{run_id}/cancel", post(cancel_agent_turn))
         .route("/api/agent/turn/{run_id}/status", get(get_agent_turn_status))
+        .route("/api/agent/turn/{run_id}/events", get(stream_agent_turn_events))
         .with_state(state)
 }
 
@@ -120,13 +122,24 @@ async fn start_agent_turn(
         })
         .await;
     let run_id = run.run_id.clone();
-    let event_rx = AgentRunOrchestrator::spawn(
+    // Subscribe BEFORE spawning the orchestrator so any events emitted
+    // in the first microsecond of the run are captured by this initial
+    // connection.
+    let rx = run.subscribe_events();
+    AgentRunOrchestrator::spawn(
         run.clone(),
         request,
         state.agent.http_client.clone(),
     );
 
-    let event_stream = build_event_stream(run_id.clone(), state.agent.store.clone(), event_rx);
+    let event_stream = build_event_stream(
+        run_id.clone(),
+        state.agent.store.clone(),
+        run.clone(),
+        rx,
+        0,
+        true,
+    );
 
     let mut response = Sse::new(event_stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -137,32 +150,150 @@ async fn start_agent_turn(
     response
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayQuery {
+    #[serde(default)]
+    after_cursor: Option<u64>,
+}
+
+/// Reconnect endpoint. Returns an SSE stream starting from any events
+/// with `cursor > afterCursor`, then continues streaming live events
+/// until the run reaches a terminal state.
+async fn stream_agent_turn_events(
+    State(state): State<AgentRouterState>,
+    Path(run_id): Path<String>,
+    Query(params): Query<ReplayQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = (state.auth)(&headers) {
+        return response;
+    }
+    let Some(handle) = state.agent.store.get(&run_id).await else {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "Unknown agent run id (may have already completed and been dropped).",
+        );
+    };
+    // Subscribe first so we don't miss events that fire between reading
+    // the log snapshot and starting the broadcast loop.
+    let rx = handle.subscribe_events();
+    let after_cursor = params.after_cursor.unwrap_or(0);
+    let event_stream = build_event_stream(
+        run_id.clone(),
+        state.agent.store.clone(),
+        handle,
+        rx,
+        after_cursor,
+        false,
+    );
+    let mut response = Sse::new(event_stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+        .into_response();
+    if let Ok(value) = HeaderValue::from_str(&run_id) {
+        response
+            .headers_mut()
+            .insert(COMPANION_AGENT_RUN_ID_HEADER, value);
+    }
+    response
+}
+
+/// Build the SSE stream: replay buffered events past `after_cursor`,
+/// then pump broadcast events until terminal. When `remove_on_terminal`
+/// is true (the original POST /turn stream), we drop the run from the
+/// inflight map once we see the Complete/Error event — this preserves
+/// backward behavior. Reconnect subscribers do NOT remove the run; the
+/// original stream's removal cleanup will handle that.
 fn build_event_stream(
     run_id: String,
     store: AgentRunStore,
-    event_rx: tokio::sync::mpsc::Receiver<AgentTurnSseEvent>,
+    handle: Arc<RunHandle>,
+    mut rx: broadcast::Receiver<StoredAgentEvent>,
+    after_cursor: u64,
+    remove_on_terminal: bool,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     stream! {
-        let mut rx = ReceiverStream::new(event_rx);
-        while let Some(event) = rx.next().await {
-            let json = match serde_json::to_string(&event) {
+        let mut last_cursor = after_cursor;
+        // Replay buffered events first. Cheap: this is an O(N <= 500)
+        // in-memory filter under a sync mutex.
+        for item in handle.events_after(after_cursor) {
+            let json = match serde_json::to_string(&item.event) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            // Mark terminality before yielding so a slow downstream still
-            // observes the final event before we drop the run from the store.
             let is_terminal = matches!(
-                event,
+                item.event,
                 AgentTurnSseEvent::Complete(_) | AgentTurnSseEvent::Error(_)
             );
-            yield Ok(SseEvent::default().event("message").data(json));
+            last_cursor = item.cursor;
+            yield Ok(SseEvent::default()
+                .id(item.cursor.to_string())
+                .event("message")
+                .data(json));
             if is_terminal {
-                break;
+                if remove_on_terminal {
+                    let _ = store.remove(&run_id).await;
+                }
+                return;
             }
         }
-        // Cleanup: drop the run from the inflight map. Snapshot persists for
-        // any caller still holding the Arc<RunHandle>.
-        let _ = store.remove(&run_id).await;
+        // Then pump live broadcast events. De-dupe against the replay
+        // cursor window: anything with cursor <= last_cursor was already
+        // emitted (possible if a broadcast event raced the replay).
+        loop {
+            match rx.recv().await {
+                Ok(item) => {
+                    if item.cursor <= last_cursor {
+                        continue;
+                    }
+                    let json = match serde_json::to_string(&item.event) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let is_terminal = matches!(
+                        item.event,
+                        AgentTurnSseEvent::Complete(_) | AgentTurnSseEvent::Error(_)
+                    );
+                    last_cursor = item.cursor;
+                    yield Ok(SseEvent::default()
+                        .id(item.cursor.to_string())
+                        .event("message")
+                        .data(json));
+                    if is_terminal {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_n)) => {
+                    // Slow subscriber fell behind. Backfill from the
+                    // replay log to catch up past last_cursor.
+                    for item in handle.events_after(last_cursor) {
+                        let json = match serde_json::to_string(&item.event) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        let is_terminal = matches!(
+                            item.event,
+                            AgentTurnSseEvent::Complete(_) | AgentTurnSseEvent::Error(_)
+                        );
+                        last_cursor = item.cursor;
+                        yield Ok(SseEvent::default()
+                            .id(item.cursor.to_string())
+                            .event("message")
+                            .data(json));
+                        if is_terminal {
+                            if remove_on_terminal {
+                                let _ = store.remove(&run_id).await;
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if remove_on_terminal {
+            let _ = store.remove(&run_id).await;
+        }
     }
 }
 
