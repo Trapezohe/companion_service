@@ -1,0 +1,30 @@
+[package]
+name = "companion-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+bytes = "1"
+companion-shared = { path = "../companion-shared" }
+futures = "0.3"
+http.workspace = true
+# Workspace's reqwest doesn't enable the `stream` feature; we need it for the
+# bytes_stream() used in LLM SSE parsing. Spell out the full config so we
+# don't have to change workspace defaults for every other crate.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+tracing.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower.workspace = true

@@ -4,6 +4,7 @@ members = [
   "crates/companion-shared",
   "crates/companion-config",
   "crates/companion-acp",
+  "crates/companion-agent",
   "crates/companion-automation",
   "crates/companion-browser",
   "crates/companion-checkpoint",

@@ -10,6 +10,7 @@ anyhow.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 companion-acp = { path = "../companion-acp" }
+companion-agent = { path = "../companion-agent" }
 companion-app = { path = "../companion-app" }
 companion-automation = { path = "../companion-automation" }
 companion-browser = { path = "../companion-browser" }
@@ -22,6 +23,7 @@ companion-memory = { path = "../companion-memory" }
 companion-mcp = { path = "../companion-mcp" }
 companion-runtime = { path = "../companion-runtime" }
 companion-shared = { path = "../companion-shared" }
+futures = "0.3"
 http.workspace = true
 reqwest.workspace = true
 serde.workspace = true

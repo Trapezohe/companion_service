@@ -11,6 +11,7 @@ use companion_acp::{
     PromptInput as AcpPromptInput, SessionEventsQuery as AcpEventsQuery,
     SessionListQuery as AcpListQuery, SteerInput as AcpSteerInput,
 };
+use companion_agent::{agent_routes, AgentAuthFn, AgentRouterState, AgentState};
 use companion_app::{
     activate_window, capture_screenshot, complete_reminder, create_calendar_event, create_note,
     create_reminder, delete_scheduled_task, get_clipboard_text, list_calendar_events,
@@ -98,6 +99,11 @@ pub struct AppState {
     runs: RunStore,
     approvals: ApprovalStore,
     checkpoint_jobs: Arc<RwLock<CheckpointJobRunner>>,
+    /// Hosts the `/api/agent/turn` LLM-loop endpoints. Lives here so the
+    /// run store survives across HTTP requests within a single daemon
+    /// process. Restart loses the in-flight runs by design (phase 4 will
+    /// add persistence).
+    agent: AgentState,
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -149,6 +155,7 @@ impl AppState {
                 .as_ref()
                 .map(|value| ApprovalStore::new_in(value.clone()))
                 .unwrap_or_else(ApprovalStore::new),
+            agent: AgentState::new(reqwest::Client::new()),
             shutdown_tx,
         }
     }
@@ -1032,7 +1039,28 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/{*path}", axum::routing::options(preflight))
         .layer(middleware::from_fn(cors_middleware))
-        .with_state(state)
+        .with_state(state.clone())
+        .merge(build_agent_router(state))
+}
+
+/// Build the agent-loop sub-router and merge it under the same daemon. The
+/// agent crate validates the bearer token via a callback (instead of
+/// importing CompanionConfig directly) so the dependency stays one-way:
+/// daemon → agent, never the reverse.
+fn build_agent_router(state: AppState) -> Router {
+    let config = state.config.clone();
+    let auth: AgentAuthFn = Arc::new(move |headers| {
+        // The authorize() helper is async-free, but we need a snapshot of
+        // the current config token. Block on the read lock — config writes
+        // are rare and short, and this auth path runs once per request.
+        let snapshot = futures::executor::block_on(config.read());
+        authorize(headers, &snapshot)
+    });
+    let router_state = AgentRouterState {
+        agent: state.agent.clone(),
+        auth,
+    };
+    agent_routes(router_state).layer(middleware::from_fn(cors_middleware))
 }
 
 async fn preflight() -> impl IntoResponse {
