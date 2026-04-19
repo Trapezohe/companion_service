@@ -116,6 +116,7 @@ async fn start_agent_turn(
         .create_with_metadata(CreateRunMetadata {
             conversation_id: request.conversation_id.clone(),
             model: Some(request.model.clone()),
+            tier: request.tier,
         })
         .await;
     let run_id = run.run_id.clone();
@@ -295,6 +296,7 @@ mod tests {
                 api_secret: crate::types::ApiSecretInput::Single("token".to_string()),
                 tool_definitions: vec![],
                 max_turns: None,
+                tier: companion_shared::RunTier::default(),
             }),
         )
         .await;

@@ -10,6 +10,8 @@ anyhow.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 bytes = "1"
+# Shared RunTier enum + tier-aware timeout constants live here so the
+# agent crate doesn't fork its own copy.
 companion-shared = { path = "../companion-shared" }
 futures = "0.3"
 http.workspace = true

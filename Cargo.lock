@@ -788,6 +788,7 @@ name = "companion-acp"
 version = "0.1.26"
 dependencies = [
  "anyhow",
+ "companion-shared",
  "hex",
  "nix",
  "rand 0.8.5",

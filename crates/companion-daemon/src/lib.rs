@@ -68,8 +68,8 @@ use companion_runtime::{
     SessionLogQuery, SessionStartRequest, SessionStatusFilter,
 };
 use companion_shared::{
-    capabilities_payload, version_string, CapabilitiesPayload, PermissionPolicy, SupportedFeatures,
-    FIXED_EXTENSION_ORIGIN,
+    capabilities_payload, version_string, CapabilitiesPayload, PermissionPolicy, RunTier,
+    SupportedFeatures, FIXED_EXTENSION_ORIGIN,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -328,6 +328,12 @@ struct RuntimeExecBody {
     cwd: Option<String>,
     timeout_ms: Option<u64>,
     env: Option<BTreeMap<String, String>>,
+    /// Declared by the caller. Absent / unrecognized → default tier
+    /// (historical 5-min cap). Extensions set `"long_task"` when running
+    /// a command they've explicitly authorized to run long (build, test,
+    /// large sync).
+    #[serde(default)]
+    tier: RunTier,
 }
 
 #[derive(Debug, Deserialize)]
@@ -593,6 +599,8 @@ struct AcpCreateSessionBody {
     timeout_ms: Option<u64>,
     origin: Option<String>,
     input_provenance: Option<Value>,
+    #[serde(default)]
+    tier: RunTier,
 }
 
 #[derive(Debug, Deserialize)]
@@ -606,6 +614,9 @@ struct AcpPromptBody {
     env: Option<BTreeMap<String, String>>,
     origin: Option<String>,
     input_provenance: Option<Value>,
+    /// Per-turn override. When absent, the session-level tier set at
+    /// create time is used.
+    tier: Option<RunTier>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3645,6 +3656,7 @@ async fn runtime_exec(
             timeout_ms: body.timeout_ms,
             env: body.env.map(|value| value.into_iter().collect()),
             permission_policy: config.permission_policy.clone(),
+            tier: body.tier,
         })
         .await
         .map_err(map_exec_runtime_error)?;
@@ -3715,6 +3727,7 @@ async fn runtime_session_start(
             timeout_ms: body.timeout_ms,
             env: body.env.clone().map(|value| value.into_iter().collect()),
             permission_policy: config.permission_policy.clone(),
+            tier: body.tier,
         })
         .await
         .map_err(map_exec_runtime_error)?;
@@ -3806,6 +3819,7 @@ async fn acp_create_session(
             timeout_ms: body.timeout_ms,
             origin: body.origin,
             input_provenance: body.input_provenance,
+            tier: body.tier,
             ..AcpCreateSessionInput::default()
         })
         .await;
@@ -3871,6 +3885,7 @@ async fn acp_prompt_session(
                 env: body.env,
                 origin: body.origin,
                 input_provenance: body.input_provenance,
+                tier: body.tier,
             },
         )
         .await

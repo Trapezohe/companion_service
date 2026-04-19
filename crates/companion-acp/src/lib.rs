@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use companion_shared::{RunTier, DEFAULT_TIER_ACP_MAX_TIMEOUT_MS};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,7 +13,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-const MAX_TIMEOUT_MS: u64 = 600_000;
+/// Historical default-tier cap. Long-task tier reaches beyond this — see
+/// [`RunTier::max_timeout_ms`] in `companion_shared`.
+const MAX_TIMEOUT_MS: u64 = DEFAULT_TIER_ACP_MAX_TIMEOUT_MS;
 const DEFAULT_LIST_LIMIT: usize = 50;
 const MAX_LIST_LIMIT: usize = 500;
 const MAX_EVENT_COUNT: usize = 5_000;
@@ -123,6 +126,10 @@ pub struct CreateSessionInput {
     pub timeout_ms: Option<u64>,
     pub origin: Option<String>,
     pub input_provenance: Option<Value>,
+    /// Tier declared by the caller. Default keeps the 10-minute historical
+    /// cap; LongTask opens it to 24h so a long `delegate_task` run into an
+    /// external agent (claude-code-cli, hermes, etc.) isn't strangled.
+    pub tier: RunTier,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -135,6 +142,8 @@ pub struct PromptInput {
     pub env: Option<BTreeMap<String, String>>,
     pub origin: Option<String>,
     pub input_provenance: Option<Value>,
+    /// Per-turn tier override. Falls back to the session tier if None.
+    pub tier: Option<RunTier>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -195,6 +204,9 @@ struct SessionState {
     terminal_emitted: bool,
     runtime_session_id: Option<String>,
     timed_out: bool,
+    /// Declared by the caller at create time; prompt-level overrides
+    /// temporarily widen this but the default returns on the next turn.
+    tier: RunTier,
 }
 
 impl AcpManager {
@@ -220,7 +232,7 @@ impl AcpManager {
                 cwd: input.cwd.unwrap_or_else(default_cwd),
                 command: input.command,
                 env: input.env,
-                timeout_ms: clamp_timeout(input.timeout_ms),
+                timeout_ms: clamp_timeout(input.timeout_ms, input.tier),
                 origin: input.origin.and_then(trim_optional),
                 input_provenance: normalize_object(input.input_provenance),
                 created_at: now_millis(),
@@ -232,6 +244,7 @@ impl AcpManager {
                 terminal_emitted: false,
                 runtime_session_id: None,
                 timed_out: false,
+                tier: input.tier,
             }),
         });
         self.inner
@@ -368,7 +381,10 @@ impl AcpManager {
                 command,
                 input.cwd.clone().unwrap_or_else(|| state.cwd.clone()),
                 input.env.clone().or_else(|| state.env.clone()),
-                clamp_timeout(input.timeout_ms.or(Some(state.timeout_ms))),
+                clamp_timeout(
+                    input.timeout_ms.or(Some(state.timeout_ms)),
+                    input.tier.unwrap_or(state.tier),
+                ),
                 input.prompt.clone(),
                 state.run_id.clone(),
             )
@@ -969,10 +985,10 @@ async fn spawn_command(
     builder.spawn().context("Failed to spawn ACP child process")
 }
 
-fn clamp_timeout(value: Option<u64>) -> u64 {
+fn clamp_timeout(value: Option<u64>, tier: RunTier) -> u64 {
     value
         .unwrap_or(DEFAULT_TIMEOUT_MS)
-        .clamp(1_000, MAX_TIMEOUT_MS)
+        .clamp(1_000, tier.max_timeout_ms(MAX_TIMEOUT_MS))
 }
 
 fn normalize_object(value: Option<Value>) -> Option<Value> {

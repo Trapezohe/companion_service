@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use companion_config::{get_config_dir, is_path_within_roots};
-use companion_shared::PermissionPolicy;
+use companion_shared::{
+    PermissionPolicy, RunTier, DEFAULT_TIER_RUNTIME_MAX_TIMEOUT_MS,
+};
 use rand::RngCore;
 use regex::Regex;
 use serde::Serialize;
@@ -15,7 +17,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
-const MAX_TIMEOUT_MS: u64 = 300_000;
+/// Historical default-tier cap. Long-task tier reaches beyond this — see
+/// [`RunTier::max_timeout_ms`] in `companion_shared`.
+const MAX_TIMEOUT_MS: u64 = DEFAULT_TIER_RUNTIME_MAX_TIMEOUT_MS;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const DEFAULT_SESSION_LIST_LIMIT: usize = 50;
 const MAX_SESSION_LIST_LIMIT: usize = 500;
@@ -175,6 +179,10 @@ pub struct ExecRequest {
     pub timeout_ms: Option<u64>,
     pub env: Option<HashMap<String, String>>,
     pub permission_policy: PermissionPolicy,
+    /// Tier declared by the caller. Default keeps the 5-minute historical
+    /// cap; LongTask opens it to 24h so declared long jobs (builds, big
+    /// test suites, rsyncs) don't get strangled by the safety net.
+    pub tier: RunTier,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +192,8 @@ pub struct SessionStartRequest {
     pub timeout_ms: Option<u64>,
     pub env: Option<HashMap<String, String>>,
     pub permission_policy: PermissionPolicy,
+    /// See [`ExecRequest::tier`].
+    pub tier: RunTier,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +262,14 @@ struct SessionState {
     exit_code: Option<i32>,
     started_at: u64,
     finished_at: Option<u64>,
+    /// Per-session retention. Default tier uses the RuntimeInner-level
+    /// TTL; LongTask sessions override to 24h so a legitimately long
+    /// session doesn't get swept while still running.
+    effective_ttl_ms: u64,
+    /// Kept on the state for future persistence + diagnostics. Not yet
+    /// surfaced via the snapshot API.
+    #[allow(dead_code)]
+    tier: RunTier,
 }
 
 #[derive(Debug)]
@@ -282,7 +300,7 @@ impl RuntimeManager {
             .await
             .map_err(runtime_error_from_anyhow)?;
         enforce_command_policy(&request.command, &cwd, &request.permission_policy)?;
-        let timeout_ms = clamp_timeout(request.timeout_ms);
+        let timeout_ms = clamp_timeout(request.timeout_ms, request.tier);
         let started = Instant::now();
         let mut process = spawn_shell_process(&request.command, &cwd, request.env.clone())
             .await
@@ -319,7 +337,11 @@ impl RuntimeManager {
             .map_err(runtime_error_from_anyhow)?;
         enforce_command_policy(&request.command, &cwd, &request.permission_policy)?;
         self.prune_sessions().await;
-        let timeout_ms = clamp_timeout(request.timeout_ms);
+        let timeout_ms = clamp_timeout(request.timeout_ms, request.tier);
+        let effective_ttl_ms = match request.tier {
+            RunTier::Default => self.inner.session_ttl_ms,
+            RunTier::LongTask => request.tier.session_ttl_ms(),
+        };
         let mut process = spawn_shell_process(&request.command, &cwd, request.env.clone())
             .await
             .map_err(runtime_error_from_anyhow)?;
@@ -336,6 +358,8 @@ impl RuntimeManager {
             exit_code: None,
             started_at: now_millis(),
             finished_at: None,
+            effective_ttl_ms,
+            tier: request.tier,
         };
         let handle = Arc::new(SessionHandle {
             child: Mutex::new(process.child),
@@ -685,12 +709,15 @@ impl RuntimeManager {
 
     async fn prune_sessions(&self) {
         let now = now_millis();
-        let cutoff = now.saturating_sub(self.inner.session_ttl_ms);
         let mut ids_to_remove = Vec::new();
         {
             let sessions = self.inner.sessions.read().await;
             for (id, handle) in sessions.iter() {
                 let state = handle.state.lock().await;
+                // Each session carries its own TTL so LongTask sessions
+                // (effective_ttl = 24h) don't get swept by the default 1h
+                // floor.
+                let cutoff = now.saturating_sub(state.effective_ttl_ms);
                 if state.status == "exited" && state.finished_at.unwrap_or(0) < cutoff {
                     ids_to_remove.push(id.clone());
                 }
@@ -873,10 +900,10 @@ fn validate_command(command: &str) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn clamp_timeout(timeout_ms: Option<u64>) -> u64 {
+fn clamp_timeout(timeout_ms: Option<u64>, tier: RunTier) -> u64 {
     timeout_ms
         .unwrap_or(DEFAULT_TIMEOUT_MS)
-        .clamp(1_000, MAX_TIMEOUT_MS)
+        .clamp(1_000, tier.max_timeout_ms(MAX_TIMEOUT_MS))
 }
 
 fn runtime_error_from_anyhow(error: anyhow::Error) -> RuntimeError {
@@ -1374,6 +1401,32 @@ fn make_log_slice(text: &str, offset: usize, limit: usize) -> LogSlice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use companion_shared::LONG_TASK_TIER_MAX_TIMEOUT_MS;
+
+    #[test]
+    fn clamp_timeout_default_tier_caps_at_five_minutes() {
+        // An upstream caller asking for one hour at the default tier gets
+        // cut down to the historical 5-minute safety net.
+        assert_eq!(
+            clamp_timeout(Some(60 * 60 * 1000), RunTier::Default),
+            MAX_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn clamp_timeout_long_task_tier_allows_up_to_24h() {
+        // Declared long-task runs can ask for the full 24-hour budget.
+        assert_eq!(
+            clamp_timeout(Some(LONG_TASK_TIER_MAX_TIMEOUT_MS), RunTier::LongTask),
+            LONG_TASK_TIER_MAX_TIMEOUT_MS
+        );
+        // But we still clamp over the 24-hour ceiling — nothing buys
+        // infinite runtime.
+        assert_eq!(
+            clamp_timeout(Some(LONG_TASK_TIER_MAX_TIMEOUT_MS + 60_000), RunTier::LongTask),
+            LONG_TASK_TIER_MAX_TIMEOUT_MS
+        );
+    }
 
     fn full_policy() -> PermissionPolicy {
         PermissionPolicy {
@@ -1398,6 +1451,7 @@ mod tests {
                 timeout_ms: Some(5_000),
                 env: None,
                 permission_policy: full_policy(),
+                tier: RunTier::default(),
             })
             .await
             .unwrap();
@@ -1421,6 +1475,7 @@ mod tests {
                 timeout_ms: Some(5_000),
                 env: None,
                 permission_policy: full_policy(),
+                tier: RunTier::default(),
             })
             .await
             .unwrap();

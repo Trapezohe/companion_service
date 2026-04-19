@@ -14,6 +14,7 @@ use crate::persist::{
 use crate::types::{
     AgentTurnErrorDetail, AgentTurnStatus, SerializedRunPiAgentLoopResult,
 };
+use companion_shared::RunTier;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,6 +57,7 @@ pub struct RunHandle {
     pub run_id: String,
     pub conversation_id: Option<String>,
     pub model: Option<String>,
+    pub tier: RunTier,
     pub created_at: i64,
     /// Live status. Updated by the LLM loop as the turn progresses.
     pub status: RwLock<AgentTurnStatus>,
@@ -86,6 +88,7 @@ impl RunHandle {
         run_id: String,
         conversation_id: Option<String>,
         model: Option<String>,
+        tier: RunTier,
         persistence: Option<Arc<AgentRunPersistence>>,
         runs_for_snapshot: Option<Arc<RwLock<HashMap<String, Arc<RunHandle>>>>>,
     ) -> Arc<Self> {
@@ -94,6 +97,7 @@ impl RunHandle {
             run_id,
             conversation_id,
             model,
+            tier,
             created_at: now,
             status: RwLock::new(AgentTurnStatus::Running),
             updated_at: RwLock::new(now),
@@ -256,6 +260,7 @@ impl AgentRunStore {
             run_id.clone(),
             meta.conversation_id,
             meta.model,
+            meta.tier,
             self.persistence.clone(),
             Some(self.runs.clone()),
         );
@@ -318,6 +323,10 @@ impl AgentRunStore {
 pub struct CreateRunMetadata {
     pub conversation_id: Option<String>,
     pub model: Option<String>,
+    /// Tier flows from the client request; controls how long the
+    /// orchestrator will patiently wait on a pending tool_result before
+    /// declaring the extension dead.
+    pub tier: RunTier,
 }
 
 /// Result of trying to deliver a tool result for a run. Distinguished from a
@@ -391,6 +400,7 @@ mod tests {
             .create_with_metadata(CreateRunMetadata {
                 conversation_id: Some("conv-1".to_string()),
                 model: Some("gpt-test".to_string()),
+                tier: RunTier::default(),
             })
             .await;
         completed.record_result(sample_result()).await;

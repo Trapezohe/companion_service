@@ -24,7 +24,6 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MAX_TURNS: u32 = 32;
-const TOOL_RESULT_WAIT_TIMEOUT_SECS: u64 = 60 * 5;
 const EVENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Outcome of one turn — either a final assistant message or a list of pending
@@ -286,9 +285,14 @@ impl AgentRunOrchestrator {
         rx: oneshot::Receiver<ToolResultPayload>,
         cancel: &CancellationToken,
     ) -> Result<ToolResultPayload, OrchestratorError> {
+        // Tier-aware wait: LongTask expects real builds / delegate calls
+        // that can run for tens of minutes, so we stretch to an hour. At
+        // the default tier we still bail after 5 minutes — faster failure
+        // for the common case where the extension genuinely died.
+        let wait_ms = self.run.tier.tool_wait_ms();
         tokio::select! {
             _ = cancel.cancelled() => Err(OrchestratorError::cancelled()),
-            res = timeout(Duration::from_secs(TOOL_RESULT_WAIT_TIMEOUT_SECS), rx) => {
+            res = timeout(Duration::from_millis(wait_ms), rx) => {
                 match res {
                     Ok(Ok(payload)) => Ok(payload),
                     Ok(Err(_recv_err)) => Err(OrchestratorError {
@@ -299,8 +303,8 @@ impl AgentRunOrchestrator {
                     Err(_elapsed) => Err(OrchestratorError {
                         code: AgentTurnErrorCode::ToolResultTimeout,
                         message: format!(
-                            "Tool result not received within {}s.",
-                            TOOL_RESULT_WAIT_TIMEOUT_SECS
+                            "Tool result not received within {}ms.",
+                            wait_ms
                         ),
                         retryable: Some(false),
                     }),

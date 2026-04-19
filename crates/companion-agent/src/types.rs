@@ -62,6 +62,13 @@ pub struct RunAgentTurnRequest {
     pub tool_definitions: Vec<ToolDefinition>,
     #[serde(default)]
     pub max_turns: Option<u32>,
+    /// Declared by the extension when the turn will drive long-running
+    /// tool calls (big build, full test suite, delegate to claude-code).
+    /// Default tier keeps the historical 5-minute tool-wait cap; LongTask
+    /// bumps it to 1 hour so a legit slow tool doesn't look like a dead
+    /// extension.
+    #[serde(default)]
+    pub tier: companion_shared::RunTier,
 }
 
 /// Mirror of ApiSecretInput in the extension. May be a single string OR an
