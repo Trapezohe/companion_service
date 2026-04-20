@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "companion-acp"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-shared",
@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "companion-agent"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "companion-app"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "serde",
  "serde_json",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "companion-automation"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "companion-browser"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "companion-checkpoint"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "companion-cli"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "clap",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "companion-config"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-shared",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "companion-control"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "companion-cron"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "companion-daemon"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -970,7 +970,7 @@ dependencies = [
 
 [[package]]
 name = "companion-mcp"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "companion-media"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "companion-memory"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "companion-runtime"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "companion-shared"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "serde",
 ]
@@ -6897,7 +6897,7 @@ dependencies = [
 
 [[package]]
 name = "trapezohe-companion-tray"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "companion-config",
