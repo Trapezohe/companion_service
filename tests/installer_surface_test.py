@@ -370,10 +370,15 @@ class InstallerSurfaceTests(unittest.TestCase):
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
         tray_cargo = tomllib.loads((ROOT / "tray/Cargo.toml").read_text(encoding="utf-8"))
         tauri_config = read_json("tray/tauri.conf.json")
+        expected_version = subprocess.check_output(
+            ["python3", "scripts/read_release_version.py"],
+            cwd=ROOT,
+            text=True,
+        ).strip()
 
-        self.assertEqual(workspace["workspace"]["package"]["version"], "0.1.24")
-        self.assertEqual(tray_cargo["package"]["version"], "0.1.24")
-        self.assertEqual(tauri_config["version"], "0.1.24")
+        self.assertEqual(workspace["workspace"]["package"]["version"], expected_version)
+        self.assertEqual(tray_cargo["package"]["version"], expected_version)
+        self.assertEqual(tauri_config["version"], expected_version)
 
     def test_readme_and_release_copy_describe_signed_macos_flow_without_unsigned_claim(self) -> None:
         readme = read("README.md")
