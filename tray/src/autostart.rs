@@ -23,6 +23,7 @@ fn suppress_console_window(_command: &mut Command) {}
 const LEGACY_PREFS_FILE_NAME: &str = "companion-tray.json";
 const STARTUP_POLICY_FILE_NAME: &str = "companion-startup.json";
 const MACOS_LABEL: &str = "ai.trapezohe.companion.tray";
+const MACOS_BUNDLE_IDENTIFIER: &str = "ai.trapezohe.companion.tray";
 const MACOS_LEGACY_DAEMON_LABEL: &str = "ai.trapezohe.companion";
 const LINUX_DESKTOP_NAME: &str = "trapezohe-companion-tray.desktop";
 const LINUX_LEGACY_SERVICE_NAME: &str = "trapezohe-companion.service";
@@ -285,7 +286,7 @@ fn registration_for_macos(executable: &str, home: &str) -> RegistrationTarget {
     let stdout = logs_dir.join("companion-tray.log");
     let stderr = logs_dir.join("companion-tray.error.log");
     let contents = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{MACOS_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <false/>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{MACOS_LABEL}</string>\n  <key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>{MACOS_BUNDLE_IDENTIFIER}</string>\n  </array>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <false/>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
         xml_escape(executable),
         xml_escape(&stdout.display().to_string()),
         xml_escape(&stderr.display().to_string()),
@@ -791,6 +792,8 @@ mod tests {
         );
         assert!(normalize_test_path(&target.target)
             .ends_with("Library/LaunchAgents/ai.trapezohe.companion.tray.plist"));
+        assert!(target.contents.contains("<key>AssociatedBundleIdentifiers</key>"));
+        assert!(target.contents.contains("<string>ai.trapezohe.companion.tray</string>"));
         assert!(target.contents.contains("trapezohe-companion-tray"));
     }
 
