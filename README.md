@@ -5,9 +5,11 @@
 <h1 align="center">Ghast AI Companion</h1>
 
 <p align="center">
-  <strong>The desktop runtime for <a href="https://github.com/Trapezohe/trapezohe_extension">Ghast AI</a>.</strong>
+  <strong>The local desktop runtime for the <a href="https://chromewebstore.google.com/detail/ghast-ai/nnhdkkgpoeojjddikcjadgpkbfbjhcal">Ghast AI</a> browser extension.</strong>
   <br />
   Shipped in this repository as <code>trapezohe-companion</code>, it auto-pairs locally, unlocks trusted desktop capabilities, hosts MCP tools, and provides the runtime backbone behind browser automation, diagnostics, and local agent workflows.
+  <br />
+  This is not the Ghast Workbench installer. Workbench downloads are on <a href="https://ghast.trapezohe.ai/workbench">https://ghast.trapezohe.ai/workbench</a>.
 </p>
 
 <p align="center">
@@ -15,6 +17,16 @@
 </p>
 
 ---
+
+## Links
+
+- [Ghast AI](https://ghast.trapezohe.ai/)
+- [Ghast Workbench](https://ghast.trapezohe.ai/workbench)
+- [Ghast AI Docs](https://doc.trapezohe.ai/)
+
+## Part of Ghast
+
+Ghast AI — private expertise, callable by agents. We're building the protocol that lets experts and teams offer their know-how as services AI agents can find, trust and pay for, starting with Ghast Workbench, our desktop AI agent workspace.
 
 ## Why Companion exists
 
