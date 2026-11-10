@@ -24,6 +24,10 @@
 - [Ghast Workbench](https://ghast.trapezohe.ai/workbench)
 - [Ghast AI Docs](https://doc.trapezohe.ai/)
 
+## Part of Ghast
+
+Ghast AI — private expertise, callable by agents. We're building the protocol that lets experts and teams offer their know-how as services AI agents can find, trust and pay for, starting with Ghast Workbench, our desktop AI agent workspace.
+
 ## Why Companion exists
 
 A browser extension alone cannot safely expose local files, shell execution, native browser pairing, or long-running desktop services.
